@@ -1,0 +1,28 @@
+---
+# Claude's team: the subagent roles the lead calls, and the skills they and
+# the lead load as they need them, the same for the GitHub runner's jobs
+# and the workbench's sessions. Included by their roles, which say where
+# the copy goes, whose it is, and which skills of their own join the shared
+# ones:
+#
+#   - ansible.builtin.include_role:
+#       name: joonalai.hostkit.claude_team
+#     vars:
+#       claude_team_dest: /home/coder/claude    # gets agents/ and skills/
+#       claude_team_owner: root
+#       claude_team_skill_sources: [/path/to/github_runner/files/skills]
+#
+# The runner mounts both directories read-only into every job; the
+# workbench's containers see them in the home they share. A copy never
+# deletes a file removed from here: remove it from the destination by hand.
+claude_team_dest: ""
+claude_team_owner: root
+claude_team_group: "{{ claude_team_owner }}"
+claude_team_mode: "0644"
+claude_team_directory_mode: "0755"
+# Directories of skills to install beside this role's own files/skills,
+# each holding <name>/SKILL.md: what one environment has and the other
+# does not, such as the runner's preview. A skill of the same name in two
+# environments is how a role's instructions can name one skill and mean
+# the right procedure in each. A source that does not exist is skipped.
+claude_team_skill_sources: []
