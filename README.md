@@ -3,13 +3,18 @@
 `joonalai.hostkit`, an Ansible collection of roles for self-hosted Debian
 servers. Each role is configured entirely from the consumer's inventory.
 
-| Role                                           | What it does                                                                | What it requires                                                                                  |
-| ---------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| [`rootless_account`](docs/rootless_account.md) | An account that runs rootless podman containers from its systemd manager    | An account name and the start of its subordinate ID range                                         |
-| [`ci_runner`](docs/ci_runner.md)               | One-job GitHub Actions runners for private repositories, in such an account | The host's own sandbox unit for the account, a subordinate ID range, repositories, a GitHub token |
+| Role                                           | What it does                                                                                       | What it requires                                                                                                            |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| [`rootless_account`](docs/rootless_account.md) | An account that runs rootless podman containers from its systemd manager                           | An account name and the start of its subordinate ID range                                                                   |
+| [`ci_runner`](docs/ci_runner.md)               | One-job GitHub Actions runners for private repositories, in such an account                        | The host's own sandbox unit for the account, a subordinate ID range, repositories, a GitHub token                           |
+| [`github_runner`](docs/github_runner.md)       | One-job GitHub Actions runners for Claude Code to work issues on, with previews                    | The host's own sandbox units, a pinned uid and subordinate ID range, a GitHub App that registers runners, repositories      |
+| [`executor`](docs/executor.md)                 | Compose stacks for the runner's and the workbench's previews, from git bundles, with no credential | The host's own sandbox units, a pinned uid and subordinate ID range, a port range                                           |
+| [`workbench`](docs/workbench.md)               | A container per repository with a Remote Control session, writing to GitHub only through a gate    | The host's own sandbox units, a pinned uid and subordinate ID range, a Claude login, a read and a write token, repositories |
+| [`claude_code`](docs/claude_code.md)           | Claude Code as a Remote Control server, driven from the Claude app                                 | A Claude subscription login, done once by a person                                                                          |
+| [`claude_team`](docs/claude_team.md)           | The subagent roles and skills the runner's jobs and the workbench's sessions share                 | A directory to install into                                                                                                 |
 
-All roles need Debian with systemd and rootless podman, and Ansible 2.18 or
-newer on the controller.
+All roles need Debian with systemd, and Ansible 2.18 or newer with
+`community.general` on the controller.
 
 **Hardening is the host's.** No role here changes the firewall, sshd or
 anything else that hardens the host. A role that runs untrusted code says
