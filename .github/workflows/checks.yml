@@ -50,8 +50,12 @@ jobs:
       - name: Install the venv
         run: uv sync --locked
 
+      # Every hook but pytest: the tests run once, below, on the hosts'
+      # python3.
       - name: Run every hook
         uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        env:
+          SKIP: pytest
         with:
           # renovate: datasource=pypi depName=prek
           prek-version: "0.5.10"
