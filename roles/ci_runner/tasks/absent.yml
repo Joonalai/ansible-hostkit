@@ -1,0 +1,154 @@
+---
+# Takes CI off this host and out of GitHub, and then checks that nothing of
+# it is left: the variables and runners in GitHub, the dispatcher, the
+# account with its home, images and stores, its limits, its tie to the
+# sandbox, its subordinate IDs and its linger. The sandbox itself is the
+# host's, and the host removes it after this.
+
+- name: Look for the CI account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ci_runner_account }}"
+    fail_key: false
+
+- name: Remember the account's manager and home
+  ansible.builtin.set_fact:
+    ci_runner_user_unit: >-
+      {{ 'user@' ~ ansible_facts.getent_passwd[ci_runner_account][1] ~ '.service'
+         if ansible_facts.getent_passwd[ci_runner_account] is not none else '' }}
+    ci_runner_home: >-
+      {{ ansible_facts.getent_passwd[ci_runner_account][4]
+         if ansible_facts.getent_passwd[ci_runner_account] is not none
+         else '/home/' ~ ci_runner_account }}
+
+- name: Look for the dispatcher
+  ansible.builtin.stat:
+    path: "{{ ci_runner_script }}"
+  register: ci_runner_script_stat
+
+- name: Stop the dispatcher
+  when: not ansible_check_mode
+  ansible.builtin.systemd_service:
+    name: "{{ ci_runner_service }}.service"
+    state: stopped
+    enabled: false
+  register: ci_runner_dispatcher_stopped
+  failed_when:
+    - ci_runner_dispatcher_stopped.failed
+    - "'Could not find the requested service' not in (ci_runner_dispatcher_stopped.msg | default(''))"
+  become: true
+
+# Before anything on the host goes, while the script and its token are here:
+# the repositories' variables, so every job goes back to GitHub's runners,
+# and every runner and its registration. Not in a test container, whose
+# token opens nothing at GitHub.
+- name: Send the repositories' jobs back to GitHub and remove the runners
+  when:
+    - ci_runner_script_stat.stat.exists
+    - not (is_container_environment | default(false) | bool)
+    - not ansible_check_mode
+  ansible.builtin.command:
+    argv: ["{{ ci_runner_script }}", remove]
+  register: ci_runner_removed
+  # The same call again is harmless, and a call over a busy connection can
+  # time out.
+  until: ci_runner_removed.rc == 0
+  retries: 3
+  delay: 15
+  changed_when: true
+  become: true
+
+# Stopping the account's manager ends every unit and container it runs.
+- name: Stop the CI account's manager
+  when:
+    - ci_runner_user_unit | length > 0
+    - not ansible_check_mode
+  ansible.builtin.systemd_service:
+    name: "{{ ci_runner_user_unit }}"
+    state: stopped
+  become: true
+
+- name: Stop keeping the account's manager alive
+  when: ci_runner_user_unit | length > 0
+  ansible.builtin.command:
+    cmd: loginctl disable-linger {{ ci_runner_account }}
+    removes: /var/lib/systemd/linger/{{ ci_runner_account }}
+  become: true
+
+# With its home: the runner image, the slots' stores and caches.
+- name: Remove the CI account
+  ansible.builtin.user:
+    name: "{{ ci_runner_account }}"
+    state: absent
+    remove: true
+    force: true
+  become: true
+
+- name: Remove the account's subordinate IDs
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: "^{{ ci_runner_account | regex_escape }}:"
+    state: absent
+  loop: [/etc/subuid, /etc/subgid]
+  become: true
+
+- name: Remove the account manager's limits and its tie to the sandbox
+  when: ci_runner_user_unit | length > 0
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ ci_runner_user_unit }}.d
+    state: absent
+  become: true
+
+- name: Remove the dispatcher, its unit, token, config and image files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/{{ ci_runner_service }}.service
+    - "{{ ci_runner_script }}"
+    - "{{ ci_runner_dir }}"
+    - "{{ ci_runner_run_dir }}"
+    - "{{ ci_runner_state_dir }}"
+  become: true
+
+- name: Forget the removed units
+  when: not ansible_check_mode
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  become: true
+
+# --- Nothing is left ----------------------------------------------------------
+
+- name: Look for anything left of CI
+  when: not ansible_check_mode
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -u -o pipefail
+      left=""
+      getent passwd {{ ci_runner_account | quote }} >/dev/null && left="$left account"
+      grep -qs {{ ('^' ~ ci_runner_account ~ ':') | quote }} /etc/subuid /etc/subgid && left="$left subordinate-ids"
+      for path in {{ ci_runner_home | quote }} {{ ('/var/lib/systemd/linger/' ~ ci_runner_account) | quote }} \
+          {{ ci_runner_dir | quote }} {{ ci_runner_script | quote }} {{ ci_runner_run_dir | quote }} \
+          {{ ci_runner_state_dir | quote }} \
+          {{ ('/etc/systemd/system/' ~ ci_runner_service ~ '.service') | quote }} \
+          {{ ('/etc/systemd/system/' ~ ci_runner_user_unit ~ '.d') | quote if ci_runner_user_unit else '' }}; do
+        [ -e "$path" ] && left="$left $path"
+      done
+      systemctl list-units --all --no-legend {{ (ci_runner_service ~ '*') | quote }} \
+        | grep -q . && left="$left units"
+      echo "$left"
+  register: ci_runner_left
+  changed_when: false
+  become: true
+
+- name: Assert nothing of CI is left
+  when: not ansible_check_mode
+  ansible.builtin.assert:
+    that: ci_runner_left.stdout | trim | length == 0
+    fail_msg: "Left on {{ inventory_hostname }}: {{ ci_runner_left.stdout | trim }}"
+    success_msg: >-
+      Nothing of CI is left on {{ inventory_hostname }}, and the repositories'
+      jobs run on GitHub's runners. Keep ci_runner_enabled false in the
+      inventory, or a later play puts CI back. The sandbox is the host's to
+      remove now.

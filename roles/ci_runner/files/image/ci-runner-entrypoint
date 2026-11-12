@@ -1,0 +1,73 @@
+#!/bin/bash
+# Starts the job's own Docker engine, then the runner for one job, then tidies
+# the slot's store for the next job. The runner's one-time configuration comes
+# in JIT_CONFIG. It registers this one runner for one job and nothing else.
+set -euo pipefail
+
+: "${JIT_CONFIG:?JIT_CONFIG is not set}"
+jit_config=$JIT_CONFIG
+unset JIT_CONFIG
+
+# shellcheck source=/dev/null
+source /usr/local/bin/ci-runner-dockerd
+
+# What a job left in the slot: its containers, networks, volumes and dangling
+# images. Tagged images and a week of build cache stay, so the next job starts
+# warm, unless the store or the caches grow past their limits.
+tidy() {
+  docker ps --all --quiet | xargs --no-run-if-empty docker rm --force >/dev/null 2>&1 || true
+  docker system prune --force --volumes >/dev/null 2>&1 || true
+  docker builder prune --force --filter until=168h >/dev/null 2>&1 || true
+  if (($(du -s --block-size=1G /var/lib/docker | cut -f1) > ${CI_STORE_MAX_GB:-20})); then
+    docker system prune --all --force --volumes >/dev/null 2>&1 || true
+  fi
+  if (($(du -s --block-size=1G /root/.cache | cut -f1) > ${CI_CACHE_MAX_GB:-10})); then
+    find /root/.cache -mindepth 1 -delete
+  fi
+}
+
+# The jobs' images this store lacks, from the shared image files the play
+# writes once (ci-runner-warm). Seconds for each, where a pull takes minutes.
+load_images() {
+  local image file
+  [[ -r /ci-runner-images/index ]] || return 0
+  while IFS=$'\t' read -r image file; do
+    docker image inspect "$image" >/dev/null 2>&1 && continue
+    if ! docker load --quiet --input "/ci-runner-images/$file" >/dev/null; then
+      echo "Could not load $image, the job pulls it" >&2
+      continue
+    fi
+    # The file is named by the image's ID. Anything else is not the image.
+    if [[ $(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null) != "sha256:${file%.tar}" ]]; then
+      echo "$file does not hold $image, the job pulls it" >&2
+      docker image rm --force "$image" >/dev/null 2>&1 || true
+    fi
+  done </ci-runner-images/index
+}
+
+# A job killed before it finished left its containers, and one with a restart
+# policy would come back with this dockerd.
+tidy
+load_images
+
+runner_pid=
+on_term() {
+  [[ -n $runner_pid ]] && kill -TERM "$runner_pid" 2>/dev/null || true
+}
+# As PID 1 this shell hears the stop signal only through a trap.
+trap on_term TERM INT
+
+/home/runner/run.sh --jitconfig "$jit_config" &
+runner_pid=$!
+unset jit_config
+# wait returns early, with 128 and the signal, when a trapped signal arrives.
+# Wait until the runner has really ended, then take its own exit status.
+while kill -0 "$runner_pid" 2>/dev/null; do
+  wait "$runner_pid" || true
+done
+status=0
+wait "$runner_pid" 2>/dev/null || status=$?
+
+tidy
+stop_dockerd
+exit "$status"

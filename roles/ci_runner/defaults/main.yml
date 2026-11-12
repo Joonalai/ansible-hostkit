@@ -1,0 +1,84 @@
+---
+# CI of private GitHub repositories on this host. A root service starts an
+# ephemeral runner in an account of its own for each job queued for the
+# runners' label, and stops serving a repository that turns public.
+
+# false takes CI off this host whole, and out of the repositories' settings
+# in GitHub (tasks/absent.yml).
+ci_runner_enabled: true
+
+# What everything the role puts on the host is named after: the dispatcher
+# (<name>-dispatcher), its directories (/etc/<name>, /run/<name>,
+# /var/lib/<name>), the runners' units, containers, volumes and labels. Do
+# not change it under a running dispatcher: take CI off first.
+ci_runner_name: ci-runner
+
+# The account the runners run as, made by rootless_account. Its uid is the
+# system's choice when empty. The subordinate range is pinned, since the
+# host's sandbox may name it: ci_runner_subuid_start has no default, and the
+# count must be at least 65536, since the images the jobs pull own files as
+# nobody (65534).
+ci_runner_account: "{{ ci_runner_name }}"
+ci_runner_account_uid: ""
+ci_runner_subuid_start: ""
+ci_runner_subuid_count: 65536
+# Limits on everything the account runs, as systemd writes them ("8G",
+# "400%"). Empty for none.
+ci_runner_memory_max: ""
+ci_runner_memory_swap_max: ""
+ci_runner_cpu_quota: ""
+
+# The sandbox is the host's own (README, "What the host must provide"). The
+# unit that holds the account off the host's services and networks, by its
+# full name ("ci-sandbox.service"). The account's manager and the dispatcher
+# require it, so neither runs without it. No default: the role refuses to
+# run until the host names one.
+ci_runner_sandbox_unit: ""
+# A command of the host's that exits 0 only while the sandbox's rules are in
+# place, as a list of arguments. The dispatcher runs it as root before it
+# starts runners. Rules can be flushed while their unit still reads active,
+# and only the host knows how to look at them. Empty checks the unit alone.
+ci_runner_sandbox_check: []
+
+# The repositories served ("owner/name"), and the label their jobs ask for.
+# A job of a pull request asks for the label with "-pr" added.
+ci_runner_repos: []
+ci_runner_label: "{{ ci_runner_name }}"
+# The repository variable that sends a workflow's jobs here. The dispatcher
+# sets it in every private repository and removes it from one that turns
+# public, and taking CI off removes it from all.
+ci_runner_variable: CI_RUNNER
+
+# How many jobs run at once, 1 to 8. Each slot keeps a Docker store and tool
+# caches of its own between jobs, so a job starts warm, one set for the jobs
+# of pull requests and one for the rest, so a pull request leaves nothing
+# that the default branch's jobs then trust. The two pools share the slots.
+ci_runner_slots: 2
+# A job runs at most this long.
+ci_runner_job_max_seconds: 3600
+# Environment every job gets. It shows in the runner's argument list, so
+# never a secret. A runner sees every CPU of the host and not the account's
+# share, so a tool that starts a worker per CPU wants its count set here,
+# such as PYTEST_XDIST_AUTO_NUM_WORKERS.
+ci_runner_job_env: {}
+ci_runner_poll_seconds: 20
+
+# The token that registers runners: fine-grained, only the repositories
+# above, Administration read and write (runners), Actions read (queued
+# jobs), Variables read and write (the variable above), Metadata read.
+# Root's alone, never in the CI account. Where it comes from is the
+# consumer's business.
+ci_runner_github_token: ""
+
+# The runner image, built on the host as the CI account from
+# templates/Containerfile.j2.
+ci_runner_image: localhost/{{ ci_runner_name }}-runner:latest
+# Containerfile lines added to the image, run as root in the build: what
+# this host's jobs need installed, such as a browser. Pin what it downloads
+# by checksum or digest, as the image's own lines do.
+ci_runner_image_extra: ""
+
+# The images the jobs use, pinned by digest. Pulled once and written as
+# files that each slot loads before a job, so a slot never downloads them
+# itself. Only a warm-up: a stale entry costs one pull in a job.
+ci_runner_warm_images: []

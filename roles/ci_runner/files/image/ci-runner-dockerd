@@ -1,0 +1,30 @@
+# Sourced by the entrypoints: starts dockerd on the slot's store and waits for
+# it. stop_dockerd stops it cleanly, so the store is never left half written.
+
+# cgroup v2 lets a cgroup hold processes or hand controllers to its children,
+# not both. Move this container's processes into a leaf of their own and hand
+# every controller down, so the containers dockerd starts can have limits. The
+# same as Docker's own dind entrypoint.
+if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
+  mkdir -p /sys/fs/cgroup/init
+  xargs -rn1 </sys/fs/cgroup/cgroup.procs >/sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
+  sed -e 's/ / +/g' -e 's/^/+/' </sys/fs/cgroup/cgroup.controllers \
+    >/sys/fs/cgroup/cgroup.subtree_control
+fi
+
+dockerd --data-root /var/lib/docker >/var/log/dockerd.log 2>&1 &
+dockerd_pid=$!
+for _ in $(seq 300); do
+  docker info >/dev/null 2>&1 && break
+  sleep 0.1
+done
+if ! docker info >/dev/null 2>&1; then
+  echo "dockerd did not start:" >&2
+  cat /var/log/dockerd.log >&2
+  exit 1
+fi
+
+stop_dockerd() {
+  kill "$dockerd_pid" 2>/dev/null || true
+  wait "$dockerd_pid" 2>/dev/null || true
+}

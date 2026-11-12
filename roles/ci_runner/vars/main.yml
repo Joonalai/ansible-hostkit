@@ -1,0 +1,20 @@
+---
+# Where the role puts things, all from ci_runner_name. Not for the inventory
+# to change one by one: the dispatcher finds its config by the name it is
+# installed under.
+ci_runner_dir: /etc/{{ ci_runner_name }}
+ci_runner_token_file: "{{ ci_runner_dir }}/github-token"
+ci_runner_config: "{{ ci_runner_dir }}/dispatcher.json"
+# While this file exists the dispatcher starts no runner, after a reboot or
+# a play too ("<name>-dispatcher pause").
+ci_runner_pause_file: "{{ ci_runner_dir }}/paused"
+ci_runner_script: /usr/local/sbin/{{ ci_runner_name }}-dispatcher
+ci_runner_service: "{{ ci_runner_name }}-dispatcher"
+# The runners' one-time configurations, the service's RuntimeDirectory.
+ci_runner_run_dir: /run/{{ ci_runner_name }}
+# The jobs' images as files. The warming writes them as the account to the
+# staging directory, and the dispatcher copies them to root's directory,
+# which every runner mounts: a runner can remount its read-only mount
+# writable, and root's files are still read only to it.
+ci_runner_state_dir: /var/lib/{{ ci_runner_name }}
+ci_runner_images_dir: "{{ ci_runner_state_dir }}/images"

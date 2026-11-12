@@ -1,0 +1,65 @@
+# {{ ansible_managed }}
+# The image each CI runner starts from, built on the host by the ci_runner
+# role, as the CI account. GitHub's own runner image, whose Docker engine
+# starts inside the container, so every job has an engine of its own: its compose projects,
+# networks and published ports on localhost are the job's alone, and nothing
+# it starts outlives the runner's container. A real dockerd, not Podman's
+# socket, because Podman runs health checks from systemd timers and a container
+# has no systemd: "compose up --wait" would wait forever.
+FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
+
+USER root
+
+# What GitHub's hosted runner has and jobs commonly use: python3 (scripts and
+# Python hooks), xz and libatomic for a Node that a tool downloads, iptables
+# for dockerd's networks and unzip.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        iptables ca-certificates unzip xz-utils python3 python3-venv libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The GitHub CLI, which steps call as on the hosted runners.
+ADD --checksum=sha256:4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d \
+    https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.tar.gz \
+    /tmp/gh.tar.gz
+RUN tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && install -m 0755 /tmp/gh_2.103.3_linux_amd64/bin/gh /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz /tmp/gh_2.103.3_linux_amd64
+
+# docker compose, as on GitHub's hosted runners. Pinned by the checksum its
+# release publishes.
+ADD --checksum=sha256:47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0 \
+    https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64 \
+    /usr/local/lib/docker/cli-plugins/docker-compose
+RUN chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+{% if ci_runner_image_extra | trim | length > 0 %}
+
+# What this host's jobs need on top, from the consumer's inventory.
+{{ ci_runner_image_extra | trim }}
+{% endif %}
+
+COPY ci-runner-entrypoint ci-runner-warm ci-runner-dockerd /usr/local/bin/
+
+# Every cache under /root/.cache, which is the slot's volume. Nothing else of
+# /root lasts from one job to the next, so no dotfile a job writes reaches
+# another.
+ENV UV_CACHE_DIR=/root/.cache/uv \
+    UV_PYTHON_INSTALL_DIR=/root/.cache/uv-python \
+    UV_TOOL_DIR=/root/.cache/uv-tools \
+    BUN_INSTALL_CACHE_DIR=/root/.cache/bun-install \
+    npm_config_cache=/root/.cache/npm \
+    PREK_HOME=/root/.cache/prek \
+    XDG_CACHE_HOME=/root/.cache
+
+# The workspace is under /home/runner, as on GitHub's runners, and actions
+# expect HOME above it: gitleaks-action refuses to upload its report from
+# outside HOME.
+ENV HOME=/home/runner
+
+# Root in this container is the CI account on the host, nothing more.
+# Root here keeps the files of the job and of the containers it starts under
+# one owner, and lets a job install packages with apt.
+ENV RUNNER_ALLOW_RUNASROOT=1
+
+WORKDIR /home/runner
+ENTRYPOINT ["/usr/local/bin/ci-runner-entrypoint"]
