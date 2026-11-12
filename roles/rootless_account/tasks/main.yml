@@ -7,6 +7,50 @@
     fail_msg: rootless_account wants rootless_account_user and rootless_account_subuid_start.
     quiet: true
 
+# The sandbox is the host's: this role only checks that its units are
+# there and up, before it makes the account or runs anything as it, so a
+# typo, a host without them or one whose sandbox is down fails here rather
+# than leaving the account running unconfined. A name goes into the
+# manager's unit as it is.
+- name: Assert the units that sandbox {{ rootless_account_user }} are unit names
+  ansible.builtin.assert:
+    that:
+      - rootless_account_sandbox_units is not string
+      - rootless_account_sandbox_units | reject('match', '^[A-Za-z0-9:_.@\\-]+\.[a-z]+$') | list | length == 0
+    fail_msg: rootless_account_sandbox_units is a list of unit names, each with its suffix, such as sandbox.service.
+    quiet: true
+
+- name: Look for the units that sandbox {{ rootless_account_user }}
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=LoadState, --property=ActiveState, --, "{{ item }}"]
+  loop: "{{ rootless_account_sandbox_units }}"
+  register: rootless_account_sandbox_lookup
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Not in a dry run: a first one of a play that installs the sandbox and the
+# account together has no unit yet.
+- name: Assert the units that sandbox {{ rootless_account_user }} are loaded and active
+  when:
+    - rootless_account_sandbox_units | length > 0
+    - not ansible_check_mode
+  ansible.builtin.assert:
+    that: rootless_account_sandbox_down | length == 0
+    fail_msg: >-
+      {{ rootless_account_user }} is to run only inside
+      {{ rootless_account_sandbox_units | join(', ') }}, and on this host
+      {{ rootless_account_sandbox_down | join(', ') }} is not loaded and
+      active. The host's own hardening provides them; this collection never
+      changes the firewall.
+    quiet: true
+  vars:
+    rootless_account_sandbox_down: >-
+      {{ rootless_account_sandbox_lookup.results
+         | rejectattr('stdout_lines', 'superset', ['LoadState=loaded', 'ActiveState=active'])
+         | map(attribute='item') | list }}
+
 - name: Install podman for {{ rootless_account_user }}
   when: install_dependencies | default(true) | bool
   ansible.builtin.apt:
@@ -140,7 +184,9 @@
 
 # A system unit's drop-in, since the account's manager cannot limit itself.
 - name: Create the drop-in directory for {{ rootless_account_user }}'s manager
-  when: (rootless_account_memory_max ~ rootless_account_memory_swap_max ~ rootless_account_cpu_quota) | length > 0
+  when: >-
+    (rootless_account_memory_max ~ rootless_account_memory_swap_max ~ rootless_account_cpu_quota
+     ~ rootless_account_sandbox_units | join) | length > 0
   ansible.builtin.file:
     path: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d"
     state: directory
@@ -161,7 +207,7 @@
       {% endif %}
     dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/memory.conf"
     mode: "0644"
-  notify: Apply the limits for rootless_account
+  notify: Reload systemd for rootless_account
   become: true
 
 - name: Bound the CPU time of everything {{ rootless_account_user }} runs
@@ -173,7 +219,30 @@
       CPUQuota={{ rootless_account_cpu_quota }}
     dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/cpu.conf"
     mode: "0644"
-  notify: Apply the limits for rootless_account
+  notify: Reload systemd for rootless_account
+  become: true
+
+# Requires= stops the manager, and everything the account runs, when a
+# sandbox unit stops, and keeps it from starting without them.
+- name: Tie {{ rootless_account_user }}'s manager to its sandbox
+  when: rootless_account_sandbox_units | length > 0
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. {{ rootless_account_user }} runs only inside its sandbox.
+      [Unit]
+      Requires={{ rootless_account_sandbox_units | join(' ') }}
+      After={{ rootless_account_sandbox_units | join(' ') }}
+    dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/sandbox.conf"
+    mode: "0644"
+  notify: Reload systemd for rootless_account
+  become: true
+
+- name: Untie {{ rootless_account_user }}'s manager from a sandbox it no longer has
+  when: rootless_account_sandbox_units | length == 0
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/sandbox.conf"
+    state: absent
+  notify: Reload systemd for rootless_account
   become: true
 
 # Before the including role builds anything on the range, and while the

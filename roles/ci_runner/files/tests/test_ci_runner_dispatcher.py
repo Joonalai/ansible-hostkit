@@ -359,6 +359,30 @@ def test_without_the_sandbox_nothing_starts(config: dict[str, Any], monkeypatch:
     assert account.started == []
 
 
+def test_without_the_sandbox_the_running_runners_are_stopped(
+    config: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(dispatcher, "sandbox_held", lambda config: False)
+    busy = runner("ci-runner-app-main-1")
+    github = FakeGitHub(registered={APP: [{"id": 1, "name": busy.name, "busy": True, "status": "online"}]})
+    account = FakeAccount([busy])
+    poll(config, github, account)
+    assert account.stopped == [busy.container]
+    (tmp_path / "paused").touch()
+    account = FakeAccount([busy])
+    poll(config, github, account)
+    assert account.stopped == [busy.container]
+
+
+def test_paused_leaves_the_running_runners_alone(config: dict[str, Any], tmp_path: Path) -> None:
+    (tmp_path / "paused").touch()
+    busy = runner("ci-runner-app-main-1")
+    github = FakeGitHub(registered={APP: [{"id": 1, "name": busy.name, "busy": True, "status": "online"}]})
+    account = FakeAccount([busy])
+    poll(config, github, account)
+    assert account.stopped == []
+
+
 def test_visibility_other_than_private_true_is_public(monkeypatch: pytest.MonkeyPatch) -> None:
     github = dispatcher.GitHub("t")
     for answer, expected in [({"private": True}, True), ({"private": False}, False), ({}, False),

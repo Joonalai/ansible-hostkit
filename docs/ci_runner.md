@@ -61,8 +61,10 @@ flowchart LR
 flowchart TD
     D[Dispatcher<br/>root, every 20 s] --> V{Repository private?}
     V -->|no| X[Stop its runners,<br/>remove their registrations]
-    V -->|yes| P{Paused, or sandbox<br/>not held?}
-    P -->|yes| N[Start nothing]
+    V -->|yes| H{Sandbox held?}
+    H -->|no| K[Start nothing,<br/>stop the running runners]
+    H -->|yes| P{Paused?}
+    P -->|yes| N[Start nothing,<br/>running jobs finish]
     P -->|no| Q[Jobs queued per pool,<br/>less runners waiting]
     Q --> S{Free slot?}
     S -->|yes| J[One-time runner config<br/>into a file only the account reads]
@@ -118,7 +120,8 @@ Two traps for whoever writes those rules:
   off its networks.
 - A firewall's rules can be flushed while their unit still reads active.
   Give `ci_runner_sandbox_check` a command that exits 0 only while the
-  rules are in the kernel. The dispatcher runs it before it starts runners.
+  rules are in the kernel. The dispatcher runs it on every poll: while it
+  fails no runner starts, and the running ones are stopped.
 
 A restart of the sandbox unit stops every job, since the account's manager
 requires it. A host that changes its rules reloads the unit instead.

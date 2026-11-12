@@ -5,13 +5,16 @@ Notes for working on this role. The repository's rules are in the root
 
 **The sandbox is the host's, and the role fails closed without it.** The
 role writes no firewall rule. It takes `ci_runner_sandbox_unit`, asserts the
-unit is loaded and active before it makes the account, ties the account's
-`user@<uid>.service` and the dispatcher to it with `Requires=`, and the
+unit is loaded and active before it makes the account, has
+`rootless_account` tie the account's `user@<uid>.service` to it with
+`Requires=`, ties the dispatcher to it the same way, and the
 dispatcher asks `systemctl is-active` before every round of starts. A
 firewall's rules can be flushed while their unit still reads active, so the
 host may add `ci_runner_sandbox_check`, a command of its own that looks at
-the rules. The dispatcher runs it as root, and anything but exit 0, a
-missing command or a timeout included, starts nothing. What the sandbox
+the rules. The dispatcher runs it as root on every poll, and anything but
+exit 0, a missing command or a timeout included, starts nothing and stops
+every runner that is running: a check that fails now and then costs jobs,
+so the host's command should be quick and sure. What the sandbox
 must hold is in [docs/ci_runner.md](../../docs/ci_runner.md).
 
 **A restart of the sandbox unit stops every job,** since the account's

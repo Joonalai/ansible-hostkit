@@ -1,7 +1,0 @@
-# {{ ansible_managed }}
-# The CI account's manager, and so every runner, never runs without the unit
-# of this host that keeps the account off its services and networks. Stopping
-# that unit stops the account.
-[Unit]
-Requires={{ ci_runner_sandbox_unit }}
-After={{ ci_runner_sandbox_unit }}

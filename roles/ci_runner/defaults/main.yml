@@ -35,8 +35,8 @@ ci_runner_cpu_quota: ""
 # run until the host names one.
 ci_runner_sandbox_unit: ""
 # A command of the host's that exits 0 only while the sandbox's rules are in
-# place, as a list of arguments. The dispatcher runs it as root before it
-# starts runners. Rules can be flushed while their unit still reads active,
+# place, as a list of arguments. The dispatcher runs it as root on every
+# poll, and while it fails starts no runner and stops the running ones. Rules can be flushed while their unit still reads active,
 # and only the host knows how to look at them. Empty checks the unit alone.
 ci_runner_sandbox_check: []
 

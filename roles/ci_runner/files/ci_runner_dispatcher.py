@@ -8,7 +8,7 @@ Runs as root from its service. Each poll:
    its label. This pass comes before anything starts.
 2. Nothing starts while CI is paused, or while the host's sandbox for the CI
    account is not held: its unit is not active, or the host's own check of
-   it fails.
+   it fails. Without the sandbox the running runners are stopped too.
 3. For each private repository and each pool, the jobs queued for the pool's
    label are counted, less the runners of that repository and pool that are
    up and not yet busy, and a runner is started for each one left while a
@@ -766,10 +766,13 @@ class Dispatcher:
                 log(f"{repo}: {error}")
         self.github_forget_unused()
 
-        if self.pause_file.exists():
-            return
+        # Before the pause: a paused dispatcher lets running jobs finish, and
+        # none may go on outside the sandbox.
         if not sandbox_held(self.config):
             log("The host's sandbox for the CI account is not held. No runner starts until it is.")
+            self.stop_unheld(running)
+            return
+        if self.pause_file.exists():
             return
         self.allocate(wanted, running, now)
         self.warn_token(now)
@@ -895,6 +898,17 @@ class Dispatcher:
             if now - runner.started > limit:
                 self.account.stop(runner.container)
                 log(f"{runner.repo}: stopped {runner.name}, over {limit}")
+
+    def stop_unheld(self, running: list[Runner]) -> None:
+        """Every runner, when the sandbox is not held: a job that is running
+        is unreviewed code too, and the host's check failing says its packets
+        may no longer be filtered. A unit that stops takes the account's
+        manager with it, but rules flushed under a unit that still reads
+        active take nothing down by themselves.
+        """
+        for runner in running:
+            self.account.stop(runner.container)
+            log(f"{runner.repo}: stopped {runner.name}, the sandbox is not held")
 
     def clean_env_files(self, now: datetime) -> None:
         """Remove the runners' config files once their containers have read
