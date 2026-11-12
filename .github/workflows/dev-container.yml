@@ -1,0 +1,87 @@
+# The roles applied to the dev container (compose.yml, dev/), as `make
+# converge` does on a workstation: one job per play, each on a fresh
+# container, then a second run that must change nothing. The executor's job
+# also brings a stack up and down through it (`make smoke`).
+#
+# The container is privileged under the runner user's rootless podman, so
+# it holds no more than that user does; the plays hold no token and start
+# nothing that would need one. A fork's pull request runs this too, with a
+# read-only token and no secrets, as checks.yml does.
+name: Dev container
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: dev-container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  converge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        play: [executor, ci_runner, github_runner, workbench]
+    env:
+      # docker compose, the runner's own, against podman's API, so the
+      # container is the runner user's rootless podman's, which the plays
+      # reach with `podman exec`.
+      COMPOSE: docker compose
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # renovate: datasource=github-releases depName=astral-sh/uv
+          version: "0.13.6"
+          enable-cache: false
+
+      - name: Install the venv
+        run: uv sync --locked
+
+      - name: Start podman's API for the runner user
+        run: |
+          systemctl --user start podman.socket
+          echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock" >> "${GITHUB_ENV}"
+
+      - name: Start the dev container
+        run: make dev-up
+
+      # A first dry run on a fresh host, before the accounts exist, must
+      # get through without failing.
+      - name: Dry-run the play on the fresh container
+        env:
+          TAGS: ${{ matrix.play }}
+        run: make dry-run
+
+      - name: Apply the play
+        env:
+          TAGS: ${{ matrix.play }}
+        run: make converge
+
+      - name: Apply it again, changing nothing
+        env:
+          TAGS: ${{ matrix.play }}
+        run: make idempotence
+
+      - name: Bring a stack up and down on the executor
+        if: ${{ matrix.play == 'executor' }}
+        run: make smoke
+
+      - name: Show the container's failed units
+        if: ${{ failure() }}
+        run: |
+          podman exec hostkit-dev systemctl --failed --no-pager || true
+          podman exec hostkit-dev journalctl -p warning -n 200 --no-pager || true

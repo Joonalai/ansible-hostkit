@@ -18,6 +18,12 @@ FROM docker.io/library/debian:trixie-slim
 # layer below, which is how Debian's security updates reach the image at all.
 ARG REFRESH
 
+# apt drops to _apt and nogroup for downloads, and nogroup's 65534 is no
+# ID at all where coder's range is short, as on the dev container:
+# "setgroups ... Invalid argument". Only the build runs apt; a job has no
+# root to.
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99runner
+
 # The runner's own libraries (ICU, Kerberos, zlib, LTTng), what every job
 # here needs (git and gh for Claude's commits and PRs, curl and unzip for
 # the setup actions that download toolchains, docker, docker-compose and

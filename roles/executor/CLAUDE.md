@@ -66,3 +66,8 @@ consumer is [docs/executor.md](../../docs/executor.md).
   reaper wait for it. A
   stack left `starting` past `STARTING_MAX_S`, two hours, is a front that
   died, and the reaper treats it as stopped.
+- **The dev container proves the whole chain** (`make converge TAGS=executor`, then `make smoke`): the accounts, the units, a caller, a
+  bundle, a stack answering on its port, a suite, a refused privileged
+  profile and a down. Its subordinate ranges are too short for an image
+  that owns files as nobody (65534), such as busybox's `/home`, so the smoke
+  test uses alpine.

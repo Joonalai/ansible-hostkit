@@ -1,0 +1,26 @@
+---
+# The dev container (compose.yml), reached through podman rather than ssh.
+# Every value here is made up for it and opens nothing.
+all:
+  hosts:
+    hostkit-dev:
+      ansible_connection: containers.podman.podman
+      ansible_host: hostkit-dev
+      ansible_python_interpreter: /usr/bin/python3
+  vars:
+    is_container_environment: true
+    # Stands in for the host's own hardening (site.yml): it fences nothing,
+    # it only lets the roles' asserts and Requires= hold.
+    dev_sandbox_unit: hostkit-dev-sandbox.service
+    # Rootless podman on the workstation maps 65536 IDs into the container,
+    # so every subordinate range has to fit below 65536, which no real host
+    # would do. The accounts split it, and leave the uids below 10000 to the
+    # container's own users.
+    ci_runner_subuid_start: 10000
+    ci_runner_subuid_count: 1500
+    github_runner_subuid_start: 12000
+    github_runner_subuid_count: 16000
+    workbench_subuid_start: 28000
+    workbench_subuid_count: 16000
+    dev_exec_subuid_start: 44000
+    dev_exec_subuid_count: 20000

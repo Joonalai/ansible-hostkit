@@ -1,0 +1,114 @@
+---
+# Every role on the dev container, as a consumer would apply them, with
+# what a test container cannot do turned off: no token, no App, no login.
+# `make converge TAGS=executor` runs one role's play (Makefile).
+
+- name: Stand in for the host's hardening
+  hosts: all
+  tags: [always]
+  tasks:
+    # Even in a dry run: it stands in for what the host has before any of
+    # these roles runs.
+    - name: Install a sandbox unit that fences nothing
+      check_mode: false
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ dev_sandbox_unit }}"
+        content: |
+          # The dev container's stand-in for the host's sandbox: the roles
+          # require one, and a real host's firewall rules sit behind it.
+          # This one holds nothing off.
+          [Unit]
+          Description=Stand-in for the host's sandbox, fencing nothing
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/true
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: Start the sandbox unit
+      check_mode: false
+      ansible.builtin.systemd_service:
+        name: "{{ dev_sandbox_unit }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+      become: true
+
+- name: The executor
+  hosts: all
+  tags: [executor, github_runner, workbench]
+  roles:
+    - role: joonalai.hostkit.executor
+      vars:
+        executor_instances:
+          - name: stacks
+            exec_uid: 2101
+            exec_subuid_start: "{{ dev_exec_subuid_start }}"
+            exec_subuid_count: "{{ dev_exec_subuid_count }}"
+            sandbox_units: ["{{ dev_sandbox_unit }}"]
+            ports_start: 9300
+            ports_end: 9339
+            host: hostkit-dev.example.ts.net
+            memory_max: 2G
+            disk_max_gb: 5
+
+- name: The CI runner
+  hosts: all
+  tags: [ci_runner]
+  roles:
+    - role: joonalai.hostkit.ci_runner
+      vars:
+        ci_runner_account_uid: 2201
+        ci_runner_sandbox_unit: "{{ dev_sandbox_unit }}"
+        ci_runner_repos: [example/app]
+        # Made up, and opens nothing: the dev container never starts the
+        # dispatcher (is_container_environment), which is what would use it.
+        ci_runner_github_token: dev-container-opens-nothing
+
+- name: The GitHub runner
+  hosts: all
+  tags: [github_runner]
+  roles:
+    - role: joonalai.hostkit.github_runner
+      vars:
+        github_runner_uid: 2001
+        github_runner_sandbox_units: ["{{ dev_sandbox_unit }}"]
+        github_runner_start: false
+        github_runner_runners: 1
+        github_runner_repos:
+          - name: app
+            repo: example/app
+            port_base: 9100
+            executor: stacks
+
+- name: The workbench
+  hosts: all
+  tags: [workbench]
+  vars:
+    claude_code_user: bench
+    claude_code_uid: 2002
+    claude_code_update_restarts: ""
+    claude_code_settings: "{{ workbench_claude_settings }}"
+    claude_code_login_required: false
+  roles:
+    - role: joonalai.hostkit.claude_code
+    - role: joonalai.hostkit.workbench
+      vars:
+        workbench_uid: 2002
+        workbench_sandbox_units: ["{{ dev_sandbox_unit }}"]
+        workbench_git_name: Example User
+        workbench_git_email: 1234567+example@users.noreply.github.com
+        workbench_tokens_required: false
+        workbench_repositories:
+          - name: app
+            repo: example/app
+            executor: stacks
+          - name: lib
+            repo: example/lib

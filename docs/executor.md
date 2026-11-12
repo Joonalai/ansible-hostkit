@@ -219,4 +219,5 @@ sudo -iu stacks-exec podman ps
 ```
 
 A person can be a caller too, with the `stack` command from
-`tasks_from: client` and a registration from `tasks_from: callers`.
+`tasks_from: client` and a registration from `tasks_from: callers`, as
+`dev/smoke.yml` does in the dev container.

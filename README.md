@@ -44,6 +44,20 @@ uv sync --locked
 .venv/bin/prek run --all-files
 ```
 
+The roles are tried on a dev container, a Debian trixie that boots systemd
+and runs nested rootless podman, with every play of `dev/site.yml` and no
+token or login:
+
+```sh
+make dev-up                    # build and start it (compose.yml)
+make converge                  # apply every role; TAGS=executor for one play
+make idempotence               # again, failing if anything changed
+make smoke                     # an executor stack up and down, end to end
+make dev-down                  # or dev-clean, to drop the accounts' homes too
+```
+
+The `Dev container` workflow runs the same on every pull request.
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE). The agent skills vendored under
