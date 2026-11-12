@@ -84,6 +84,10 @@
     rootless_account_memory_max: "{{ ci_runner_memory_max }}"
     rootless_account_memory_swap_max: "{{ ci_runner_memory_swap_max }}"
     rootless_account_cpu_quota: "{{ ci_runner_cpu_quota }}"
+    # The account's manager requires the host's sandbox unit: rootless_account
+    # writes the tie and makes systemd read it before the account runs
+    # anything.
+    rootless_account_sandbox_units: ["{{ ci_runner_sandbox_unit }}"]
 
 - name: Look up the account again
   ansible.builtin.getent:
@@ -97,33 +101,6 @@
     ci_runner_user_unit: user@{{ ansible_facts.getent_passwd[ci_runner_account][1] }}.service
     ci_runner_home: "{{ ansible_facts.getent_passwd[ci_runner_account][4] }}"
     ci_runner_env: "{{ rootless_account_env }}"
-
-- name: Create the drop-in directory for the account's manager
-  ansible.builtin.file:
-    path: /etc/systemd/system/{{ ci_runner_user_unit }}.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  become: true
-
-- name: Tie the account's manager to the sandbox
-  ansible.builtin.template:
-    src: user-requires-sandbox.conf.j2
-    dest: /etc/systemd/system/{{ ci_runner_user_unit }}.d/sandbox.conf
-    owner: root
-    group: root
-    mode: "0644"
-  register: ci_runner_sandbox_tie
-  become: true
-
-- name: Make systemd read the tie before the account runs anything
-  when:
-    - ci_runner_sandbox_tie.changed
-    - not ansible_check_mode
-  ansible.builtin.systemd_service:
-    daemon_reload: true
-  become: true
 
 - name: Create the dispatcher's directory
   ansible.builtin.file:

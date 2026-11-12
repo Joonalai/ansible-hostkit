@@ -1,6 +1,7 @@
 ---
 # An account that runs rootless podman containers from its own systemd
-# manager. Included by the roles that need one, once for each account:
+# manager. Included by the roles that need one, once for each account, so it
+# needs nothing else to have run on a fresh box:
 #
 #   - ansible.builtin.include_role:
 #       name: joonalai.hostkit.rootless_account
@@ -9,22 +10,23 @@
 #       rootless_account_uid: 2001
 #       rootless_account_subuid_start: 165536
 #       rootless_account_subuid_count: 65536
+#       rootless_account_sandbox_units: [sandbox.service]
 #
 # It leaves rootless_account_env, the environment every user-scoped command
 # needs, and rootless_account_runtime_dir as host facts, for the including
 # role to copy into its own names before another account overwrites them;
 # and rootless_account_rebuild_image, the script it builds its image with.
 rootless_account_user: ""
-# Empty lets the system pick. Pin it when the host's hardening names the
-# account by number.
+# Empty lets the system pick. Pin it when the host's firewall names the
+# account by number, which it can before the account exists.
 rootless_account_uid: ""
 rootless_account_home: /home/{{ rootless_account_user }}
-# Pinned rather than left to useradd: the host's sandbox may name the range,
-# and the account's containers run in it.
+# Pinned rather than left to useradd: the account's containers run as these
+# IDs on the host, so the host's sandbox has to hold the range too.
 rootless_account_subuid_start: ""
 rootless_account_subuid_count: 65536
 # False when another role owns the account, its lingering and its login
-# shell.
+# shell, as claude_code does bench.
 rootless_account_create: true
 # The marker of the .profile block, kept as the role that first wrote it
 # named it, so the block is not written twice.
@@ -43,8 +45,18 @@ rootless_account_memory_swap_max: ""
 # ("200%" is two cores). Empty for no limit.
 rootless_account_cpu_quota: ""
 
+# The units that hold this account off what it must not reach, which the
+# host's own hardening provides: this collection never changes the
+# firewall. The account's manager Requires= each of them, so it does not
+# start without them and stops when one stops, and the role fails before
+# it makes the account if one is not loaded and active. Empty for an account that needs no sandbox; a role that runs
+# untrusted code refuses an empty list itself.
+rootless_account_sandbox_units: []
+
 rootless_account_packages: [podman, uidmap, passt, aardvark-dns, catatonit, dbus-user-session, acl]
-# Nested podman in a test container needs the userspace overlay driver.
+# Nested podman in a test container (is_container_environment) needs the
+# userspace overlay driver: the kernel's overlay cannot be mounted on the
+# container's own overlay root.
 rootless_account_container_packages: [fuse-overlayfs]
 rootless_account_storage_driver: overlay
 rootless_account_storage_mount_program: "{{ '/usr/bin/fuse-overlayfs' if is_container_environment | default(false) | bool else '' }}"
