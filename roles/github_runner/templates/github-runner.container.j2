@@ -1,0 +1,114 @@
+# {{ ansible_managed }}
+[Unit]
+Description=GitHub Actions runner {{ item.slot }} for {{ item.repo }}, one job per container
+Wants=network-online.target
+After=network-online.target
+# A registration GitHub refuses, or a network that is down, fails the start;
+# keep trying rather than give up after five.
+StartLimitIntervalSec=0
+
+[Container]
+ContainerName={{ item.unit }}
+Image={{ github_runner_image }}
+# Minted by ExecStartPre below, fresh for every container.
+EnvironmentFile=%t/{{ item.unit }}/jit.env
+# DropCapability= and NoNewPrivileges=, as every hardened service should. Not
+# ReadOnly=: the runner updates itself in place when GitHub retires its
+# version. Nothing it writes outlives the job: the container is removed
+# when it exits, and its work folder, below, emptied.
+DropCapability=all
+NoNewPrivileges=true
+# The runner's uid 1000 is coder on the host, so what a job writes in its
+# work folder is coder's, the podman socket is the job's to use, and the
+# executor knows the slot's key by coder's uid.
+UserNS=keep-id:uid=1000,gid=1000
+# What the slot is for: claude-job-rebase-runner does its two steps only on
+# the rebase runner, which nothing else should take.
+# The bot's name, which the jobs' scripts match comments, labels and marks by.
+Environment=CLAUDE_BOT={{ github_runner_bot }}
+Environment=CLAUDE_RUNNER_KIND={{ 'rebase' if item.rebase else 'work' }}
+{% if not item.rebase %}
+# The account's own podman, for test services that outlive the job. The
+# firewall keeps every container it starts off the box's other ports, as
+# it does this one.
+Volume=%t/podman/podman.sock:/run/podman/podman.sock
+Environment=DOCKER_HOST=unix:///run/podman/podman.sock
+{% if item.executor %}
+# The executor instance's socket and this slot's key for it: `stack` brings
+# the checkout up there as the slot's stack, the preview the user opens.
+Volume={{ github_runner_executor_run_dir }}/{{ item.executor }}/api.sock:/run/stack.sock
+EnvironmentFile={{ github_runner_home }}/claude/{{ item.id }}/stack.env
+{% endif %}
+{% else %}
+# Not on the rebase runner: no socket, no stack, no cache and no keys.
+# Its Claude resolves conflicts with a read-only token, and the socket is
+# everything coder can do, the work runners' running jobs and their tokens
+# among it, which would make the read-only token beside the point.
+{% endif %}
+# The job's work folder, the checkout and its clones, which the registrar
+# names: on the host at the same path, so a compose file's bind mount of
+# the checkout, a dev server's or an ansible container's, reaches what is
+# there. Emptied before each container and after it, below.
+Volume={{ github_runner_home }}/work/{{ item.id }}:{{ github_runner_home }}/work/{{ item.id }}
+Volume={{ github_runner_home }}/claude/{{ item.id }}/CLAUDE.md:/home/runner/.claude/CLAUDE.md:ro
+Volume={{ github_runner_home }}/claude/{{ item.id }}/lead.md:/home/runner/.claude/lead.md:ro
+Volume={{ github_runner_home }}/claude/agents:/home/runner/.claude/agents:ro
+# The slot's own: the team's skills and the ones its repository opted into.
+Volume={{ github_runner_home }}/claude/{{ item.id }}/skills:/home/runner/.claude/skills:ro
+{% if 'gpu-models' in item.skills and not item.rebase %}
+# The GPU model server's address and key, for the gpu-models skill: into the
+# runner's environment, which the job's steps inherit as they do DOCKER_HOST.
+EnvironmentFile={{ github_runner_home }}/claude/{{ item.id }}/gpu-models.env
+{% endif %}
+{% if not item.rebase %}
+# The repository's dependency cache, shared by its slots and nothing else:
+# one repository's job must not plant packages for another's. Not at
+# ~/.cache, which holds Claude Code's own. Copies, not links, since the
+# checkout is on another filesystem.
+Volume={{ github_runner_home }}/cache/{{ item.name }}:/cache
+Environment=UV_CACHE_DIR=/cache/uv UV_LINK_MODE=copy PIP_CACHE_DIR=/cache/pip
+Environment=npm_config_cache=/cache/npm PLAYWRIGHT_BROWSERS_PATH=/cache/ms-playwright
+# prek's hook environments: at ~/.cache/prek every job built them again,
+# and an npm timeout while installing a hook can leave a job with no prek
+# run at all.
+Environment=PREK_HOME=/cache/prek
+{% endif %}
+
+[Service]
+# Everything here, the env file included, is the user's alone.
+UMask=0077
+RuntimeDirectory={{ item.unit }}
+RuntimeDirectoryMode=0700
+# What one job left, its checkout, its tokens in _temp and its markers,
+# must not reach the next, as it did not while the folder was the
+# container's. Under podman unshare, since a container a job started may
+# have written there as one of coder's subordinate uids.
+ExecStartPre=/usr/bin/podman unshare find {{ github_runner_home }}/work/{{ item.id }} -mindepth 1 -delete
+ExecStopPost=/usr/bin/podman unshare find {{ github_runner_home }}/work/{{ item.id }} -mindepth 1 -delete
+{% if item.executor and not item.rebase %}
+# A bind mount of a socket that is not there yet would fail obscurely.
+ExecStartPre=/usr/bin/test -S {{ github_runner_executor_run_dir }}/{{ item.executor }}/api.sock
+{% endif %}
+# A container a job started with --network container:<this one> outlives
+# it, and while it stands neither quadlet's rm nor the next start's
+# --replace can remove this container: the slot looped on "has dependent
+# containers" until one was removed by hand. --depend takes
+# them with it; the job they served is over.
+ExecStopPost=-/usr/bin/podman rm -f -i --depend {{ item.unit }}
+# The registrar holds the App's key; this account can only ask it for a
+# registration, by name. Its error is repeated by this account's shell:
+# journald files a line under the user who wrote it, so the registrar's
+# own would land in the system journal, where `journalctl --user` does not
+# look.
+ExecStartPre=/bin/sh -c '/usr/bin/sudo -n -u {{ github_runner_registrar }} /usr/local/libexec/github-runner-jitconfig register {{ item.name }} {{ item.slot }} > %t/{{ item.unit }}/jit.env 2> %t/{{ item.unit }}/register.err; s=$$?; cat %t/{{ item.unit }}/register.err >&2; exit $$s'
+# The runner exits after its one job, and the next start registers a new one.
+Restart=always
+RestartSec=10
+# Quadlet runs the container in this unit's cgroup, so these bound the job.
+MemoryMax={{ github_runner_memory_max }}
+CPUQuota={{ github_runner_cpu_quota }}
+
+{% if github_runner_start | bool %}
+[Install]
+WantedBy=default.target
+{% endif %}

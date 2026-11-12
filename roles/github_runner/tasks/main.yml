@@ -1,0 +1,840 @@
+---
+- name: Fail early on non-Debian targets
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "This role targets Debian."
+
+# The jobs are unreviewed code, and coder runs them: never without the
+# host's sandbox, which this collection does not provide.
+- name: Refuse to run jobs outside a sandbox
+  ansible.builtin.assert:
+    that: github_runner_sandbox_units | length > 0
+    fail_msg: >-
+      github_runner_sandbox_units is empty. The jobs are unreviewed code: name
+      the units of the host's own hardening that keep {{ github_runner_user }}
+      (uid {{ github_runner_uid }}) and its subordinate range off the host,
+      its LAN and its private network, such as [ufw.service]. This collection
+      never changes the firewall; the host's hardening provides them.
+    quiet: true
+
+# It goes into the jobs' patterns and the runners' unit as it is.
+- name: Assert the bot's name is one
+  ansible.builtin.assert:
+    that: github_runner_bot is match('^[A-Za-z0-9-]+$')
+    fail_msg: github_runner_bot is letters, digits and dashes.
+    quiet: true
+
+# Refuse, rather than install units that can only restart-loop on a 401.
+# Only when there is something to register, so the role installs cleanly
+# before the App exists.
+- name: Refuse to register runners without the App
+  when:
+    - github_runner_start | bool
+    - github_runner_repos | length > 0
+    - github_runner_app_id | string | length == 0 or github_runner_app_private_key | length == 0
+  ansible.builtin.fail:
+    msg: |-
+      github_runner_repos names {{ github_runner_repos | map(attribute='repo') | join(', ') }},
+      but github_runner_app_id or github_runner_app_private_key is empty, so
+      nothing could register a runner for them. Make a GitHub App with
+      Repository permissions > Administration: Read and write and nothing
+      else, no webhook, install it on those repositories only, and generate
+      a private key. Then put the ID beside github_runner_repos and the key
+      in the inventory's vault, for example:
+
+          ansible-vault encrypt_string --name github_runner_app_private_key "$(cat key.pem)"
+
+      The role's CLAUDE.md has the rest.
+
+# The skills a repository may opt into, each a files/repo_skills/<name>/SKILL.md.
+# filetree rather than fileglob, which takes no wildcard in a directory.
+- name: List the skills a repository may opt into
+  ansible.builtin.set_fact:
+    github_runner_repo_skills: >-
+      {{ lookup('community.general.filetree', role_path ~ '/files/repo_skills', wantlist=True)
+         | selectattr('state', 'equalto', 'file') | map(attribute='path')
+         | select('match', '^[^/]+/SKILL[.]md$') | map('dirname') | list }}
+
+# "agents" and "skills" are the team's directories beside the repositories' own.
+- name: Assert every repository has a usable name, a repository and runners
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z0-9][a-z0-9-]*$')
+      - item.name not in ['agents', 'skills']
+      - item.repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
+      - item.port_base is defined
+      - item.runners | default(github_runner_runners) | int in range(1, 10)
+      - item.executor | default('') is match('^([a-z][a-z0-9]{0,15})?$')
+      - item.rebase_runner | default(false) is boolean
+      - item.instructions | default('') is string
+      - item.skills | default([]) is not string
+      - item.skills | default([]) | difference(github_runner_repo_skills) | length == 0
+    fail_msg: >-
+      {{ item }}: a repository wants a name of lowercase letters, digits and
+      dashes other than "agents", which becomes its units' names, a
+      repository as owner/name, a port_base, 1 to 9 runners, an executor
+      instance's name, if any, instructions, if any, as one string, and
+      skills, if any, as a list from {{ github_runner_repo_skills }}.
+    quiet: true
+  loop: "{{ github_runner_repos }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+# One entry per unit: which repository, which slot, and the slot's ports.
+- name: Lay out the runner slots and their ports
+  ansible.builtin.set_fact:
+    github_runner_slots: >-
+      {%- set slots = [] -%}
+      {%- for repo in github_runner_repos -%}
+      {%- set runners = repo.runners | default(github_runner_runners) | int -%}
+      {%- for slot in range(1, runners + (1 if repo.rebase_runner | default(false) else 0) + 1) -%}
+      {%- set first = repo.port_base | int + (slot - 1) * github_runner_ports_per_runner | int -%}
+      {%- set _ = slots.append({'id': repo.name ~ '-' ~ slot, 'name': repo.name, 'repo': repo.repo, 'slot': slot,
+                               'rebase': slot > runners,
+                               'unit': 'github-runner-' ~ repo.name ~ '-' ~ slot, 'instructions': repo.instructions | default(''),
+                               'skills': repo.skills | default([]),
+                               'executor': '' if slot > runners else repo.executor | default(''),
+                               'port_first': first, 'port_last': first + github_runner_ports_per_runner | int - 1}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{- slots -}}
+
+- name: Assert the slots' ports lie in the preview range and overlap nowhere
+  vars:
+    github_runner_all_ports: >-
+      {{ github_runner_slots | map(attribute='port_first')
+         | product(range(github_runner_ports_per_runner | int)) | map('sum') | list }}
+  ansible.builtin.assert:
+    that:
+      - github_runner_all_ports | length == 0 or github_runner_all_ports | min >= github_runner_preview_ports_start | int
+      - github_runner_all_ports | length == 0 or github_runner_all_ports | max <= github_runner_preview_ports_end | int
+      - github_runner_all_ports | unique | length == github_runner_all_ports | length
+      - >-
+        github_runner_all_ports | length == 0
+        or github_runner_all_ports | max < workbench_preview_ports_start | default(github_runner_preview_ports_end | int + 1) | int
+    fail_msg: >-
+      Each repository takes runners * {{ github_runner_ports_per_runner }}
+      ports from its port_base, and together they must fit in
+      {{ github_runner_preview_ports_start }}-{{ github_runner_preview_ports_end }}
+      without sharing one, and end below the workbench's previews at
+      {{ workbench_preview_ports_start | default('none') }}. As configured:
+      {{ github_runner_slots | map(attribute='id') | zip(github_runner_slots | map(attribute='port_first'),
+         github_runner_slots | map(attribute='port_last')) | map('join', ' ') | join(', ') }}.
+
+# ---------------------------------------------------------------------
+# Packages
+# ---------------------------------------------------------------------
+
+# podman itself comes with the account, from rootless_account.
+- name: Install what reaching the registrar needs
+  when: install_dependencies | default(true) | bool
+  ansible.builtin.apt:
+    name: "{{ github_runner_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+# ---------------------------------------------------------------------
+# The registrar: the only account that can read the App's key
+# ---------------------------------------------------------------------
+
+- name: Create the registrar account
+  ansible.builtin.user:
+    name: "{{ github_runner_registrar }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: /nonexistent
+  become: true
+
+- name: Create the registrar's config directory
+  ansible.builtin.file:
+    path: /etc/github-runner
+    state: directory
+    owner: root
+    group: "{{ github_runner_registrar }}"
+    mode: "0750"
+  become: true
+
+- name: Install the App's private key
+  when: github_runner_app_private_key | length > 0
+  ansible.builtin.copy:
+    content: "{{ github_runner_app_private_key | trim }}\n"
+    dest: /etc/github-runner/app.pem
+    owner: "{{ github_runner_registrar }}"
+    group: "{{ github_runner_registrar }}"
+    mode: "0400"
+  no_log: true
+  become: true
+
+# The allow list the script enforces: a name here is the only argument
+# coder can give it, so coder cannot register a runner on a repository this
+# play did not name, whatever the App is installed on.
+- name: Write the registrar's config
+  vars:
+    github_runner_repo_config: >-
+      {%- set repos = {} -%}
+      {%- for repo in github_runner_repos -%}
+      {%- set runners = repo.runners | default(github_runner_runners) | int -%}
+      {%- set _ = repos.update({repo.name: {'repo': repo.repo,
+                                            'runners': runners + (1 if repo.rebase_runner | default(false) else 0),
+                                            'rebase_slot': runners + 1 if repo.rebase_runner | default(false) else 0}}) -%}
+      {%- endfor -%}
+      {{- repos -}}
+  ansible.builtin.copy:
+    content: >-
+      {{ {'app_id': github_runner_app_id | string,
+          'key': '/etc/github-runner/app.pem',
+          'labels': ['self-hosted'] + github_runner_labels,
+          'rebase_labels': ['self-hosted'] + github_runner_rebase_labels,
+          'work': github_runner_home ~ '/work',
+          'repos': github_runner_repo_config}
+         | to_nice_json }}
+    dest: /etc/github-runner/registrar.json
+    owner: root
+    group: "{{ github_runner_registrar }}"
+    mode: "0640"
+  become: true
+
+# Root's, so neither account can rewrite what the sudo rule runs.
+- name: Install the registration script
+  ansible.builtin.copy:
+    src: registrar/jitconfig.py
+    dest: /usr/local/libexec/github-runner-jitconfig
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Let coder ask the registrar for a registration, and nothing else
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/github-runner
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+  become: true
+
+# ---------------------------------------------------------------------
+# coder: the account the jobs run as
+# ---------------------------------------------------------------------
+
+- name: Look for {{ github_runner_user }}
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ github_runner_user }}"
+    fail_key: false
+
+# A first dry run, before the account exists, has nothing more to compare:
+# its uid, its manager and its user units cannot be looked up yet. What
+# came before, the checks, the packages and the registrar, it has checked.
+- name: Stop a dry run that has no {{ github_runner_user }} to look at
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[github_runner_user] is none
+  ansible.builtin.meta: end_role
+
+# Pinned, because the host's sandbox names it by number. A host
+# whose coder predates the pin keeps its old uid only until this fails on
+# usermod; stop its user manager first (loginctl disable-linger coder).
+# The account, its range, its manager, its storage and its memory cap, as
+# the workbench's bench has them.
+- name: Set up the coder user for rootless podman
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: "{{ github_runner_user }}"
+    rootless_account_uid: "{{ github_runner_uid }}"
+    rootless_account_home: "{{ github_runner_home }}"
+    rootless_account_subuid_start: "{{ github_runner_subuid_start }}"
+    rootless_account_subuid_count: "{{ github_runner_subuid_count }}"
+    rootless_account_profile_marker: github_runner
+    rootless_account_memory_max: "{{ github_runner_account_memory_max }}"
+    rootless_account_memory_swap_max: "{{ github_runner_account_memory_swap_max }}"
+    rootless_account_sandbox_units: "{{ github_runner_sandbox_units }}"
+
+- name: Keep the coder user's environment
+  ansible.builtin.set_fact:
+    github_runner_runtime_dir: "{{ rootless_account_runtime_dir }}"
+    github_runner_quadlet_dir: "{{ github_runner_home }}/.config/containers/systemd"
+    github_runner_user_env: "{{ rootless_account_env }}"
+
+- name: Create the image's build directory
+  ansible.builtin.file:
+    path: "{{ github_runner_build_dir }}"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0755"
+  become: true
+
+# Jobs start test services through this, from inside their container, so
+# that the services outlive the job. It is the account's own podman, which
+# runs nothing but the runners and those services.
+- name: Enable the podman API socket the jobs reach
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    scope: user
+    enabled: true
+    state: started
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+
+# Brings back, after a reboot, the test services a compose file gave a
+# restart policy.
+- name: Restart test services at boot
+  ansible.builtin.systemd_service:
+    name: podman-restart.service
+    scope: user
+    enabled: true
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+
+# ---------------------------------------------------------------------
+# The image
+# ---------------------------------------------------------------------
+
+- name: Ask GitHub which runner release to build
+  ansible.builtin.uri:
+    url: >-
+      {{ github_runner_releases_url }}/{{ 'latest' if github_runner_version == 'latest'
+      else 'tags/v' ~ github_runner_version }}
+    return_content: true
+  register: github_runner_release
+  check_mode: false
+
+- name: Ask the action which Claude Code it runs
+  ansible.builtin.uri:
+    url: "{{ github_runner_claude_action_pin_url }}"
+    return_content: true
+  register: github_runner_claude_pin
+  check_mode: false
+
+# The release notes carry the digests between markers, one per platform;
+# what the play builds is checked against the one for this machine.
+- name: Note the version and its digest
+  vars:
+    github_runner_arch: "{{ {'x86_64': 'x64', 'aarch64': 'arm64'}[ansible_facts['architecture']] }}"
+  ansible.builtin.set_fact:
+    github_runner_build_args:
+      RUNNER_VERSION: "{{ github_runner_release.json.tag_name | regex_replace('^v', '') }}"
+      RUNNER_ARCH: "{{ github_runner_arch }}"
+      RUNNER_SHA256: >-
+        {{ github_runner_release.json.body
+           | regex_search('<!-- BEGIN SHA linux-' ~ github_runner_arch ~ ' -->([0-9a-f]{64})', '\1') | first }}
+      PACKAGES: "{{ github_runner_image_packages | join(' ') }}"
+      UV_VERSION: "{{ github_runner_uv_version }}"
+      PREK_VERSION: "{{ github_runner_prek_version }}"
+      BUN_VERSION: "{{ github_runner_bun_version }}"
+      CLAUDE_CODE_VERSION: >-
+        {{ github_runner_claude_pin.content
+           | regex_search('claudeCodeVersion = .([0-9][0-9.]*[0-9]).', '\1') | first }}
+      WORK_DIR: "{{ github_runner_home }}/work"
+
+- name: Copy the image's build context
+  ansible.builtin.copy:
+    src: "image/{{ item }}"
+    dest: "{{ github_runner_build_dir }}/{{ item }}"
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0644"
+  loop:
+    - Containerfile
+    - entrypoint.sh
+    - job_level.py
+    - job_part.py
+    - job_finish.py
+    - job_rebase.py
+    - job_rebase_runner.py
+    - job_strays.py
+    - job_retry.py
+    - job_report.py
+    - job_vouch.py
+    - job_checks.py
+    - job_clone.py
+    - job_pr_comments.py
+    - settings.json
+  become: true
+
+# The executor's client, for the jobs of a repository with an instance.
+- name: Put the stack command in the image's build context
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.executor
+    tasks_from: client
+  vars:
+    executor_client_dest: "{{ github_runner_build_dir }}/stack.py"
+    executor_client_owner: "{{ github_runner_user }}"
+    executor_client_mode: "0644"
+
+# What the play and the nightly rebuild both build from. Root's, so a
+# change to the build comes from the play.
+- name: Create the build's config directory
+  ansible.builtin.file:
+    path: "{{ github_runner_rebuild_config | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Write the build's config
+  ansible.builtin.copy:
+    content: >-
+      {{ {'image': github_runner_image,
+          'context': github_runner_build_dir,
+          'options': github_runner_build_options,
+          'args': github_runner_build_args}
+         | to_nice_json }}
+    dest: "{{ github_runner_rebuild_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+# Unconditional: the layer cache makes a no-op
+# cheap. Every job is a new container, so the next one starts on a new
+# image; refresh-runners below restarts the idle ones, which would
+# otherwise wait for a job on the old.
+- name: Build the image
+  ansible.builtin.command:
+    argv: ["{{ rootless_account_rebuild_image }}", --config, "{{ github_runner_rebuild_config }}"]
+  changed_when: false
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+
+# ---------------------------------------------------------------------
+# The runners
+# ---------------------------------------------------------------------
+
+# Per slot: the CLAUDE.md its jobs read, which names the slot's ports, and
+# its work folder, the checkout. The work folder is mounted into the job at
+# this same path, because the compose CLI in the job hands the podman
+# socket host paths for its bind mounts.
+- name: Create each slot's Claude and work directories
+  ansible.builtin.file:
+    path: "{{ item.1 }}/{{ item.0.id }}"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0755"
+  loop: "{{ github_runner_slots | product([github_runner_home ~ '/claude', github_runner_home ~ '/work']) | list }}"
+  loop_control:
+    label: "{{ item.1 | basename }}/{{ item.0.id }}"
+  become: true
+
+- name: Create each repository's dependency cache
+  ansible.builtin.file:
+    path: "{{ github_runner_home }}/cache/{{ item }}"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0755"
+  loop: "{{ github_runner_slots | map(attribute='name') | unique }}"
+  become: true
+
+# Read-only in the job, so no job can rewrite the next one's rules. Two
+# files: CLAUDE.md for everyone in the job, which Claude Code loads into the
+# lead and every role it calls, and lead.md, which the workflow appends to
+# the lead's system prompt alone, so the roles do not carry the lead's
+# rules through every turn.
+- name: Write each slot's rules for everyone in its jobs
+  ansible.builtin.template:
+    src: CLAUDE.md.j2
+    dest: "{{ github_runner_home }}/claude/{{ item.id }}/CLAUDE.md"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ github_runner_slots }}"
+  loop_control:
+    label: "{{ item.id }}"
+  become: true
+
+# The rebase runner's lead has rules of its own: it only rebases.
+- name: Write each slot's rules for its jobs' lead
+  ansible.builtin.template:
+    src: "{{ 'rebase.md.j2' if item.rebase else 'lead.md.j2' }}"
+    dest: "{{ github_runner_home }}/claude/{{ item.id }}/lead.md"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ github_runner_slots }}"
+  loop_control:
+    label: "{{ item.id }}"
+  become: true
+
+# The roles the lead calls as subagents, the same for every repository and
+# for the workbench, and as read-only in the job as the rules.
+- name: Note where this role's own skills are
+  ansible.builtin.set_fact:
+    github_runner_skills_dir: "{{ role_path }}/files/skills"
+
+- name: Install the team every job's lead can call
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.claude_team
+  vars:
+    claude_team_dest: "{{ github_runner_home }}/claude"
+    claude_team_owner: root
+    claude_team_skill_sources: ["{{ github_runner_skills_dir }}"]
+
+# Every slot has a skills directory of its own, mounted in place of the
+# team's: the team's skills, copied from the common directory the role
+# above filled, and then the ones its repository opted into. Only the
+# opt-in skills are ever removed from it, when the repository drops one.
+- name: Give each slot the team's skills
+  ansible.builtin.copy:
+    src: "{{ github_runner_home }}/claude/skills/"
+    remote_src: true
+    dest: "{{ github_runner_home }}/claude/{{ item.id }}/skills/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  loop: "{{ github_runner_slots }}"
+  loop_control:
+    label: "{{ item.id }}"
+  become: true
+
+- name: Give each slot the skills its repository opted into
+  ansible.builtin.copy:
+    src: "repo_skills/{{ item.1 }}/"
+    dest: "{{ github_runner_home }}/claude/{{ item.0.id }}/skills/{{ item.1 }}/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  loop: "{{ github_runner_slots | subelements('skills') }}"
+  loop_control:
+    label: "{{ item.0.id }}/{{ item.1 }}"
+  become: true
+
+- name: Remove the opt-in skills a repository no longer lists
+  ansible.builtin.file:
+    path: "{{ github_runner_home }}/claude/{{ item.0.id }}/skills/{{ item.1 }}"
+    state: absent
+  when: item.1 not in item.0.skills
+  loop: "{{ github_runner_slots | product(github_runner_repo_skills) | list }}"
+  loop_control:
+    label: "{{ item.0.id }}/{{ item.1 }}"
+  become: true
+
+# The GPU model server's address and key, for the slots whose repository
+# opted into gpu-models: into the runner's environment through the unit,
+# which the job's steps inherit as they do DOCKER_HOST. Root's file, coder's
+# to read and nobody else's. A test container has no key and writes an
+# empty one, which the server answers with 401; a real host must have one.
+- name: Assert the model server has a key where a repository wants it
+  when:
+    - github_runner_start | bool
+    - github_runner_slots | selectattr('skills', 'contains', 'gpu-models') | list | length > 0
+  ansible.builtin.assert:
+    that:
+      - github_runner_gpu_models_api_key | length > 0
+      - github_runner_gpu_models_url | length > 0
+    fail_msg: >-
+      A repository opted into gpu-models, and github_runner_gpu_models_url or
+      github_runner_gpu_models_api_key is empty: the key belongs in the
+      inventory's vault, from the model server's owner.
+    quiet: true
+
+- name: Write the model server's environment for the slots whose repository opted in
+  ansible.builtin.copy:
+    content: |
+      MODEL_URL={{ github_runner_gpu_models_url }}
+      MODEL_INFO_URL={{ github_runner_gpu_models_info_url }}
+      MODEL_API_KEY={{ github_runner_gpu_models_api_key }}
+    dest: "{{ github_runner_home }}/claude/{{ item.id }}/gpu-models.env"
+    owner: root
+    group: "{{ github_runner_user }}"
+    mode: "0640"
+  loop: "{{ github_runner_slots | selectattr('skills', 'contains', 'gpu-models') | list }}"
+  loop_control:
+    label: "{{ item.id }}"
+  no_log: true
+  become: true
+
+- name: Remove the model server's environment from the slots whose repository did not
+  ansible.builtin.file:
+    path: "{{ github_runner_home }}/claude/{{ item.id }}/gpu-models.env"
+    state: absent
+  loop: "{{ github_runner_slots | rejectattr('skills', 'contains', 'gpu-models') | list }}"
+  loop_control:
+    label: "{{ item.id }}"
+  become: true
+
+# Each work slot of a repository with an executor is a caller of that
+# instance: a key and a block of its ports, the key in the slot's
+# stack.env, root's and coder's to read, which the unit hands the runner as
+# it does gpu-models.env. The instance must be on this host already.
+- name: Register the slots with their repository's executor
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.executor
+    tasks_from: callers
+  vars:
+    executor_callers_prefix: runner-
+    executor_callers: >-
+      {%- set callers = [] -%}
+      {%- for slot in github_runner_slots | selectattr('executor') -%}
+      {%- set _ = callers.append({'instance': slot.executor, 'name': 'runner-' ~ slot.id,
+                                  'uid': github_runner_uid, 'repos': [slot.repo], 'waits': true,
+                                  'env_file': github_runner_home ~ '/claude/' ~ slot.id ~ '/stack.env',
+                                  'env_owner': 'root', 'env_group': github_runner_user, 'env_mode': '0640',
+                                  'local_host': github_runner_executor_local_host}) -%}
+      {%- endfor -%}
+      {{- callers -}}
+
+- name: Remove the stack environment from the slots whose repository has no executor
+  ansible.builtin.file:
+    path: "{{ github_runner_home }}/claude/{{ item.id }}/stack.env"
+    state: absent
+  loop: "{{ github_runner_slots | rejectattr('executor') | list }}"
+  loop_control:
+    label: "{{ item.id }}"
+  become: true
+
+- name: Install the script that restarts idle runners on an old image or old rules
+  ansible.builtin.copy:
+    src: refresh/refresh_runners.py
+    dest: /usr/local/libexec/refresh-runners
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install a runner unit per slot
+  ansible.builtin.template:
+    src: github-runner.container.j2
+    dest: "{{ github_runner_quadlet_dir }}/{{ item.unit }}.container"
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0644"
+  loop: "{{ github_runner_slots }}"
+  loop_control:
+    label: "{{ item.unit }}"
+  notify: Reload the systemd manager for github_runner
+  become: true
+
+- name: Find the runner units on the box
+  ansible.builtin.find:
+    paths: "{{ github_runner_quadlet_dir }}"
+    patterns: github-runner-*.container
+  register: github_runner_installed
+  become: true
+
+# A repository dropped from the list, or a slot from its runners, stops
+# getting runners: its unit is stopped and its file removed. Its last runner
+# deregisters itself, being ephemeral, or is dropped by GitHub once it has
+# been offline long enough. A stop kills a job in progress, which the
+# workflow's last step does not see; the job is marked failed on GitHub.
+- name: Stop the runners no longer listed
+  vars:
+    github_runner_unit: "{{ item.path | basename | regex_replace('\\.container$', '') }}"
+  when: github_runner_unit not in github_runner_slots | map(attribute='unit')
+  ansible.builtin.systemd_service:
+    name: "{{ github_runner_unit }}.service"
+    scope: user
+    state: stopped
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+  loop: "{{ github_runner_installed.files }}"
+  loop_control:
+    label: "{{ github_runner_unit }}"
+
+- name: Remove the units no longer listed
+  vars:
+    github_runner_unit: "{{ item.path | basename | regex_replace('\\.container$', '') }}"
+  when: github_runner_unit not in github_runner_slots | map(attribute='unit')
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  notify: Reload the systemd manager for github_runner
+  become: true
+  loop: "{{ github_runner_installed.files }}"
+  loop_control:
+    label: "{{ github_runner_unit }}"
+
+# Root's script, coder's timer: it removes only coder's own dangling images
+# and the containers no job's compose project, unit or runner owns, and
+# empties only the caches it is handed.
+- name: Install the cleaner
+  ansible.builtin.copy:
+    src: clean/clean_runners.py
+    dest: /usr/local/libexec/clean-runners
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Create coder's systemd unit directory
+  ansible.builtin.file:
+    path: "{{ github_runner_home }}/.config/systemd/user"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0755"
+  become: true
+
+# Each unit with the files its container depends on: its rules and its
+# quadlet. The agents are a directory mount, which shows a job the new files
+# as they are copied in. For refresh-runners, run by the play and by the
+# nightly rebuild.
+- name: Note what each runner's container depends on
+  ansible.builtin.set_fact:
+    github_runner_refresh_args: >-
+      {%- set args = [] -%}
+      {%- for slot in github_runner_slots -%}
+      {%- set _ = args.append(slot.unit ~ '=' ~ github_runner_home ~ '/claude/' ~ slot.id ~ '/CLAUDE.md,'
+                              ~ github_runner_home ~ '/claude/' ~ slot.id ~ '/lead.md,'
+                              ~ github_runner_quadlet_dir ~ '/' ~ slot.unit ~ '.container'
+                              ~ (',' ~ github_runner_home ~ '/claude/' ~ slot.id ~ '/gpu-models.env'
+                                 if 'gpu-models' in slot.skills else '')
+                              ~ (',' ~ github_runner_home ~ '/claude/' ~ slot.id ~ '/stack.env'
+                                 if slot.executor else '')) -%}
+      {%- endfor -%}
+      {{- args -}}
+
+- name: Install the cleaner's and the rebuild's services and timers
+  ansible.builtin.template:
+    src: github-runner-{{ item }}.j2
+    dest: "{{ github_runner_home }}/.config/systemd/user/github-runner-{{ item }}"
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0644"
+  loop: [cleaner.service, cleaner.timer, rebuild.service, rebuild.timer]
+  notify: Reload the systemd manager for github_runner
+  become: true
+
+- name: Generate the service units before starting them
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the cleaner's and the rebuild's timers
+  when: github_runner_start | bool and github_runner_slots | length > 0
+  ansible.builtin.systemd_service:
+    name: github-runner-{{ item }}.timer
+    scope: user
+    enabled: true
+    state: started
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+  loop: [cleaner, rebuild]
+
+- name: Start the runners
+  when: github_runner_start | bool
+  ansible.builtin.systemd_service:
+    name: "{{ item.unit }}.service"
+    scope: user
+    state: started
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+  loop: "{{ github_runner_slots }}"
+  loop_control:
+    label: "{{ item.unit }}"
+
+# Never a plain restart: that kills the job a runner is working, which is
+# how a job loses everything it did. An idle runner
+# still on an old image, CLAUDE.md or unit is restarted, a busy one is left
+# to pick them up with its next container.
+- name: Restart the idle runners on an old image or old rules
+  when: github_runner_start | bool and not ansible_check_mode
+  ansible.builtin.command:
+    argv: "{{ ['/usr/local/libexec/refresh-runners', '--image', github_runner_image] + github_runner_refresh_args }}"
+  register: github_runner_refresh
+  changed_when: "'restarted' in github_runner_refresh.stdout"
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+
+# ---------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------
+
+- name: Verify the runners
+  when: not ansible_check_mode
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
+  block:
+    # Proves the image holds a runner that starts, on the dev container too,
+    # where nothing is ever registered.
+    - name: Ask the image's runner its version
+      ansible.builtin.command:
+        argv: [podman, run, --rm, --entrypoint, ./config.sh, "{{ github_runner_image }}", --version]
+      register: github_runner_image_version
+      changed_when: false
+
+    - name: Assert it is the release the play asked for
+      ansible.builtin.assert:
+        that: github_runner_image_version.stdout | trim == github_runner_build_args.RUNNER_VERSION
+        fail_msg: >-
+          The image's runner says {{ github_runner_image_version.stdout | trim }},
+          and the play built {{ github_runner_build_args.RUNNER_VERSION }}.
+
+    - name: Ask the image's Claude Code its version
+      ansible.builtin.command:
+        argv: [podman, run, --rm, --entrypoint, /home/runner/.local/bin/claude, "{{ github_runner_image }}", --version]
+      register: github_runner_claude_version
+      changed_when: false
+
+    - name: Assert it is the one the action pins
+      ansible.builtin.assert:
+        that: github_runner_claude_version.stdout.split() | first == github_runner_build_args.CLAUDE_CODE_VERSION
+        fail_msg: >-
+          The image's Claude Code says {{ github_runner_claude_version.stdout | trim }},
+          and the action at {{ github_runner_claude_action_ref }} pins {{ github_runner_build_args.CLAUDE_CODE_VERSION }}.
+
+    - name: Ask the quadlet generator what it sees
+      ansible.builtin.command:
+        argv: [/usr/libexec/podman/quadlet, -user, -dryrun]
+      register: github_runner_dryrun
+      changed_when: false
+
+    - name: Assert every runner unit generated a service
+      ansible.builtin.assert:
+        that: ('---' ~ item.unit ~ '.service---') in github_runner_dryrun.stdout
+        fail_msg: "The quadlet generator produced no service for {{ item.unit }}: {{ github_runner_dryrun.stdout }}"
+        quiet: true
+      loop: "{{ github_runner_slots }}"
+      loop_control:
+        label: "{{ item.unit }}"
+
+    # The whole chain, end to end: the sudo rule, the key, the App's
+    # installation and its permission, and the runner having dialled in.
+    # Online, not busy, is what an idle runner waiting for an issue reports;
+    # a busy one is online too. Every slot's runner, by the slot the
+    # registrar reads from the end of its name: a busy runner keeps the name
+    # it registered with until its job ends, an earlier prefix included.
+    - name: Ask GitHub, through the registrar, which runners it sees
+      when: github_runner_start | bool
+      ansible.builtin.command:
+        argv: [sudo, -n, -u, "{{ github_runner_registrar }}", /usr/local/libexec/github-runner-jitconfig, status, "{{ item.name }}"]
+      register: github_runner_status
+      until: >-
+        github_runner_status.rc == 0
+        and (github_runner_status.stdout | from_json | selectattr('status', 'equalto', 'online')
+             | map(attribute='slot') | select('in', range(1, github_runner_repo_slots + 1))
+             | unique | length == github_runner_repo_slots)
+      vars:
+        github_runner_repo_slots: "{{ github_runner_slots | selectattr('name', 'equalto', item.name) | list | length }}"
+      retries: 12
+      delay: 10
+      changed_when: false
+      loop: "{{ github_runner_repos }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+- name: Report what is installed
+  ansible.builtin.debug:
+    msg: >-
+      Runner {{ github_runner_build_args.RUNNER_VERSION }} in {{ github_runner_image }},
+      {{ github_runner_slots | length }} of them,
+      for {{ github_runner_repos | map(attribute='repo') | join(', ') or 'no repositories yet' }}{{
+      '' if github_runner_start | bool or not github_runner_repos else ', installed but not started' }}.
+      Workflows reach them with runs-on: [self-hosted, {{ github_runner_labels | join(', ') }}],
+      and the rebase runners with [self-hosted, {{ github_runner_rebase_labels | join(', ') }}].

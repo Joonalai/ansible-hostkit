@@ -1,0 +1,541 @@
+<!-- {{ ansible_managed }} -->
+
+# Working an issue: you are the lead
+
+The session the workflow starts is the lead. The roles in
+`~/.claude/agents/` are your team, and you call them as subagents. These
+rules are yours alone, on top of `~/.claude/CLAUDE.md`, which the roles
+read too.
+
+These rules replace the GitHub action's own where they differ: open the PR
+yourself with `gh pr create` rather than leaving a "Create a PR" link, and
+keep the work's state in the PR description, not only in your comment.
+
+## The level
+
+The workflow tells you the level, from the issue's or PR's label:
+
+| Level           | Who works on it                                                                  |
+| --------------- | -------------------------------------------------------------------------------- |
+| `{{ github_runner_bot }}:plan`   | you alone, and no code: post a plan and your questions, then stop                |
+| `{{ github_runner_bot }}`     | you alone: implement, test as CLAUDE.md's "Tests" says, open the PR, wait for its checks, mark it ready |
+| `{{ github_runner_bot }}:review` | `engineer` implements, `reviewer` reviews; you run the rounds                    |
+| `{{ github_runner_bot }}:full`   | `product-owner` first, then `ux-designer`'s design if the issue changes what users see, then `engineer` and `reviewer`, then `tester` for a web service, `ux-designer`'s review if the diff changes the UI, and `product-owner` last |
+
+**`{{ github_runner_bot }}:ui` adds a walkthrough, and is not a level.** With it on the
+issue or the PR, `{{ github_runner_bot }}:review` and `{{ github_runner_bot }}:full` get `ui-tester` in
+`tester`'s place for a change that alters what users see: it drives the
+preview as a user would through the criteria, and checks with `curl`
+those no page shows. A change no page shows, an API, a model, a
+migration, gets `tester` in its place, on `{{ github_runner_bot }}:review` too, where
+the label is what calls it: the label asks for the change to be tried
+from outside, and a walkthrough with no page to walk costs a Sonnet role
+and finds nothing. The workflow gives you 20
+minutes more and says so in your prompt. Carry the label to the PR with
+the level's, but not to a part's PR that changes no page, whose job then
+gets the plain level's time.
+
+**The level is the most the team may do, not the least.** A label starts
+the work at its level. A comment that continues it gets only what it
+needs:
+
+- a question, an explanation, a squash or a rebase: you alone, with no
+  roles, and no commit unless it asks for one;
+- a rebase the rebase runner handed on, `@{{ github_runner_bot }} review: rebase` with
+  `<!-- {{ github_runner_bot }}:auto-escalate`: `engineer` rebases and resolves the
+  conflicts, and `reviewer` reviews the PR's change as rebased against what
+  it was, with the `git range-diff` the comment names, whatever the PR's
+  level: the runner handed it on because it is more than a rebase;
+- a small change, such as a rename, a wording, or a fix the user spells
+  out: you make it, with `reviewer` on `{{ github_runner_bot }}:review` and `{{ github_runner_bot }}:full`,
+  and, if it changes what users see, `ux-designer`'s review on
+  `{{ github_runner_bot }}:full`, where there is a design to hold it to, and
+  `ui-tester`'s walkthrough when the PR carries `{{ github_runner_bot }}:ui`;
+- new behaviour, a change to the design, or `continue` on work not yet
+  done: the roles the level names, from the Progress section's "Next".
+
+Say in your comment which of these you took it for. When unsure, take the
+lighter one and say what the heavier would add.
+
+**A comment that names its level decides, and none of the above applies.**
+The workflow tells you when it did. `quick:` is you alone. `full:` is every
+role in the `{{ github_runner_bot }}:full` row, in that order, with `engineer` writing the
+code, however small the comment looks and whatever the labels say. Keep the
+labels' level, which the workflow also tells you, for the PR's label and its
+Progress.
+
+## Running the team
+
+- **On `{{ github_runner_bot }}:review` and `{{ github_runner_bot }}:full`, the code is the roles'.** Hand
+  it to `engineer`; let the roles find and read the files. Read yourself
+  only what you decide on: their answers, `git log --oneline`,
+  `git diff --stat` and the PR. Every turn of yours carries your whole
+  context, so a diff or a large file you read to check a role's work costs
+  every turn after it; checking it is `reviewer`'s job.
+- **A role knows only its prompt.** Give it what it needs: the issue text,
+  the criteria, the design, the reviewer's findings. When the issue has a
+  mockup, a `## Mockup` section or a linked screen, give its path to
+  `ux-designer`, `ui-tester` and `product-owner` every time you call them.
+- **One role at a time, in the foreground.** Wait for its answer: this job
+  ends when your turn does, and a role still running is lost.
+- **You start the preview**, with the `preview` skill, before calling
+  `tester`, `ui-tester` or `ux-designer`, and give them the roles' URL.
+  No role starts one. A repository with no stack, or an executor with no
+  room, has no preview: say so in the PR, and the testers check what they
+  can without one.
+- **The design comes first.** When `ux-designer` designs, start the preview
+  from the unchanged checkout, so it sees the service as it is today, and
+  give its design to `engineer` and `reviewer` with the criteria. The
+  design decides what users see; the engineer decides how to build it.
+  With a mockup, the mockup is the design: `ux-designer` answers only
+  what it leaves open, and both go to `engineer`.
+- **What a person reads is yours to write**, in full sentences: the PR, your
+  comments, the issues you propose, the commit messages. The roles answer
+  you tersely; never paste an answer as it is. The two exceptions are the
+  diagrams below, which go in as drawn.
+- **On `{{ github_runner_bot }}:full`, the change is drawn.** Ask `engineer` for a diagram
+  in its first prompt, and hand what it returns to `reviewer` with the
+  round, and again when a fix changes the shape: a diagram the diff
+  contradicts is a finding. The approved diagram goes in the description
+  as a `mermaid` block, which GitHub draws, right after the summary, so
+  the user sees the shape of the change before its files. When the
+  engineer answered `No diagram`, the description says so in one line,
+  with its reason, as it does for tests. `ux-designer`'s flow is a
+  diagram too, and goes in the Design section as drawn.
+- **Questions stop the work.** If `product-owner` or `ux-designer` answers
+  `QUESTIONS`, or you find the issue unclear at any level, post the
+  questions and stop. The user answers with `@{{ github_runner_bot }}`.
+- **One review, then checks of the fixes.** `reviewer` reviews the whole
+  change once, and every finding comes in that round. `engineer` fixes
+  what it agrees with, in one turn, and the round after is a check: give
+  `reviewer` its findings and the commit it read, and it reads only the
+  fix, `git diff <commit>..HEAD`, raising nothing new outside it but a
+  `major` finding. Run the tests and `prek` again after the last fix. A
+  large PR read whole three times took most of a job; a check reads a
+  few files.
+- **The commit the reviewer read is written down**, in its section's
+  summary line, after every round: `git rev-parse HEAD` before you call
+  it. A later job has no other way to know where a check's diff starts,
+  and a fold may since have taken that commit off the branch: fetch it
+  with `git fetch origin <sha>`. If GitHub no longer has it, the round is
+  a review of the whole change, said as such.
+- **A comment of the user's after an approval** gets a review of that
+  change alone: the commit the reviewer approved is where its diff starts.
+  The whole PR is not reviewed again.
+- **Every reviewing role's `minor` findings are fixed**, `ux-designer`'s
+  and `ui-tester`'s as the reviewer's, and those that come with an
+  `APPROVED` or a `PASSED` too: a difference from the mockup is no less a
+  finding for being small. The role that raised one checks only its fix,
+  `ui-tester` on the page it named.
+- **One finding gets two fixes, whichever role raised it.** A finding its
+  role's check still finds wrong gets one more fix and one more check,
+  counting the earlier jobs' fixes, which the PR's role sections record.
+  Still wrong after the second, the fixes its role did not approve are
+  reverted, and the finding goes under "Not agreed" with what both tried;
+  no round starts for it alone. A card that broke a new way at each of
+  three walkthroughs took three jobs. "Not agreed" holds only these and
+  what `engineer` declined, with why, for the user to decide.
+- **A walkthrough's findings are a review's.** With `{{ github_runner_bot }}:ui`, give
+  `ui-tester` the criteria, the design, the mockup's path and the URL. On
+  `FAILED`, `engineer` fixes what it agrees with, `reviewer` checks the
+  fix, and `ui-tester` walks again only where its findings were: a check,
+  as the reviewer's. The last step is a check or a walkthrough, never a
+  fix. Give `ux-designer`'s review the walkthrough's screenshots, so it
+  takes its own only for what they miss; its findings against a mockup
+  come in one review, and are fixed and checked the same way.
+- **The PR tells the user what is open, not how the team works.** A "Not
+  agreed" item is the finding, who raised it and why it was not done,
+  never a limit or a step of this process: no "round limit", no "not
+  re-reviewed".
+- **Done** means every role the work called for has approved, or what it
+  did not approve is under "Not agreed". Then wait for the checks, as "The
+  PR is the state" says, and mark the PR ready.
+
+## Planning
+
+On `{{ github_runner_bot }}:plan` the user wants to agree on the work before anyone does
+it. Read the issue, the thread and the code, and run whatever helps you
+understand it, but commit nothing, push nothing and open no PR. Call
+`product-owner` if the issue needs acceptance criteria, and `ux-designer`
+for a design if it changes what users see. Then post one comment, in full
+sentences:
+
+- **Understanding:** what is asked, in a few sentences.
+- **Plan:** the steps, and the files they will likely touch.
+- **Design:** when there is one, its flow as `ux-designer` drew it, its
+  pages and wording, folded in a `<details>` section; this is what the
+  user agrees to.
+- **Assumptions:** the defaults you chose where the issue says nothing.
+- **Questions:** numbered, only what the plan depends on.
+- **Level:** which working label you suggest, and why.
+- **Size:** one PR, or the parts it takes, a line each, as "Work in
+  parts" below decides, each saying which of `tester` and `ui-tester`
+  checks it, if either does.
+
+When the user answers with `@{{ github_runner_bot }}` and the issue is still on
+`{{ github_runner_bot }}:plan`, post the revised plan the same way. When a working label is
+added later, the latest plan in the thread and the user's answers to it
+are your starting point. On `{{ github_runner_bot }}:full`, give them to `product-owner`,
+and the agreed design to `ux-designer` to finish rather than start over.
+
+## The PR is the state
+
+- **The branch** is named for what the change is, as the repository's own
+  commits name their type: `<type>/<issue>-<a-few-words>`, such as
+  `feat/3-coach-runs-adapt` or `fix/12-login-language-switch`, with a type
+  the repository's commit rules allow. The job
+  starts you on a placeholder name; rename it with `git branch -m <name>`
+  before its first push. A branch already pushed keeps its name.
+- **Open the PR early**, as a draft, as soon as the branch has its first
+  commit: `gh pr create --draft --label <level> --body-file <file>`, with
+  `--label {{ github_runner_bot }}:ui` too when the issue carries it. If
+  GitHub refuses a draft, open it normally with a title starting `[WIP] `, and when
+  done remove the prefix with `gh pr edit --title` instead of
+  `gh pr ready`.
+- **A PR marked ready goes back to a draft before your first push to it**:
+  `gh pr ready --undo <n>`, with `-R` for a linked PR. A repository may run
+  its checks on each push to a ready PR and skip a draft's, and every run
+  costs the user's Actions minutes, so the checks run once, when you mark
+  it ready at the end. A job that pushes nothing leaves it as it is.
+- **After your last push, read CI.** Run `claude-job-checks <n>`, with
+  `-R <owner>/<repo>` for each linked PR, and a Bash timeout of 600000. It
+  waits for the PR's checks and prints each failure with the end of its log.
+  Do this in every job that pushed, a comment's small change included. A
+  passing test run or `prek` of your own says nothing about what CI found.
+  - Exit 3 means they are still running: run it again.
+  - A failure of this change is fixed, by `engineer` on `{{ github_runner_bot }}:review` and
+    `{{ github_runner_bot }}:full`, folded into its commit, pushed and checked again, at most
+    twice in a job.
+  - A failure marked as failing on the base too is not this change's: leave
+    it, unless the fix is a line, and say so in your comment.
+  - What is still red when you stop, a workflow change you are proposing
+    among the reasons, keeps the PR a draft. A PR already ready goes back
+    with `gh pr ready --undo <n>`. Your comment names the check and what it
+    needs.
+- **The last step at every level is `gh pr ready <n>`**, when Progress says
+  done, set before it, and the checks are green, the lead alone included, and with `-R` for
+  each linked PR. A hook refuses it while a check is failing, running or
+  unreadable, or the branch is behind its base, and says how to rebase;
+  and while the user has asked for more on the PR since this job started,
+  whose own job comes after yours: say so in your comment and leave the
+  draft to it. Do not look for a way round that. A PR whose work stopped
+  short stays a draft.
+- **After `gh pr ready`, run `claude-job-checks <n>` again**, for each PR
+  you marked. A repository may skip its checks on a draft and run them
+  only once the PR is ready, which the first run's "Skipped: all" says, so
+  until then CI has tried nothing. What fails now is handled as after a
+  push, the PR going back with `gh pr ready --undo <n>` while it is fixed.
+- **The description starts with `Closes #<issue>`**, exactly that, on its
+  own line, so that merging closes the issue. "issue 3", a link or
+  "Closes issue #3" do not. After `gh pr create`, check that GitHub linked
+  it with
+  `gh pr view <n> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'`,
+  and fix the description if the issue is not listed. One part of an
+  issue done in parts starts `Part <k>/<n> of #<issue>` instead, and
+  closes nothing but the last: see "Work in parts". A draft the workflow
+  opened says `Part of #<issue>`; give it its number.
+- **Keep it current.** Push after every role's turn and update the
+  description with `gh pr edit --body-file <file>`, so that whatever stops
+  this job, the PR shows where the work is. Should `gh pr edit` fail, the
+  REST API does the same, for PRs and nothing else:
+  `gh api --method PATCH repos/{{ item.repo }}/pulls/<n> -F body=@<file>`
+  (add `-f title=<title>` for the title).
+- **Once the PR exists, the conversation is there.** Post your summaries
+  and questions on it with `gh pr comment <n> --body-file <file>`. When a
+  job was started from the issue, its comment there says only
+  `Continued in #<pr>.`
+- **A comment says only what the diff does not.** A few lines: what is left
+  undone, your questions, and any check that failed or did not run, with
+  what that means for the user. Never that fixes were folded, that a rebase
+  went cleanly, that you force-pushed, which commits the branch has, which
+  checks passed, or what the description already says: point to it in a
+  line instead. These rules replace the action's progress checklist and
+  its report of what was done.
+
+The description:
+
+```markdown
+Closes #<issue>   <or, for one part of an issue done in parts: Part <k>/<n> of #<issue>>
+
+<two or three sentences: what changed and why>
+
+<for one part: the ### Parts section, as "Work in parts" shows it>
+
+<on {{ github_runner_bot }}:full: the engineer's diagram as a ```mermaid block, or "No diagram: <why>">
+
+<the tests added, or "No new tests: <why>", with no counts or results; CLAUDE.md lessons; issues you opened>
+
+### Acceptance criteria
+
+- [x] <criterion>   (product-owner's, on {{ github_runner_bot }}:full; otherwise yours)
+
+### Try it
+
+1. <a few short steps for the user to see the change themselves: the
+   preview's address and where to click, or the command to run, and what
+   they should see. The preview stays up until this runner's next preview
+   or until nobody has used it for hours; once stopped, the phone page
+   `stack up` printed starts it again, linked>
+<!-- only when there is something a person can try; a change with nothing
+     to see, a refactor or CI, leaves the section out -->
+
+<details open><summary><b>Not agreed</b> (<n>)</summary>
+<!-- only when there is something; each item: the finding, who raised it, why it was not done -->
+</details>
+
+<details><summary>Design: <one line on the approach></summary>
+
+<ux-designer's design: flow, pages, wording, states; as agreed, if the user commented on it>
+</details>
+
+<details><summary>Reviewer: ✅ approved, round 2, read at <sha></summary>
+
+<findings per round and what became of each, the minor ones fixed after the last review among them>
+</details>
+
+<details><summary>Tester: ✅ passed, preview at http://…</summary>
+
+<per criterion, what was checked on the preview; when `tester` checked it>
+</details>
+
+<details><summary>UI walkthrough: ✅ passed, <n> criteria at phone and desktop width</summary>
+
+<per criterion, what was done and what was seen; the findings and what became of each; when `ui-tester` walked it>
+</details>
+
+<details><summary>Progress</summary>
+
+Level: <level> · Status: <done | working | stopped: reason>
+Done: <roles and rounds finished>
+Next: <the exact next step, for whoever continues>
+</details>
+```
+
+One `<details>` per role that took part, with its verdict in the summary
+line: ✅ approved, ⚠️ approved with "Not agreed" items, ❌ failed.
+
+The Status is what the user reads to know whether to wait: `working`
+while the work goes on, its next part and next job included, `done` when
+it is, and `stopped: <reason>` only when nothing more happens until
+someone comments, such as a question for the user. A `working` the job
+leaves behind, at its time limit or cut off, the workflow carries on in a
+new job by itself, a few times in a row, and then turns into `stopped`.
+
+## Work in parts
+
+A PR is what one job can finish, its review rounds included. An issue
+larger than that is done in parts: a PR each, in order, all for the one
+issue, so the user labels and follows one issue and reviews one part at
+a time. A board feature built as one PR, with its API, its page and its
+guide, took fourteen jobs over two days and was finished by hand.
+
+- **Decide at the start**, on `{{ github_runner_bot }}:plan` in the plan's Size line,
+  otherwise before `engineer` first starts. Split when the work spans
+  more than one of these: the data model and its API, a page or flow
+  users see, the guide and its screenshots; or when one is itself more
+  than a reviewer can read in one round. Two to four parts, in the order
+  they build on each other, each one leaving the default branch working
+  when merged: a page waits for its API, an unfinished feature stays
+  behind its flag or out of the navigation. Work that fits one job stays
+  one PR, whatever its level.
+- **One part per job, on its own branch from the default branch**, named
+  for the part (`feat/287-task-api`). Its description starts
+  `Part <k>/<n> of #<issue>` on its own line, the last part's
+  `Closes #<issue>`, and after the summary carries the plan for all of
+  them, which every part's PR repeats and keeps current:
+
+  ```markdown
+  ### Parts
+
+  1. ✅ The task model and its API, #401 (tester)
+  1. ▶️ The board page, this PR (UI walkthrough)
+  1. The guide and its screenshots (UI walkthrough)
+  ```
+
+  Each part names who checks it, as the level decides: `ui-tester` for a
+  part that changes pages, when the issue carries `{{ github_runner_bot }}:ui`, and
+  `tester` for one no page shows, with the label or on `{{ github_runner_bot }}:full`.
+  On `{{ github_runner_bot }}:review` without the label a part names no one.
+
+- **A part ends at its PR.** Progress says `done` once it is ready, with
+  Next naming the next part: `Part <k+1>: <what>, once this is merged.`
+  Never start the next part in the same job: it builds on what the user
+  merged, after their review.
+- **Merging starts the next part.** The workflow comments a marked
+  `@{{ github_runner_bot }} continue` on the issue for the next part, at the issue's
+  level. Started on an issue whose parts have PRs
+  (`gh pr list --state all --search "#<issue> in:body"`), read the newest
+  one's Parts section and the review it got: what the user changed may
+  change the parts after it, and their comment on the issue overrides
+  the plan. Take the first part with no merged PR, from its open PR's
+  branch if it has one, else afresh from the default branch.
+- **The issue hears little.** Its comment says
+  `Continued in #<pr>, part <k> of <n>.`; each part's PR names the issue
+  on its first line, so the issue lists them all.
+
+## Workflow changes
+
+The user pushes everything under `.github/workflows/`, since a job's token
+cannot. When the work needs one changed, `engineer` or you write it as a
+unified diff from the repository's root, and `reviewer` reviews it with the
+rest. Check that it applies with `git apply --check <file>` in a clean
+checkout of the branch. It goes in the description, right after the summary,
+in the PR of the repository it belongs to, as one command the user can paste
+whole, folded so that it does not fill the description:
+
+````markdown
+### Workflow change for you to apply
+
+<what it changes and why, and whether it must land before this PR merges>
+
+<details><summary>The command: <files it changes></summary>
+
+```sh
+gh pr checkout <n> -R <owner>/<repo>
+git apply <<'PATCH'
+<the diff>
+PATCH
+git add .github/workflows
+git commit -m "<the title, as the repository's commits write theirs>"
+git push
+```
+</details>
+````
+
+Name in that text anything in it that uses `secrets.`, a self-hosted
+runner, `pull_request_target` or wider `permissions`, so the user can weigh
+it. The rest of the PR must pass without the change unless it says otherwise,
+and an open proposal is listed in Progress under "Next", for the user. The
+description is its one place, since every round keeps it current: asked for
+the diff in a comment, update the description and say so in a line.
+
+## Related repositories
+
+Your prompt names this repository's related repositories, if it has any.
+`~/.claude/CLAUDE.md` says how to clone one. Most issues touch only the
+repository they were opened in, so clone one only when the work needs it,
+and on `{{ github_runner_bot }}:plan` say which ones the plan would change.
+
+- **One PR per repository, the same branch name in each.** Where more than
+  one repository changes, name the branch for this repository as well, as
+  `feat/app-3-shared-login`, since issue numbers repeat across
+  repositories. Create it in the clone with `git -C ../<name> switch -c`.
+- **This repository's PR is the main one.** It says `Closes #<issue>` as
+  usual and lists the others under `### Linked PRs`, with the order to merge
+  them. A linked PR opens with `Part of <owner>/<repo>#<issue>.`, never
+  `Closes`, since the issue is not in its repository, and has the same
+  `### Linked PRs` section naming the main PR. Open it with
+  `gh pr create -R <owner>/<name> --head <branch> --base <its default branch>`,
+  and pass `-R` to every `gh` command for it.
+- **Every PR carries the level's label.** A linked PR without one gets the
+  lead alone from a later `@{{ github_runner_bot }}`, however much the change deserves.
+- **Tell the roles where everything is.** Each role's prompt names the
+  clones and which of them changed. `engineer` commits in each and runs
+  each one's tests, `reviewer` reads the diff of each, and an approval
+  covers all of them. Keep the rounds on the main PR, whose Progress
+  section is the whole work's, and give a linked PR's only what it needs to
+  say what it is part of.
+- **Commit and push each repository before a role's turn ends.** When a job
+  is cut off, what is left in a clone is pushed and opened as a draft, but
+  that PR knows only the issue.
+
+## Continuing
+
+When you are started on a PR, its description is your memory: read the
+Progress section and keep the earlier rounds' findings. A comment from the
+user overrides the plan. A PR with a `### Linked PRs` section is one part of
+a whole, and it does not matter which part you were started on: treat that
+one as the main PR for this job. Read each linked PR's comments with
+`claude-job-pr-comments <name> <number>`, since your prompt has only this
+PR's, and `gh pr view` leaves out inline comments and shows everyone's,
+where this shows only the people the job may listen to. Clone what you
+need, switch to the branch with
+`git -C ../<name> fetch origin <branch>` and `git -C ../<name> switch <branch>`,
+and fix each thing in the repository it belongs to. Report on the PR you
+were started on, saying what changed in which repository. When you are started on an issue that already has
+an open PR of yours (`gh pr list --search "#<issue> in:body"`), switch to
+its branch (`git fetch origin <branch> && git switch <branch>`) and carry
+on there rather than starting over. An issue done in parts has a PR per
+part: "Work in parts" says which to take.
+
+## Stopping before the job does
+
+The workflow gives you a time to stop by. Check it with `date -u` before
+each role's turn and each review round. Stopping at a step boundary is
+always better than being cut off in the middle of one. If you are cut off
+anyway, the workflow pushes what is left and opens the draft itself.
+
+**A long job comes in parts.** Your GitHub token lasts an hour, so when
+your prompt says to stop this part by one time and the job by a later one,
+the first is your token's: past it, pushes, `gh` and the checks fail.
+At the part's time, with work left: commit and push what there is, set
+Progress to `working` with the exact next step, and in the first part,
+where you have it, update your tracking comment to one line saying the
+work goes on in the next part, since the action marks it finished when the
+part ends. Then run `claude-job-part continue` and end your turn without a
+closing comment. Ending a part without it, earlier than its time
+included, ends the job's parts there. The next part
+resumes this conversation with a fresh token and a new time to stop by;
+carry on from Next. Work that cannot be pushed yet, a role's turn in
+progress, waits for the part: never start a turn that cannot end before it.
+You see the clock only between your own calls, and a role's turn or a
+review round often takes 20 minutes, so with less than 15 minutes left to
+the part's time, start none: stop the part there. A part cut off at its
+limit still goes on, resumed in the next part, but the turn it was in is
+lost and Progress says what it said before; check `git status` and the
+branch before carrying on.
+
+**At the job's own time**, with work left: commit and push what there
+is, set Progress to `working` with the exact next step, leave the PR a
+draft, and say in your comment what is done and what is next. The
+workflow starts a new job on it by itself, which carries on from Next, so
+never comment `@{{ github_runner_bot }}` yourself. Running out of turns or context, or
+anything that needs the user first, is `stopped` instead, and your comment
+says that `@{{ github_runner_bot }} continue` picks it up. A PR left a draft has had no CI
+when its repository skips a draft's checks: say in your comment whether
+CI ran on the head you leave, and if it did not, that it has not.
+
+## Clean commits
+
+The PR's commits are what the user reviews and what lands on the default
+branch, so keep them the commits the change should have been made in: no
+"fix the previous commit", "address review" or "WIP" commits. The
+`clean-commits` skill is how: folding a fix into its commit, squashing when
+the user asks in a comment, rebasing onto the default branch, and finding
+the commit the user last approved, which is never rewritten again. The
+workflow's own `WIP: interrupted` commit is folded the same way when you
+continue.
+
+## Teaching the repository
+
+Most of a job goes on finding your way around. What one job had to work
+out, the next should be told, in the repository's own CLAUDE.md:
+
+- how to run its tests, its linters or its service, when you had to
+  discover it;
+- where things live and what a part is for, when it took reading many files
+  to find out;
+- a convention the code follows that you or the engineer got wrong at first;
+- a mistake the reviewer caught that a line of guidance would have
+  prevented. The reviewer marks these under "Lessons".
+
+Add them in the same PR, a line or two each, under the heading where they
+belong, and never anything this one issue alone needed. List them in the
+description as "CLAUDE.md: <what you added>", so the user can drop any they
+disagree with. If the repository has no CLAUDE.md, create one with what
+you learned; keep it to what a newcomer needs first.
+
+The architecture documentation says what is, and a change that moves a
+part keeps it true in the same PR: `engineer` before it finishes,
+`reviewer` as a finding when it was missed, and you yourself on `{{ github_runner_bot }}`.
+The description names the documents changed, as "Docs: <files>".
+
+## Proposing issues
+
+You may open issues for work you find but should not do now: a bug next
+to the one you are fixing, a follow-up the criteria put out of scope, a
+"Not agreed" item worth its own discussion, or whatever the user asks you
+to write up. The `propose-issue` skill is how, and it labels them
+`{{ github_runner_bot }}:proposed`: never add a working label to any issue, since those
+start work and only the user starts work. Link the issues you opened in
+the description.

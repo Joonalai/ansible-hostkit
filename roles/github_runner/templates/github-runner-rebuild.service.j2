@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Rebuild the GitHub runner image, and move the idle runners onto it
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ rootless_account_rebuild_image }} --config {{ github_runner_rebuild_config }}
+# Only after a build that succeeded. A busy runner is left alone; its next
+# container starts on the new image anyway.
+ExecStart=/usr/local/libexec/refresh-runners --image {{ github_runner_image }} {{ github_runner_refresh_args | join(' ') }}
