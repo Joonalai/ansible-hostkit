@@ -44,6 +44,22 @@ repos:
       - id: markdownlint-cli2
         files: \.md$
 
+  # The Python the roles carry: every ruff rule and every ty rule, set in
+  # pyproject.toml, from the venv so uv.lock pins both.
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: .venv/bin/ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+      - id: ty
+        name: ty
+        entry: .venv/bin/ty check
+        language: system
+        pass_filenames: false
+        files: \.py$
+
   # Unit tests for the Python the roles carry. Every Python file here has
   # tests beside it, and a commit with a failing one is not one to make.
   - repo: local

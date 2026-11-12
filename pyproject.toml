@@ -13,9 +13,81 @@ dev = [
     "ansible-lint>=26.10.1",
     "prek>=0.5.6",
     "pytest>=9.1",
+    "ruff>=0.17.5",
+    "ty>=0.0.101",
 ]
 
 [tool.pytest.ini_options]
 # Every Python file a role carries lives under its files/, with its tests
 # beside it in tests/.
 testpaths = ["roles"]
+
+[tool.ruff]
+# The scripts run on the hosts' and the images' own python3, Debian
+# trixie's, not on this venv's.
+target-version = "py313"
+line-length = 140
+# The agents' skills come from a template and are kept as it writes them.
+extend-exclude = [".agents"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Each of these pairs excludes the other; D211 and D212 are the ones kept.
+    "D203",
+    "D213",
+    # A summary here is a sentence, as long as it needs and in the
+    # indicative, as the prose around it is.
+    "D205",
+    "D401",
+    # The LICENSE at the root covers every file.
+    "CPY001",
+    # Not packages: each script stands alone under a role's files/, and
+    # Ansible gives it its mode when it installs it.
+    "INP001",
+    "EXE001",
+    # Command-line programs: stdout is how they speak.
+    "T201",
+    # Running podman, git, gh and systemctl is what the scripts are for:
+    # always an argument list, never a shell, on the PATH their unit sets.
+    "S603",
+    "S607",
+    # os and os.path throughout, which the tests replace by name.
+    "PTH",
+    # A message is written where it is raised, and main() turns it into one
+    # line: no traceback shows it twice.
+    "EM",
+    "TRY003",
+]
+
+# What the scripts write to people: a range's dash and a count's times sign.
+allowed-confusables = ["–", "×"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = [
+    # A test is named for what it shows and asserts it, with whatever
+    # values, stand-ins and private names that takes. Its parameters and
+    # return are typed like any function's (nls-python).
+    "D1",
+    "S101",
+    "S105",
+    "S106",
+    "S108",
+    "PLR2004",
+    "PLR0913",
+    "PLR0917",
+    "ARG",
+    "FBT",
+    "SLF001",
+    "PT018",
+    "PLC0415",
+]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+exclude = [".agents"]
+
+[tool.ty.rules]
+all = "error"

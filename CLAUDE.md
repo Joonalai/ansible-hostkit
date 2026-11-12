@@ -75,14 +75,16 @@ whole history. Everything committed must be fit for that already:
 ## Commands
 
 ```sh
-uv sync --locked                    # the venv: ansible, ansible-lint, prek, pytest
+uv sync --locked                    # the venv: ansible, ansible-lint, prek, pytest, ruff, ty
 .venv/bin/prek install              # the pre-commit and commit-msg hooks
 .venv/bin/prek run --all-files      # every hook, which must pass before a commit
 .venv/bin/pytest                    # the roles' Python tests alone
+.venv/bin/ruff check                # every ruff rule, as pyproject.toml sets them
+.venv/bin/ty check                  # every ty rule, as errors
 ```
 
-The hooks include gitleaks, ansible-lint's `production` profile and the
-tests. Run them before every commit, and fix what they report rather than
+The hooks include gitleaks, ansible-lint's `production` profile, ruff, ty
+and the tests. Run them before every commit, and fix what they report rather than
 skipping a hook.
 
 ## Layout and conventions
@@ -90,7 +92,11 @@ skipping a hook.
 - `galaxy.yml` at the root, roles under `roles/<name>/`. Each role with
   traps of its own keeps them in a `CLAUDE.md` beside its tasks.
 - Every Python file a role carries under `files/` has pytest tests beside
-  it in `tests/`.
+  it in `tests/`, and passes ruff and ty with every rule on. What is
+  ignored for all of them is in `pyproject.toml` with its reason; a
+  `# noqa` or `# ty: ignore` in a file names its rule and says why. The
+  scripts run on Debian's python3, so both tools target that version, not
+  the venv's.
 - FQCN everywhere. `become: true` per task, not per play.
 - Role variables and `register:` names carry the role's name as a prefix.
 - Prefer a module over `command`. Where `command` is unavoidable it needs
