@@ -1,0 +1,10 @@
+---
+- name: Restart the CI dispatcher
+  when:
+    - not ansible_check_mode
+    - not (is_container_environment | default(false) | bool)
+  ansible.builtin.systemd_service:
+    name: "{{ ci_runner_service }}.service"
+    daemon_reload: true
+    state: restarted
+  become: true

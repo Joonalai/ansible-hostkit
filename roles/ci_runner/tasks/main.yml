@@ -1,0 +1,9 @@
+---
+# ci_runner_enabled false takes CI off this host whole.
+- name: Set up the CI runners
+  when: ci_runner_enabled | bool
+  ansible.builtin.include_tasks: present.yml
+
+- name: Take the CI runners off this host
+  when: not (ci_runner_enabled | bool)
+  ansible.builtin.include_tasks: absent.yml

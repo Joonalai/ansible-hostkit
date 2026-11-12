@@ -1,0 +1,64 @@
+#!/bin/bash
+# Pulls the images the jobs use once, into a store of its own, and writes each
+# to the shared image files, from which every slot loads what its store lacks
+# (ci-runner-entrypoint). Takes the images as arguments. Runs no job's code, so
+# it alone mounts them writable, and the dispatcher then copies them to root's
+# directory, which the runners mount.
+#
+# A file holds the image under a tag, its reference without the digest. Loaded
+# under that tag, a reference by digest finds it and Docker pulls nothing.
+# Saved by digest alone, it would load with no name, and a job would pull it
+# again.
+set -euo pipefail
+
+images=/ci-runner-images
+
+# shellcheck source=/dev/null
+source /usr/local/bin/ci-runner-dockerd
+
+# What an interrupted run left half written.
+rm -f "$images"/.[!.]*
+
+status=0
+kept=()
+index=$(mktemp "$images/.index.XXXXXX")
+for image in "$@"; do
+  if ! docker pull --quiet "$image" >/dev/null; then
+    echo "Could not pull $image" >&2
+    status=1
+    # The copy from an earlier run still serves, rather than each slot
+    # downloading the image itself.
+    docker image inspect "$image" >/dev/null 2>&1 || continue
+  fi
+  tagged=${image%@*}
+  # A reference by digest alone gets a tag of its own.
+  [[ ${tagged##*/} == *:* ]] || tagged="$tagged:pinned"
+  docker tag "$image" "$tagged"
+  id=$(docker image inspect --format '{{.Id}}' "$image")
+  file=${id#sha256:}.tar
+  # Named by its content, so a file that is there is the right one.
+  if [[ ! -f $images/$file ]]; then
+    docker save --output "$images/.$file" "$tagged"
+    mv "$images/.$file" "$images/$file"
+  fi
+  printf '%s\t%s\n' "$image" "$file" >>"$index"
+  kept+=("$id")
+done
+chmod 0644 "$index"
+mv "$index" "$images/index"
+
+# The files no image of the list names any more.
+for path in "$images"/*.tar; do
+  [[ -e $path ]] || continue
+  cut -f2 "$images/index" | grep -qxF "${path##*/}" || rm -f "$path"
+done
+chmod 0644 "$images"/*.tar 2>/dev/null || true
+
+# Images of this store no entry of the list names any more, so the store does
+# not grow with each new digest.
+for id in $(docker image ls --quiet --no-trunc | sort -u); do
+  printf '%s\n' "${kept[@]}" | grep -qxF "$id" || docker image rm --force "$id" >/dev/null 2>&1 || true
+done
+
+stop_dockerd
+exit "$status"

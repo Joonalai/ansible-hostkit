@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Start a CI runner for each job GitHub queues for this host
+Wants=network-online.target
+After=network-online.target {{ ci_runner_sandbox_unit }} {{ ci_runner_user_unit }}
+# Neither the dispatcher nor the account runs without the host's sandbox.
+Requires={{ ci_runner_sandbox_unit }} {{ ci_runner_user_unit }}
+
+[Service]
+ExecStart={{ ci_runner_script }} run
+Restart=always
+RestartSec=30
+# The runners' one-time configurations, readable by the account alone.
+RuntimeDirectory={{ ci_runner_name }}
+RuntimeDirectoryMode=0711
+# Root, to hold the token and start units in the account's manager. No
+# ProtectHome=, which would keep podman, run as the account, out of its home.
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

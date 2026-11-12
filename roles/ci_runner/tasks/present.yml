@@ -1,0 +1,329 @@
+---
+- name: Refuse to run without what the host must give
+  ansible.builtin.assert:
+    that:
+      - ci_runner_name is match('^[a-z][a-z0-9-]*$')
+      - ci_runner_sandbox_unit is match('^[A-Za-z0-9:_.@-]+\.(service|target)$')
+      - ci_runner_sandbox_check is not string
+      - ci_runner_sandbox_check is iterable
+      - ci_runner_subuid_start | string is match('^[0-9]+$')
+      - ci_runner_repos | length > 0
+    fail_msg: >-
+      ci_runner wants ci_runner_sandbox_unit (the full name of the unit that
+      sandboxes the CI account), ci_runner_subuid_start and ci_runner_repos.
+    quiet: true
+
+- name: Refuse a dispatcher without a token
+  ansible.builtin.assert:
+    that: ci_runner_github_token | length > 0
+    fail_msg: Set ci_runner_github_token from the consumer's secret store.
+    quiet: true
+  no_log: true
+
+# --- The sandbox comes before anything the account runs -----------------------
+
+# The host's own unit. This role never writes a firewall rule: it only
+# refuses to go on without the unit that holds them.
+- name: Look for the host's sandbox unit
+  ansible.builtin.command:
+    argv: [systemctl, show, --property=LoadState, --property=ActiveState, "{{ ci_runner_sandbox_unit }}"]
+  register: ci_runner_sandbox_state
+  changed_when: false
+  check_mode: false
+
+# A first dry run of a play that installs the sandbox and the runners
+# together has no unit yet.
+- name: Stop a dry run that has no sandbox to look at
+  when:
+    - ansible_check_mode
+    - "'LoadState=loaded' not in ci_runner_sandbox_state.stdout_lines"
+  ansible.builtin.meta: end_role
+
+- name: Refuse to run without the sandbox
+  ansible.builtin.assert:
+    that:
+      - "'LoadState=loaded' in ci_runner_sandbox_state.stdout_lines"
+      - "'ActiveState=active' in ci_runner_sandbox_state.stdout_lines"
+    fail_msg: >-
+      {{ ci_runner_sandbox_unit }} is not loaded and active
+      ({{ ci_runner_sandbox_state.stdout_lines | join(', ') }}). The host must
+      sandbox {{ ci_runner_account }} before this role runs anything as it.
+    quiet: true
+
+# --- The account ---------------------------------------------------------------
+
+- name: Look for the CI account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ci_runner_account }}"
+    fail_key: false
+
+- name: Stop a dry run that has no account to look at
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[ci_runner_account] is none
+  ansible.builtin.meta: end_role
+
+# With fewer IDs the runner image cannot be unpacked. A test container that
+# builds no image may give fewer.
+- name: Refuse an account too small for the jobs' images
+  when: not (is_container_environment | default(false) | bool)
+  ansible.builtin.assert:
+    that: ci_runner_subuid_count | int >= 65536
+    fail_msg: ci_runner_subuid_count must be at least 65536.
+    quiet: true
+
+- name: Create the CI account
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: "{{ ci_runner_account }}"
+    rootless_account_uid: "{{ ci_runner_account_uid }}"
+    rootless_account_subuid_start: "{{ ci_runner_subuid_start }}"
+    rootless_account_subuid_count: "{{ ci_runner_subuid_count }}"
+    rootless_account_memory_max: "{{ ci_runner_memory_max }}"
+    rootless_account_memory_swap_max: "{{ ci_runner_memory_swap_max }}"
+    rootless_account_cpu_quota: "{{ ci_runner_cpu_quota }}"
+
+- name: Look up the account again
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ci_runner_account }}"
+
+# Copied into the role's own names before another account's include
+# overwrites rootless_account's facts.
+- name: Name the account's manager, home and environment
+  ansible.builtin.set_fact:
+    ci_runner_user_unit: user@{{ ansible_facts.getent_passwd[ci_runner_account][1] }}.service
+    ci_runner_home: "{{ ansible_facts.getent_passwd[ci_runner_account][4] }}"
+    ci_runner_env: "{{ rootless_account_env }}"
+
+- name: Create the drop-in directory for the account's manager
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ ci_runner_user_unit }}.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Tie the account's manager to the sandbox
+  ansible.builtin.template:
+    src: user-requires-sandbox.conf.j2
+    dest: /etc/systemd/system/{{ ci_runner_user_unit }}.d/sandbox.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: ci_runner_sandbox_tie
+  become: true
+
+- name: Make systemd read the tie before the account runs anything
+  when:
+    - ci_runner_sandbox_tie.changed
+    - not ansible_check_mode
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  become: true
+
+- name: Create the dispatcher's directory
+  ansible.builtin.file:
+    path: "{{ ci_runner_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+
+# --- The runner image ---------------------------------------------------------
+
+# Root's, so the account builds from files it cannot change.
+- name: Create the image's build directory
+  ansible.builtin.file:
+    path: "{{ ci_runner_home }}/image"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Copy the image's scripts
+  ansible.builtin.copy:
+    src: image/
+    dest: "{{ ci_runner_home }}/image/"
+    owner: root
+    group: root
+    mode: preserve
+  register: ci_runner_image_files
+  become: true
+
+- name: Write the image's Containerfile
+  ansible.builtin.template:
+    src: Containerfile.j2
+    dest: "{{ ci_runner_home }}/image/Containerfile"
+    owner: root
+    group: root
+    mode: "0644"
+  register: ci_runner_image_containerfile
+  become: true
+
+- name: Look for the runner image
+  when: not (is_container_environment | default(false) | bool)
+  ansible.builtin.command:
+    argv: [podman, image, exists, "{{ ci_runner_image }}"]
+  register: ci_runner_image_present
+  changed_when: false
+  failed_when: ci_runner_image_present.rc not in [0, 1]
+  check_mode: false
+  become: true
+  become_user: "{{ ci_runner_account }}"
+  environment: "{{ ci_runner_env }}"
+
+# Built by the account itself, which downloads the base. A few minutes. Not
+# in a test container, whose account has too few IDs for it.
+- name: Build the runner image
+  when:
+    - not (is_container_environment | default(false) | bool)
+    - not ansible_check_mode
+    - >-
+      ci_runner_image_files.changed or ci_runner_image_containerfile.changed
+      or ci_runner_image_present.rc != 0
+  ansible.builtin.command:
+    argv: [podman, build, --pull=newer, --tag, "{{ ci_runner_image }}", "{{ ci_runner_home }}/image"]
+  register: ci_runner_image_built
+  changed_when: true
+  become: true
+  become_user: "{{ ci_runner_account }}"
+  environment: "{{ ci_runner_env }}"
+
+# --- The dispatcher -----------------------------------------------------------
+
+- name: Write the GitHub token
+  ansible.builtin.copy:
+    content: "{{ ci_runner_github_token }}\n"
+    dest: "{{ ci_runner_token_file }}"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  become: true
+
+- name: Install the dispatcher
+  ansible.builtin.copy:
+    src: ci_runner_dispatcher.py
+    dest: "{{ ci_runner_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart the CI dispatcher
+  become: true
+
+- name: Write the dispatcher's config
+  ansible.builtin.copy:
+    content: >-
+      {{ {'account': ci_runner_account,
+          'sandbox_unit': ci_runner_sandbox_unit,
+          'sandbox_check': ci_runner_sandbox_check,
+          'repos': ci_runner_repos,
+          'label': ci_runner_label,
+          'variable': ci_runner_variable,
+          'slots': ci_runner_slots | int,
+          'image': ci_runner_image,
+          'token_file': ci_runner_token_file,
+          'env_dir': ci_runner_run_dir,
+          'pause_file': ci_runner_pause_file,
+          'warm_images': ci_runner_warm_images,
+          'images_dir': ci_runner_images_dir,
+          'images_staging': ci_runner_home ~ '/images',
+          'job_max_seconds': ci_runner_job_max_seconds | int,
+          'job_env': ci_runner_job_env,
+          'poll_seconds': ci_runner_poll_seconds | int} | to_nice_json }}
+    dest: "{{ ci_runner_config }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: ci_runner_config_written
+  notify: Restart the CI dispatcher
+  become: true
+
+- name: Create the warming's directory
+  ansible.builtin.file:
+    path: "{{ ci_runner_home }}/images"
+    state: directory
+    owner: "{{ ci_runner_account }}"
+    group: "{{ ci_runner_account }}"
+    mode: "0755"
+  become: true
+
+# Root's: every runner mounts it, before the first image is there too.
+- name: Create the shared image files' directory
+  ansible.builtin.file:
+    path: "{{ ci_runner_images_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Look for the shared image files
+  ansible.builtin.stat:
+    path: "{{ ci_runner_images_dir }}/index"
+  register: ci_runner_images_index
+  become: true
+
+# The jobs' images are pulled once, into a store of the warming's own, and
+# written as files each slot loads from before a job (ci-runner-warm).
+# Runners keep running meanwhile. A few minutes the first time.
+- name: Write the shared image files
+  when:
+    - not (is_container_environment | default(false) | bool)
+    - not ansible_check_mode
+    - >-
+      ci_runner_image_built.changed | default(false)
+      or ci_runner_config_written.changed
+      or not ci_runner_images_index.stat.exists
+  ansible.builtin.command:
+    argv: ["{{ ci_runner_script }}", warm]
+  changed_when: true
+  become: true
+
+- name: Install the dispatcher's unit
+  ansible.builtin.template:
+    src: dispatcher.service.j2
+    dest: /etc/systemd/system/{{ ci_runner_service }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: ci_runner_dispatcher_unit
+  notify: Restart the CI dispatcher
+  become: true
+
+# Only on a real host: a test container's token opens nothing at GitHub, and
+# its account cannot run the image. The play installs and checks the rest
+# there. A pause survives this: the dispatcher honours its file.
+- name: Start the dispatcher
+  when:
+    - not (is_container_environment | default(false) | bool)
+    - not (ansible_check_mode and ci_runner_dispatcher_unit.changed)
+  ansible.builtin.systemd_service:
+    name: "{{ ci_runner_service }}.service"
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+
+# The last step: from here on the repositories' jobs come to this host. A
+# repository that is not private is left on GitHub's runners.
+- name: Point the private repositories' workflows at the runners
+  when:
+    - not (is_container_environment | default(false) | bool)
+    - not ansible_check_mode
+  ansible.builtin.command:
+    argv: ["{{ ci_runner_script }}", enable]
+  register: ci_runner_enabled_repos
+  # The same call again is harmless, and a call over a busy connection can
+  # time out.
+  until: ci_runner_enabled_repos.rc == 0
+  retries: 3
+  delay: 15
+  changed_when: false
+  become: true
