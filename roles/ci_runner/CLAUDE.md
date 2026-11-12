@@ -12,7 +12,7 @@ firewall's rules can be flushed while their unit still reads active, so the
 host may add `ci_runner_sandbox_check`, a command of its own that looks at
 the rules. The dispatcher runs it as root, and anything but exit 0, a
 missing command or a timeout included, starts nothing. What the sandbox
-must hold is in the README.
+must hold is in [docs/ci_runner.md](../../docs/ci_runner.md).
 
 **A restart of the sandbox unit stops every job,** since the account's
 manager requires it. A host that changes its rules reloads the unit instead.

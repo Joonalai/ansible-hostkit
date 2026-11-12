@@ -28,7 +28,7 @@ ci_runner_memory_max: ""
 ci_runner_memory_swap_max: ""
 ci_runner_cpu_quota: ""
 
-# The sandbox is the host's own (README, "What the host must provide"). The
+# The sandbox is the host's own (docs/ci_runner.md, "What the host must provide"). The
 # unit that holds the account off the host's services and networks, by its
 # full name ("ci-sandbox.service"). The account's manager and the dispatcher
 # require it, so neither runs without it. No default: the role refuses to

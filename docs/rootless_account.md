@@ -1,0 +1,120 @@
+# rootless_account
+
+Makes an account that runs rootless podman containers from its own systemd
+manager. Other roles include it, once for each account they need. It can
+also be used on its own.
+
+## What it sets up
+
+```mermaid
+flowchart TD
+    P[Install podman and<br/>its rootless helpers] --> U[Create the account,<br/>password locked]
+    U --> I[Pin its subordinate ID range<br/>in /etc/subuid and /etc/subgid]
+    I --> L[Enable linger, so its systemd<br/>manager runs without a login]
+    L --> C[Config directories, login environment<br/>and podman's storage driver]
+    C --> S[Install the image<br/>rebuild script]
+    S --> M[Memory and CPU limits<br/>on the account's manager]
+    M --> F[Flush handlers: podman re-reads<br/>the range, systemd the limits]
+    F --> O[Facts for the including role]
+```
+
+- **The range is pinned,** not left to `useradd`: the account's containers
+  run as those IDs on the host, so the host's sandbox may have to name them.
+- **Linger** keeps the account's manager, and so its containers, running
+  after a reboot though nothing logs in as the account.
+- **The limits** are a drop-in on `user@<uid>.service` and so hold every
+  container and process the account runs.
+- **The rebuild script** builds an account's image from a config the play
+  writes, afresh once a week, for the including role to run from the play
+  and from a timer of its own.
+
+## Where the account's containers run
+
+```mermaid
+flowchart LR
+    subgraph Host
+        subgraph Sys["systemd, the system's"]
+            UM["user@UID.service<br/>MemoryMax, MemorySwapMax, CPUQuota"]
+        end
+        subgraph Acc["The account"]
+            MG[Its systemd manager]
+            C1[Container]
+            C2[Container]
+        end
+        IDS[Subordinate IDs<br/>start to start + count]
+    end
+    UM --> MG
+    MG --> C1
+    MG --> C2
+    C1 -.->|its users map to| IDS
+    C2 -.->|its users map to| IDS
+```
+
+## What the host must provide
+
+Debian with systemd, and a subordinate ID range that no other account
+uses. The role does not sandbox the account: a role that runs untrusted code
+in it says what the host must hold off, as `ci_runner` does.
+
+## Variables
+
+Required:
+
+| Variable                        | What it is                                      |
+| ------------------------------- | ----------------------------------------------- |
+| `rootless_account_user`         | The account's name                              |
+| `rootless_account_subuid_start` | The start of the account's subordinate ID range |
+
+Optional:
+
+| Variable                           | Default                            | What it is                                                   |
+| ---------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| `rootless_account_uid`             | the system's choice                | Pin it when the host's hardening names the account by number |
+| `rootless_account_home`            | `/home/<user>`                     | The account's home                                           |
+| `rootless_account_subuid_count`    | `65536`                            | The size of the range                                        |
+| `rootless_account_create`          | `true`                             | `false` when another role owns the account, linger and shell |
+| `rootless_account_memory_max`      | none                               | Memory of everything the account runs                        |
+| `rootless_account_memory_swap_max` | none                               | How much of that may sit in swap                             |
+| `rootless_account_cpu_quota`       | none                               | CPU time of everything the account runs, `200%` is two cores |
+| `rootless_account_rebuild_bin`     | `/usr/local/libexec/rebuild-image` | Where the image rebuild script is installed                  |
+
+Two flags are read from the play: `install_dependencies`, `false` to skip
+the `apt` task, and `is_container_environment`, `true` in a test container,
+which switches podman to the userspace overlay driver.
+
+Each is described in full in
+[`roles/rootless_account/defaults/main.yml`](../roles/rootless_account/defaults/main.yml).
+
+## Using it
+
+```yaml
+- name: Create the account
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: runner
+    rootless_account_uid: 2001
+    rootless_account_subuid_start: 165536
+    rootless_account_memory_max: 4G
+```
+
+The role leaves these facts, which the including role copies into names of
+its own before another account's include overwrites them:
+
+| Fact                             | What it is                                                       |
+| -------------------------------- | ---------------------------------------------------------------- |
+| `rootless_account_env`           | `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` for the account |
+| `rootless_account_runtime_dir`   | `/run/user/<uid>`                                                |
+| `rootless_account_rebuild_image` | The path of the image rebuild script                             |
+
+Every task that runs as the account carries the environment itself, since
+`become` opens no login session:
+
+```yaml
+- name: List the account's containers
+  ansible.builtin.command: podman ps
+  changed_when: false
+  become: true
+  become_user: runner
+  environment: "{{ rootless_account_env }}"
+```
