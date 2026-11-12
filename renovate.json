@@ -86,6 +86,16 @@
       ],
       "depNameTemplate": "@playwright/mcp",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Versions in the workflows marked with a renovate comment on the line before",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+[\\w-]+: \"(?<currentValue>[^\"]+)\""
+      ]
     }
   ],
   "packageRules": [
@@ -95,6 +105,18 @@
         "node"
       ],
       "allowedVersions": "/^\\d*[02468]\\./"
+    },
+    {
+      "description": "prek for the hooks: uv.lock's and the workflows' move in one pull request, the runner image's on its own",
+      "matchPackageNames": [
+        "prek"
+      ],
+      "matchFileNames": [
+        "pyproject.toml",
+        "uv.lock",
+        ".github/workflows/**"
+      ],
+      "groupName": "prek for the hooks"
     }
   ]
 }
