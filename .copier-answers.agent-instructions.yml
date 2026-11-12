@@ -1,0 +1,14 @@
+# _commit: b7af219
+_src_path: https://github.com/nlsfi/agent-instructions-template.git
+external_skills:
+- ansible-good-practices
+- ansible-new-molecule
+- ansible-new-role
+has_airflow: false
+has_ansible: true
+has_java: false
+has_jenkins: false
+has_python: false
+has_qgis: false
+has_sql: false
+use_external_skills: true

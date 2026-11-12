@@ -6,6 +6,8 @@ profile: production
 # template's files are excluded here too.
 exclude_paths:
   - .agents/
+  # The same skills again, through Claude Code's symlink to them.
+  - .claude/skills/
   - .copier-answers.*.yml
 
 skip_list:

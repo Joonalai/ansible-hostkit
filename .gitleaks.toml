@@ -1,0 +1,9 @@
+# gitleaks reads the staged diff itself, so prek's exclude does not reach it.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Skills vendored from a template, whose docs show fake secrets as bad examples"
+paths = [
+  '''^\.agents/''',
+]
