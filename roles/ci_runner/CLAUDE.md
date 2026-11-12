@@ -24,7 +24,9 @@ them: podman's events come from the account, where a job runs as the
 container's root, so they are parsed strictly and could at worst skew the
 job's own row. Keep it that way. Job and workflow names are the
 repositories' authors' text, and `report` strips control characters before
-it prints them.
+it prints them. The records name the private repositories: root reads them, and
+`ci_runner_timing_group` only when the consumer names one, never
+`pending.json`. `report` reads no config, so the group needs nothing else.
 
 **A restart of the sandbox unit stops every job,** since the account's
 manager requires it. A host that changes its rules reloads the unit instead.

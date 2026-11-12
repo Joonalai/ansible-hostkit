@@ -1295,3 +1295,36 @@ def test_records_are_read_from_the_days_asked_and_strange_lines_skipped(tmp_path
 )
 def test_only_the_report_takes_days(argv: list[str], ok: bool) -> None:
     assert dispatcher.usage_ok(argv) is ok
+
+
+def test_the_named_readers_get_the_day_files_and_not_whats_pending(timed: dict[str, Any]) -> None:
+    d = poll(timed | {"timing_group_read": True}, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    d.sample(1.0)
+    modes = {path.name: path.stat().st_mode & 0o777 for path in Path(timed["timing_dir"]).iterdir()}
+    assert modes == {"pending.json": 0o600, "2026-11-12.jsonl": 0o640}
+
+
+def test_the_report_needs_no_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                    capsys: pytest.CaptureFixture[str], clock: Clock) -> None:
+    (tmp_path / "2026-11-12.jsonl").write_text(json.dumps(QUICK) + "\n")
+    monkeypatch.setattr(dispatcher, "timing_dir", lambda: tmp_path)
+
+    def no_config(path: Path) -> Never:
+        raise AssertionError(path)
+
+    monkeypatch.setattr(dispatcher, "load_config", no_config)
+    assert dispatcher.main(["/usr/local/sbin/ci-runner-dispatcher", "report", "3"]) == 0
+    assert "the last 3 days: 1 jobs" in capsys.readouterr().out
+
+
+def test_a_report_the_reader_may_not_read_says_who_may(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                      capsys: pytest.CaptureFixture[str]) -> None:
+    assert dispatcher.print_report(tmp_path / "missing", 14) == 1
+    assert "No timing records" in capsys.readouterr().out
+
+    def refused(*_args: object) -> Never:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(dispatcher, "read_records", refused)
+    assert dispatcher.print_report(tmp_path, 14) == 1
+    assert "ci_runner_timing_group" in capsys.readouterr().out

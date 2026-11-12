@@ -146,27 +146,28 @@ Metadata read.
 
 Optional:
 
-| Variable                     | Default                  | What it is                                                           |
-| ---------------------------- | ------------------------ | -------------------------------------------------------------------- |
-| `ci_runner_enabled`          | `true`                   | `false` takes CI off the host and out of GitHub                      |
-| `ci_runner_name`             | `ci-runner`              | What every file, unit, container and label is named after            |
-| `ci_runner_account`          | the name                 | The account the runners run as                                       |
-| `ci_runner_account_uid`      | the system's choice      | Pin it when the host's sandbox names the account by number           |
-| `ci_runner_subuid_count`     | `65536`                  | The size of the range, at least 65536                                |
-| `ci_runner_sandbox_check`    | `[]`                     | A command that exits 0 only while the sandbox's rules are in place   |
-| `ci_runner_memory_max`       | none                     | Memory of everything the account runs, such as `8G`                  |
-| `ci_runner_memory_swap_max`  | none                     | How much of that may sit in swap                                     |
-| `ci_runner_cpu_quota`        | none                     | CPU time of everything the account runs, such as `400%`              |
-| `ci_runner_label`            | the name                 | The label the jobs ask for, with `-pr` added for pull requests       |
-| `ci_runner_variable`         | `CI_RUNNER`              | The repository variable that sends a workflow's jobs to the host     |
-| `ci_runner_slots`            | `2`                      | How many jobs run at once, 1 to 8                                    |
-| `ci_runner_job_max_seconds`  | `3600`                   | The longest a job may run                                            |
-| `ci_runner_job_env`          | `{}`                     | Environment of every job. Shows in argument lists, so never a secret |
-| `ci_runner_poll_seconds`     | `20`                     | The time between polls                                               |
-| `ci_runner_timing_keep_days` | `90`                     | Days of records of where each job's time went. 0 records nothing     |
-| `ci_runner_image`            | a local tag off the name | The runner image, built on the host as the account                   |
-| `ci_runner_image_extra`      | none                     | Containerfile lines added to the image, pinned by checksum or digest |
-| `ci_runner_warm_images`      | `[]`                     | The images the jobs use, by digest, pulled once for every slot       |
+| Variable                     | Default                  | What it is                                                                    |
+| ---------------------------- | ------------------------ | ----------------------------------------------------------------------------- |
+| `ci_runner_enabled`          | `true`                   | `false` takes CI off the host and out of GitHub                               |
+| `ci_runner_name`             | `ci-runner`              | What every file, unit, container and label is named after                     |
+| `ci_runner_account`          | the name                 | The account the runners run as                                                |
+| `ci_runner_account_uid`      | the system's choice      | Pin it when the host's sandbox names the account by number                    |
+| `ci_runner_subuid_count`     | `65536`                  | The size of the range, at least 65536                                         |
+| `ci_runner_sandbox_check`    | `[]`                     | A command that exits 0 only while the sandbox's rules are in place            |
+| `ci_runner_memory_max`       | none                     | Memory of everything the account runs, such as `8G`                           |
+| `ci_runner_memory_swap_max`  | none                     | How much of that may sit in swap                                              |
+| `ci_runner_cpu_quota`        | none                     | CPU time of everything the account runs, such as `400%`                       |
+| `ci_runner_label`            | the name                 | The label the jobs ask for, with `-pr` added for pull requests                |
+| `ci_runner_variable`         | `CI_RUNNER`              | The repository variable that sends a workflow's jobs to the host              |
+| `ci_runner_slots`            | `2`                      | How many jobs run at once, 1 to 8                                             |
+| `ci_runner_job_max_seconds`  | `3600`                   | The longest a job may run                                                     |
+| `ci_runner_job_env`          | `{}`                     | Environment of every job. Shows in argument lists, so never a secret          |
+| `ci_runner_poll_seconds`     | `20`                     | The time between polls                                                        |
+| `ci_runner_timing_keep_days` | `90`                     | Days of records of where each job's time went. 0 records nothing              |
+| `ci_runner_timing_group`     | none                     | A group of the host's that reads the records and runs the report without root |
+| `ci_runner_image`            | a local tag off the name | The runner image, built on the host as the account                            |
+| `ci_runner_image_extra`      | none                     | Containerfile lines added to the image, pinned by checksum or digest          |
+| `ci_runner_warm_images`      | `[]`                     | The images the jobs use, by digest, pulled once for every slot                |
 
 Each is described in full in
 [`roles/ci_runner/defaults/main.yml`](../roles/ci_runner/defaults/main.yml).
@@ -217,7 +218,7 @@ The command is named after `ci_runner_name`.
 The dispatcher records where each job's time goes, from GitHub queueing it
 to its runner's container being removed, in
 `/var/lib/<name>/timing/`, a JSON line per job, per runner stopped unused
-and per poll sample, in a file per UTC day that only root reads. It keeps
+and per poll sample, in a file per UTC day. It keeps
 `ci_runner_timing_keep_days` of them, 90 by default, and 0 records
 nothing. The report reads them:
 
@@ -225,6 +226,11 @@ nothing. The report reads them:
 sudo ci-runner-dispatcher report      # the last 14 days
 sudo ci-runner-dispatcher report 60
 ```
+
+Only root reads them, unless `ci_runner_timing_group` names a group of the
+host's, whose members then read the records and run the report without
+sudo, as `/usr/local/sbin/ci-runner-dispatcher report`. The records name
+the private repositories, their workflows and their jobs.
 
 Per pool, the count, median, 90th percentile and longest of each part of a
 job's time:
