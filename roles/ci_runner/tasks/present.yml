@@ -213,7 +213,9 @@
           'images_staging': ci_runner_home ~ '/images',
           'job_max_seconds': ci_runner_job_max_seconds | int,
           'job_env': ci_runner_job_env,
-          'poll_seconds': ci_runner_poll_seconds | int} | to_nice_json }}
+          'poll_seconds': ci_runner_poll_seconds | int,
+          'timing_dir': ci_runner_timing_dir,
+          'timing_keep_days': ci_runner_timing_keep_days | int} | to_nice_json }}
     dest: "{{ ci_runner_config }}"
     owner: root
     group: root
@@ -229,6 +231,15 @@
     owner: "{{ ci_runner_account }}"
     group: "{{ ci_runner_account }}"
     mode: "0755"
+  become: true
+
+- name: Create the timing records' directory
+  ansible.builtin.file:
+    path: "{{ ci_runner_timing_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
   become: true
 
 # Root's: every runner mounts it, before the first image is there too.

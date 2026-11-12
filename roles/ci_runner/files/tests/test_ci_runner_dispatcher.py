@@ -38,21 +38,40 @@ class FakeGitHub:
         private: dict[str, bool] | None = None,
         queued: dict[tuple[str, str], int] | None = None,
         registered: dict[str, list[dict[str, Any]]] | None = None,
+        listed: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.private = private or {}
         self.queued = queued or {}
+        # Jobs listed besides the queued ones, by repository, and the answers
+        # for one job by id, which raise when an error is given.
+        self.listed = listed or {}
+        self.answers: dict[int, dict[str, Any] | Exception] = {}
+        self.asked: list[int] = []
         self.registered = registered or {}
         self.removed: list[tuple[str, int]] = []
         self.variables: dict[str, str] = {}
         self.made: list[tuple[str, str, str]] = []
         self.token_expiry: str | None = None
+        self.rate_remaining: int | None = None
 
     def is_private(self, repo: str) -> bool:
         return self.private.get(repo, True)
 
-    def queued_jobs(self, repo: str, labels: list[str]) -> dict[str, int]:
+    def jobs(self, repo: str, labels: list[str]) -> list[dict[str, Any]]:
         assert labels == [LABEL, PR]
-        return {label: self.queued.get((repo, label), 0) for label in labels}
+        queued = [
+            {"id": 1000 * (labels.index(label) + 1) + n, "status": "queued", "labels": [label]}
+            for label in labels
+            for n in range(self.queued.get((repo, label), 0))
+        ]
+        return queued + self.listed.get(repo, [])
+
+    def job(self, repo: str, job_id: int) -> dict[str, Any]:
+        self.asked.append(job_id)
+        answer = self.answers[job_id]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def runners(self, repo: str, labels: list[str]) -> list[dict[str, Any]]:
         return [r for r in self.registered.get(repo, []) if (repo, r["id"]) not in self.removed]
@@ -424,17 +443,17 @@ def test_old_env_files_are_removed(config: dict[str, Any], tmp_path: Path) -> No
 def test_one_repository_failing_does_not_stop_the_others(config: dict[str, Any]) -> None:
     class Failing(FakeGitHub):
         @override
-        def queued_jobs(self, repo: str, labels: list[str]) -> dict[str, int]:
+        def jobs(self, repo: str, labels: list[str]) -> list[dict[str, Any]]:
             if repo == APP:
                 raise urllib.error.URLError("down")
-            return super().queued_jobs(repo, labels)
+            return super().jobs(repo, labels)
 
     github, account = Failing(queued={(CORPUS, LABEL): 1}), FakeAccount()
     poll(config, github, account)
     assert [repo for repo, _, _ in github.made] == [CORPUS]
 
 
-def test_queued_jobs_counts_only_queued_jobs_by_label(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_queued_jobs_are_counted_by_label(monkeypatch: pytest.MonkeyPatch) -> None:
     github = dispatcher.GitHub("t")
     answers = {
         "/repos/r/x/actions/runs": {"workflow_runs": [{"id": 1}]},
@@ -447,8 +466,11 @@ def test_queued_jobs_counts_only_queued_jobs_by_label(monkeypatch: pytest.Monkey
             ],
         },
     }
-    monkeypatch.setattr(github, "get", lambda path, **_query: answers[path])
-    assert github.queued_jobs("r/x", [LABEL, PR]) == {LABEL: 2, PR: 2}
+    in_progress = {"workflow_runs": []}
+    monkeypatch.setattr(github, "get", lambda path, **q: in_progress if q.get("status") == "in_progress" else answers[path])
+    jobs = github.jobs("r/x", [LABEL, PR])
+    assert len(jobs) == 3
+    assert dispatcher.queued_counts(jobs, [LABEL, PR]) == {LABEL: 1, PR: 1}
 
 
 def test_an_unchanged_answer_comes_from_the_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -725,7 +747,7 @@ def test_jobs_of_many_runs_are_counted_whatever_order_they_come_in(monkeypatch: 
         return answers[path]
 
     monkeypatch.setattr(github, "get", get)
-    assert github.queued_jobs("r/x", [LABEL, PR]) == {LABEL: 0, PR: 10}
+    assert dispatcher.queued_counts(github.jobs("r/x", [LABEL, PR]), [LABEL, PR]) == {LABEL: 0, PR: 10}
 
 
 def test_a_call_that_gets_no_answer_is_logged_with_its_path(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -784,3 +806,269 @@ def test_the_watcher_follows_only_the_runners_being_removed() -> None:
     assert command[:4] == [dispatcher.RUNUSER, "-u", "ci-runner", "--"]
     assert f"label={dispatcher.runner_label()}=1" in command
     assert "event=remove" in command
+
+
+# Where a job's time went: the timing records.
+
+
+class Clock:
+    """The time the records take, moved by the test."""
+
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    clock = Clock()
+    monkeypatch.setattr(dispatcher, "utc_now", clock)
+    return clock
+
+
+@pytest.fixture
+def timed(config: dict[str, Any], tmp_path: Path, clock: Clock) -> dict[str, Any]:
+    timing = tmp_path / "timing"
+    timing.mkdir(mode=0o700)
+    return config | {"timing_dir": str(timing), "timing_keep_days": 90}
+
+
+def records(config: dict[str, Any], kind: str = "job") -> list[dict[str, Any]]:
+    found = []
+    for path in sorted(Path(config["timing_dir"]).glob("*.jsonl")):
+        found += [json.loads(line) for line in path.read_text().splitlines()]
+    return [record for record in found if record["kind"] == kind]
+
+
+def done(job_id: int, runner_name: str | None, conclusion: str = "success") -> dict[str, Any]:
+    return {
+        "id": job_id, "run_id": 7, "run_attempt": 1, "status": "completed", "conclusion": conclusion,
+        "labels": [LABEL], "workflow_name": "checks", "name": "test", "runner_name": runner_name,
+        "created_at": "2026-11-12T09:59:50Z", "started_at": "2026-11-12T10:01:00Z",
+        "completed_at": "2026-11-12T10:05:00Z",
+        "steps": [{"name": "Set up job", "started_at": "2026-11-12T10:01:05Z"}],
+    }
+
+
+def test_a_queued_job_is_noted_when_first_seen(timed: dict[str, Any]) -> None:
+    poll(timed, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    pending = json.loads((Path(timed["timing_dir"]) / "pending.json").read_text())
+    assert pending["jobs"]["1000"]["seen"] == "2026-11-12T10:00:00Z"
+    assert pending["jobs"]["1000"]["pool"] == "main"
+
+
+def test_a_job_gets_the_times_of_the_runner_that_ran_it_not_of_the_one_started_for_it(
+    timed: dict[str, Any], clock: Clock,
+) -> None:
+    running = done(5, None) | {"status": "in_progress", "conclusion": None}
+    github, account = FakeGitHub(queued={(APP, LABEL): 1}, listed={APP: [running]}), FakeAccount()
+    d = dispatcher_for(timed, github, account)
+    d.poll(NOW)
+    (_, name, _), = github.made
+    # The runner started for job 1000 took job 5, and 1000 was cancelled.
+    clock.now = NOW + timedelta(minutes=6)
+    github.queued, github.listed = {}, {APP: [done(5, name)]}
+    github.answers[1000] = done(1000, None, "cancelled") | {"steps": [], "started_at": None}
+    d.poll(clock.now)
+    by_id = {record["job_id"]: record for record in records(timed)}
+    ran = by_id[5]
+    assert (ran["runner"], ran["slot"], ran["conclusion"]) == (name, 1, "success")
+    assert ran["slot_given"] == ran["registered"] == ran["unit_started"] == "2026-11-12T10:00:00Z"
+    assert ran["job_started"] == "2026-11-12T10:01:05Z"
+    assert ran["seen"] is None
+    cancelled = by_id[1000]
+    assert cancelled["seen"] == "2026-11-12T10:00:00Z"
+    assert (cancelled["runner"], cancelled["slot"], cancelled["slot_given"], cancelled["job_started"]) == (None,) * 4
+    assert cancelled["conclusion"] == "cancelled"
+    # Once, after the runners were started.
+    assert github.asked == [1000]
+    assert json.loads((Path(timed["timing_dir"]) / "pending.json").read_text()) == {"jobs": {}, "runners": {}}
+
+
+def test_what_is_pending_survives_a_new_dispatcher(timed: dict[str, Any], clock: Clock) -> None:
+    poll(timed, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    clock.now = NOW + timedelta(minutes=5)
+    poll(timed, FakeGitHub(listed={APP: [done(1000, None)]}), FakeAccount())
+    record, = records(timed)
+    assert record["seen"] == "2026-11-12T10:00:00Z"
+
+
+def test_a_job_github_no_longer_has_is_written_with_what_is_known(timed: dict[str, Any]) -> None:
+    github = FakeGitHub(queued={(APP, LABEL): 1})
+    d = dispatcher_for(timed, github, FakeAccount())
+    d.poll(NOW)
+    github.queued = {}
+    github.answers[1000] = urllib.error.HTTPError("u", 404, "Not Found", Message(), None)
+    d.poll(NOW)
+    record, = records(timed)
+    assert (record["job_id"], record["conclusion"], record["seen"]) == (1000, None, "2026-11-12T10:00:00Z")
+
+
+def test_a_failed_look_up_keeps_the_job_pending(timed: dict[str, Any]) -> None:
+    github = FakeGitHub(queued={(APP, LABEL): 1})
+    d = dispatcher_for(timed, github, FakeAccount())
+    d.poll(NOW)
+    github.queued = {}
+    github.answers[1000] = urllib.error.URLError("down")
+    d.poll(NOW)
+    assert records(timed) == []
+    assert "1000" in d.timing.jobs
+
+
+def test_a_job_pending_too_long_is_written_and_dropped(timed: dict[str, Any], clock: Clock) -> None:
+    github = FakeGitHub(queued={(APP, LABEL): 1})
+    d = dispatcher_for(timed, github, FakeAccount([runner("busy-1"), runner("busy-2", slot=2)]))
+    d.poll(NOW)
+    clock.now = NOW + timedelta(seconds=timed["job_max_seconds"]) + timedelta(hours=1, seconds=1)
+    d.poll(clock.now)
+    record, = records(timed)
+    assert record["job_id"] == 1000
+    assert d.timing.jobs == {}
+
+
+def test_a_runner_stopped_unused_is_recorded_with_why(timed: dict[str, Any]) -> None:
+    registered = {APP: [{"id": 1, "name": "r1", "busy": False}, {"id": 2, "name": "r2", "busy": False}]}
+    account = FakeAccount([runner("r1", age=timedelta(minutes=11)), runner("r2", slot=2, age=timedelta(minutes=4))])
+    poll(timed, FakeGitHub(registered=registered), account)
+    idle = {record["runner"]: record for record in records(timed, "idle")}
+    assert idle["r1"]["why"] == "idle"
+    assert idle["r2"]["why"] == "surplus"
+    assert idle["r2"]["started"] == "2026-11-12T09:56:00Z"
+    assert idle["r2"]["stopped"] == "2026-11-12T10:00:00Z"
+
+
+def test_a_poll_sample_is_written_on_change_and_every_few_minutes(timed: dict[str, Any], clock: Clock) -> None:
+    github = FakeGitHub(queued={(APP, LABEL): 3})
+    d = dispatcher_for(timed, github, FakeAccount())
+    d.poll(NOW)
+    d.sample(1.23)
+    d.sample(2.0)
+    clock.now = NOW + timedelta(minutes=5)
+    d.sample(2.0)
+    github.queued = {}
+    d.poll(clock.now)
+    d.sample(0.5)
+    samples = records(timed, "poll")
+    assert [sample["t"] for sample in samples] == ["2026-11-12T10:00:00Z", "2026-11-12T10:05:00Z", "2026-11-12T10:05:00Z"]
+    first = samples[0]
+    assert first == {"v": 1, "kind": "poll", "t": "2026-11-12T10:00:00Z", "took_s": 1.2, "queued": {"main": 3, "pr": 0},
+                     "busy": 0, "slots": 2, "waiting": 1, "sandbox": True, "paused": False, "rate_low": False,
+                     "rate_left": None}
+    assert samples[2]["queued"] == {"main": 0, "pr": 0}
+
+
+def test_days_past_the_retention_are_removed(timed: dict[str, Any]) -> None:
+    directory = Path(timed["timing_dir"])
+    for name in ("2026-08-14.jsonl", "2026-08-15.jsonl", "notes.txt"):
+        (directory / name).write_text("")
+    poll(timed, FakeGitHub(), FakeAccount())
+    assert sorted(path.name for path in directory.iterdir()) == ["2026-08-15.jsonl", "notes.txt"]
+
+
+def test_a_write_that_fails_does_not_stop_the_poll(
+    timed: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = timed | {"timing_dir": str(tmp_path / "missing")}
+    account = FakeAccount()
+    d = dispatcher_for(config, FakeGitHub(queued={(APP, LABEL): 2}), account)
+    d.poll(NOW)
+    d.sample(1.0)
+    d.poll(NOW)
+    assert len(account.started) == 2
+    assert capsys.readouterr().out.count("timing:") == 1
+
+
+def test_keep_days_zero_records_nothing(timed: dict[str, Any]) -> None:
+    config = timed | {"timing_keep_days": 0}
+    d = poll(config, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    d.sample(1.0)
+    assert list(Path(timed["timing_dir"]).iterdir()) == []
+
+
+def test_the_timing_files_are_roots_alone(timed: dict[str, Any]) -> None:
+    d = poll(timed, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    d.sample(1.0)
+    paths = list(Path(timed["timing_dir"]).iterdir())
+    assert {path.name for path in paths} == {"pending.json", "2026-11-12.jsonl"}
+    assert {path.stat().st_mode & 0o777 for path in paths} == {0o600}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[1, 2",
+        "[]",
+        '{"jobs": {"1": {"job_id": 2, "noted": "x"}, "3": {"job_id": 3}, "4": 4}, "runners": {"r": {"slot": 1}}}',
+    ],
+)
+def test_a_strange_pending_file_is_ignored(timed: dict[str, Any], content: str) -> None:
+    (Path(timed["timing_dir"]) / "pending.json").write_text(content)
+    d = poll(timed, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    assert list(d.timing.jobs) == ["1000"]
+    assert "r" not in d.timing.runners
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        ("2026-11-12T10:00:00Z", "2026-11-12T10:00:00Z"),
+        ("2026-11-12T12:00:00+02:00", "2026-11-12T10:00:00Z"),
+        ("yesterday", None),
+        (12, None),
+        (None, None),
+    ],
+)
+def test_only_times_are_taken_from_github(value: object, kept: str | None) -> None:
+    assert dispatcher.github_time(value) == kept
+
+
+def test_names_are_cut_and_strange_fields_left_out() -> None:
+    fields = dispatcher.job_fields({"id": True, "run_id": "7", "name": "x" * 500, "workflow_name": ["a"]})
+    assert fields == {"job": "x" * dispatcher.NAME_MAX}
+
+
+def test_calls_left_make_a_sample_new_only_when_they_run_low(timed: dict[str, Any], clock: Clock) -> None:
+    github = FakeGitHub()
+    d = dispatcher_for(timed, github, FakeAccount())
+    d.poll(NOW)
+    for left in (4000, 3990, 3000, 400):
+        github.rate_remaining = left
+        d.sample(1.0)
+    assert [sample["rate_left"] for sample in records(timed, "poll")] == [4000, 400]
+
+
+def test_a_paused_poll_says_so_in_its_sample(timed: dict[str, Any], tmp_path: Path) -> None:
+    (tmp_path / "paused").touch()
+    d = poll(timed, FakeGitHub(queued={(APP, LABEL): 1}), FakeAccount())
+    d.sample(1.0)
+    sample, = records(timed, "poll")
+    assert (sample["paused"], sample["queued"]["main"], sample["waiting"]) == (True, 1, 0)
+
+
+def ended(timed: dict[str, Any], count: int) -> tuple[dispatcher.Dispatcher, FakeGitHub]:
+    """A dispatcher with count pending jobs whose runs have ended."""
+    github = FakeGitHub(listed={APP: [done(n, None) | {"status": "queued"} for n in range(count)]})
+    d = dispatcher_for(timed, github, FakeAccount([runner(f"busy-{n}", slot=n) for n in (1, 2)]))
+    d.poll(NOW)
+    github.listed = {}
+    github.answers = {n: done(n, None) for n in range(count)}
+    return d, github
+
+
+def test_ended_jobs_are_looked_up_a_few_at_each_poll(timed: dict[str, Any]) -> None:
+    d, github = ended(timed, dispatcher.LOOK_UPS + 5)
+    d.poll(NOW)
+    assert len(github.asked) == dispatcher.LOOK_UPS
+    d.poll(NOW)
+    assert sorted(github.asked) == list(range(dispatcher.LOOK_UPS + 5))
+    assert len(records(timed)) == dispatcher.LOOK_UPS + 5
+
+
+def test_ended_jobs_are_not_looked_up_while_calls_are_few(timed: dict[str, Any]) -> None:
+    d, github = ended(timed, 2)
+    github.rate_remaining = dispatcher.RATE_LOW - 1
+    d.poll(NOW)
+    assert github.asked == []
+    assert len(d.timing.jobs) == 2
