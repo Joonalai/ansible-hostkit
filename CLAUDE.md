@@ -84,7 +84,9 @@ uv sync --locked                    # the venv: ansible, ansible-lint, prek, pyt
 ```
 
 The hooks include gitleaks, ansible-lint's `production` profile, ruff, ty
-and the tests. Run them before every commit, and fix what they report rather than
+and the tests. `.github/workflows/checks.yml` runs them on every pull
+request, with gitlint on each commit's message and the tests again on
+Debian trixie's python3, which the hosts run. Run them before every commit, and fix what they report rather than
 skipping a hook.
 
 ## Layout and conventions

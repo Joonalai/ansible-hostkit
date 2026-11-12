@@ -1,0 +1,82 @@
+# The checks a pull request must pass: the commit titles the releases are
+# made from, every prek hook, and the tests on the python3 the hosts run.
+# The repository is public, so a fork's pull request runs this too: it
+# gets a read-only token and no secrets, and pull_request_target is never
+# used here.
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prek:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit messages of the pull request are linted below.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # renovate: datasource=github-releases depName=astral-sh/uv
+          version: "0.13.6"
+          enable-cache: false
+
+      # The commit messages first: they take seconds, so a bad title fails
+      # before the hooks run. Rebase merging puts every commit on main as
+      # it is, and the release reads their titles.
+      - name: Lint commit messages
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uvx --from gitlint-core==0.19.1 gitlint --commits "${BASE_SHA}..${HEAD_SHA}"
+
+      # The local hooks, pytest, ruff and ty, run from .venv.
+      - name: Install the venv
+        run: uv sync --locked
+
+      - name: Run every hook
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        with:
+          # renovate: datasource=pypi depName=prek
+          prek-version: "0.5.10"
+
+  tests-on-debian:
+    # The scripts run on the hosts' own python3, Debian trixie's, not the
+    # venv's newer one.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    container:
+      image: debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+    steps:
+      # git for checkout and the tests' repositories, openssl for the
+      # registrar's signing.
+      - name: Install Debian's python3, pytest and yaml
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git openssl python3-pytest python3-yaml
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the tests
+        run: python3 -m pytest -q -p no:cacheprovider
