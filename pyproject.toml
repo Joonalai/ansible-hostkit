@@ -13,6 +13,7 @@ dev = [
     "ansible-lint>=26.10.1",
     "prek>=0.5.6",
     "pytest>=9.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.17.5",
     "ty>=0.0.101",
 ]
@@ -25,6 +26,8 @@ release = [
 # Every Python file a role carries lives under its files/, with its tests
 # beside it in tests/.
 testpaths = ["roles"]
+# In parallel, one worker per core.
+addopts = "-n auto"
 
 [tool.ruff]
 # The scripts run on the hosts' and the images' own python3, Debian
