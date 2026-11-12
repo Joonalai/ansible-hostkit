@@ -1,0 +1,18 @@
+---
+# Puts the `stack` command where a role's image build or a host wants it:
+#
+#   - ansible.builtin.include_role:
+#       name: joonalai.hostkit.executor
+#       tasks_from: client
+#     vars:
+#       executor_client_dest: /home/coder/image/stack.py
+#       executor_client_owner: coder      # optional, root by default
+#       executor_client_mode: "0644"      # optional, 0755 by default
+- name: Install the stack command at {{ executor_client_dest }}
+  ansible.builtin.copy:
+    src: client/stack.py
+    dest: "{{ executor_client_dest }}"
+    owner: "{{ executor_client_owner | default('root') }}"
+    group: "{{ executor_client_owner | default('root') }}"
+    mode: "{{ executor_client_mode | default('0755') }}"
+  become: true

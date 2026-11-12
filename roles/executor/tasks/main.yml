@@ -1,0 +1,96 @@
+---
+- name: Fail early on non-Debian targets
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "This role targets Debian."
+
+- name: Merge each instance over the defaults
+  ansible.builtin.set_fact:
+    executor_merged: >-
+      {%- set merged = [] -%}
+      {%- for instance in executor_instances -%}
+      {%- set _ = merged.append(executor_instance_defaults | combine(instance)) -%}
+      {%- endfor -%}
+      {{- merged -}}
+
+# The callers run untrusted code through the instance: never without the
+# host's sandbox, which this collection does not provide. The name becomes
+# two accounts, units and directories.
+- name: Assert every instance is complete and sandboxed
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') is match('^[a-z][a-z0-9]{0,15}$')
+      - item.exec_uid | default('') | string is match('^[0-9]+$')
+      - item.exec_subuid_start | default('') | string is match('^[0-9]+$')
+      - item.sandbox_units | default([]) is not string
+      - item.sandbox_units | default([]) | length > 0
+      - item.ports_start | default('') | string is match('^[0-9]+$')
+      - item.ports_end | default('') | string is match('^[0-9]+$')
+      - item.ports_per_caller | int in range(1, 17)
+      - item.ports_end | int - item.ports_start | int + 1 >= 2 + item.ports_per_caller | int
+      - item.max_stacks | int >= 1
+      - item.overrides is mapping
+    fail_msg: >-
+      {{ item }}: an instance wants a name of a lowercase letter and up to 15
+      letters and digits, exec_uid and exec_subuid_start, which the host's
+      sandbox names, sandbox_units, the units of the host's own hardening
+      that keep {{ item.name | default('it') }}-exec and its range off the
+      host, its LAN and its private network (this collection never changes
+      the firewall), and ports_start..ports_end with room for the API port,
+      the phone page and one block of ports_per_caller.
+    quiet: true
+  loop: "{{ executor_merged }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+- name: Assert the instances share no name and no port
+  vars:
+    executor_all_ports: >-
+      {{ executor_merged | map(attribute='ports_start') | map('int')
+         | zip(executor_merged | map(attribute='ports_end') | map('int'))
+         | map('join', '-') | list }}
+    executor_port_lists: >-
+      {%- set ports = [] -%}
+      {%- for instance in executor_merged -%}
+      {%- set _ = ports.extend(range(instance.ports_start | int, instance.ports_end | int + 1)) -%}
+      {%- endfor -%}
+      {{- ports -}}
+  ansible.builtin.assert:
+    that:
+      - executor_merged | map(attribute='name') | unique | length == executor_merged | length
+      - executor_port_lists | unique | length == executor_port_lists | length
+    fail_msg: "Two instances share a name or a port: {{ executor_all_ports }}"
+    quiet: true
+
+- name: Install what the stacks are built with
+  when:
+    - install_dependencies | default(true) | bool
+    - executor_instances | length > 0
+  ansible.builtin.apt:
+    name: "{{ executor_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+# Root's, so no account can rewrite what its units run.
+- name: Install the front and the agent
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - {src: front/executor_front.py, dest: "{{ executor_front_bin }}"}
+    - {src: agent/executor_agent.py, dest: "{{ executor_agent_bin }}"}
+  loop_control:
+    label: "{{ item.dest }}"
+  become: true
+
+- name: Set up each instance
+  ansible.builtin.include_tasks: instance.yml
+  loop: "{{ executor_merged }}"
+  loop_control:
+    loop_var: executor_instance
+    label: "{{ executor_instance.name }}"

@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The front of the executor instance {{ executor_instance.name }}, for one request
+
+[Service]
+# One per connection, as the account that holds the callers' keys and
+# never opens their code.
+User={{ executor_front_user }}
+Group={{ executor_front_user }}
+ExecStart={{ executor_front_bin }} serve {{ executor_instance_config_dir }}/instance.json
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# Its config, its state and the agent's socket; no network: a local
+# instance's callers come through the socket.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ReadWritePaths={{ executor_instance_state_dir }}
+# Longer than any up: a build, and a job's wait for a place.
+RuntimeMaxSec=7200
+MemoryMax=256M

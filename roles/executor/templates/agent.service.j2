@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The agent of the executor instance {{ executor_instance.name }}, for one request
+Wants=podman.socket
+After=podman.socket
+
+[Service]
+ExecStart={{ executor_agent_bin }} serve {{ executor_config_dir }}/{{ executor_instance.name }}.agent.json
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# The stacks' compose runs against this account's podman, and builds
+# through the socket's own build API: compose's BuildKit boots a builder
+# container of its own, and rootless podman refuses it the mounts it asks for.
+Environment=DOCKER_HOST=unix://%t/podman/podman.sock
+Environment=DOCKER_BUILDKIT=0
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# No NoNewPrivileges: rootless podman maps the account's subordinate range
+# with the setuid newuidmap and newgidmap whenever it starts the account's
+# namespace, which NoNewPrivileges would refuse. The containers get
+# no-new-privileges from podman's defaults all the same.
+# Longer than any build; the front's own unit has the same bound.
+RuntimeMaxSec=7200

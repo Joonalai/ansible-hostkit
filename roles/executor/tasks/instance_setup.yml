@@ -1,0 +1,243 @@
+---
+# The rest of one instance, once instance.yml has found it can be set up:
+# its two accounts, its config, the agent's socket as the exec account's
+# user unit, and the front's socket, page and reaper as system units run
+# as the front's account.
+
+# Its home is its state, and nothing else is its own.
+- name: Create the front's account of {{ executor_instance.name }}
+  ansible.builtin.user:
+    name: "{{ executor_front_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: "{{ executor_instance_state_dir }}"
+  become: true
+
+# The account, its range, its manager tied to the sandbox, and its caps.
+- name: Set up the exec account of {{ executor_instance.name }} for rootless podman
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: "{{ executor_exec_user }}"
+    rootless_account_uid: "{{ executor_instance.exec_uid }}"
+    rootless_account_home: "{{ executor_exec_home }}"
+    rootless_account_subuid_start: "{{ executor_instance.exec_subuid_start }}"
+    rootless_account_subuid_count: "{{ executor_instance.exec_subuid_count }}"
+    rootless_account_profile_marker: executor
+    rootless_account_memory_max: "{{ executor_instance.memory_max }}"
+    rootless_account_memory_swap_max: "{{ executor_instance.memory_swap_max }}"
+    rootless_account_cpu_quota: "{{ executor_instance.cpu_quota }}"
+    rootless_account_sandbox_units: "{{ executor_instance.sandbox_units }}"
+
+- name: Keep the exec account's environment of {{ executor_instance.name }}
+  ansible.builtin.set_fact:
+    executor_exec_env: "{{ rootless_account_env }}"
+
+# The config and the callers are root's, the front's to read; the keys
+# root's alone, for the roles that hand them to the callers.
+- name: Create the directories of {{ executor_instance.name }}
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ executor_config_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ executor_instance_config_dir }}", owner: root, group: "{{ executor_front_user }}", mode: "0750"}
+    - {path: "{{ executor_instance_config_dir }}/callers", owner: root, group: "{{ executor_front_user }}", mode: "0750"}
+    - {path: "{{ executor_instance_config_dir }}/keys", owner: root, group: root, mode: "0700"}
+    - {path: "{{ executor_state_dir }}", owner: root, group: root, mode: "0755"}
+    - {path: "{{ executor_instance_state_dir }}", owner: "{{ executor_front_user }}", group: "{{ executor_front_user }}", mode: "0700"}
+    - {path: "{{ executor_exec_home }}/stacks", owner: "{{ executor_exec_user }}", group: "{{ executor_exec_user }}", mode: "0700"}
+    - {path: "{{ executor_exec_home }}/.config/systemd/user", owner: "{{ executor_exec_user }}", group: "{{ executor_exec_user }}", mode: "0755"}
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+
+# /run is emptied at boot. The agent's directory is the exec account's,
+# for its socket, and the front's group's to open, nobody else's: the
+# agent takes any request that reaches it.
+- name: Lay out the runtime directories of {{ executor_instance.name }}
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. The executor instance {{ executor_instance.name }}.
+      d {{ executor_run_dir }} 0755 root root -
+      d {{ executor_instance_run_dir }} 0755 root root -
+      d {{ executor_instance_run_dir }}/agent 0750 {{ executor_exec_user }} {{ executor_front_user }} -
+    dest: "/etc/tmpfiles.d/{{ executor_unit }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  register: executor_tmpfiles
+  become: true
+
+- name: Create them now
+  when: executor_tmpfiles.changed  # noqa: no-handler -- per instance, which a handler cannot be
+  ansible.builtin.command:
+    argv: [systemd-tmpfiles, --create, "/etc/tmpfiles.d/{{ executor_unit }}.conf"]
+  changed_when: true
+  become: true
+
+- name: Write the config of {{ executor_instance.name }}
+  ansible.builtin.copy:
+    content: >-
+      {{ {'name': executor_instance.name,
+          'host': executor_instance.host,
+          'api_port': executor_instance.ports_start | int,
+          'page_port': executor_instance.ports_start | int + 1,
+          'callers_ports_start': executor_instance.ports_start | int + 2,
+          'ports_end': executor_instance.ports_end | int,
+          'ports_per_caller': executor_instance.ports_per_caller | int,
+          'max_stacks': executor_instance.max_stacks | int,
+          'queue_timeout_minutes': executor_instance.queue_timeout_minutes | int,
+          'evict_idle_minutes': executor_instance.evict_idle_minutes | int,
+          'idle_hours': executor_instance.idle_hours | float,
+          'max_age_hours': executor_instance.max_age_hours | float,
+          'bundle_max_mb': executor_instance.bundle_max_mb | int,
+          'overrides': executor_instance.overrides,
+          'callers_dir': executor_instance_config_dir ~ '/callers',
+          'state_dir': executor_instance_state_dir,
+          'agent_socket': executor_instance_run_dir ~ '/agent/agent.sock',
+          'pause_file': executor_instance_config_dir ~ '/paused'}
+         | to_nice_json }}
+    dest: "{{ executor_instance_config_dir }}/instance.json"
+    owner: root
+    group: "{{ executor_front_user }}"
+    mode: "0640"
+  register: executor_config
+  become: true
+
+# The agent's, which holds nothing secret; outside the exec account's home,
+# so nothing it runs can change what the next agent reads.
+- name: Write the agent's config of {{ executor_instance.name }}
+  ansible.builtin.copy:
+    content: >-
+      {{ {'stacks_dir': executor_exec_home ~ '/stacks',
+          'storage_dir': executor_exec_home ~ '/.local/share/containers/storage',
+          'ports_start': executor_instance.ports_start | int + 2,
+          'ports_end': executor_instance.ports_end | int,
+          'disk_max_gb': executor_instance.disk_max_gb | float}
+         | to_nice_json }}
+    dest: "{{ executor_config_dir }}/{{ executor_instance.name }}.agent.json"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+# ---------------------------------------------------------------------
+# The agent: the exec account's, one process per request
+# ---------------------------------------------------------------------
+
+# The stacks' compose runs against it.
+- name: Enable the exec account's podman socket of {{ executor_instance.name }}
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    scope: user
+    enabled: true
+    state: started
+  environment: "{{ executor_exec_env }}"
+  become: true
+  become_user: "{{ executor_exec_user }}"
+
+# Brings back, after a reboot, the stacks a compose file gave a restart policy.
+- name: Restart the stacks at boot for {{ executor_instance.name }}
+  ansible.builtin.systemd_service:
+    name: podman-restart.service
+    scope: user
+    enabled: true
+  environment: "{{ executor_exec_env }}"
+  become: true
+  become_user: "{{ executor_exec_user }}"
+
+- name: Install the agent's socket and service of {{ executor_instance.name }}
+  ansible.builtin.template:
+    src: "agent.{{ item }}.j2"
+    dest: "{{ executor_exec_home }}/.config/systemd/user/executor-agent{{ '@' if item == 'service' else '' }}.{{ item }}"
+    owner: "{{ executor_exec_user }}"
+    group: "{{ executor_exec_user }}"
+    mode: "0644"
+  loop: [socket, service]
+  register: executor_agent_units
+  become: true
+
+- name: Reload the exec account's manager of {{ executor_instance.name }}
+  when: executor_agent_units.changed  # noqa: no-handler -- per instance, which a handler cannot be
+  ansible.builtin.systemd_service:
+    scope: user
+    daemon_reload: true
+  environment: "{{ executor_exec_env }}"
+  become: true
+  become_user: "{{ executor_exec_user }}"
+
+- name: Start the agent's socket of {{ executor_instance.name }}
+  ansible.builtin.systemd_service:
+    name: executor-agent.socket
+    scope: user
+    enabled: true
+    state: "{{ 'restarted' if executor_agent_units.changed else 'started' }}"
+  environment: "{{ executor_exec_env }}"
+  become: true
+  become_user: "{{ executor_exec_user }}"
+
+# ---------------------------------------------------------------------
+# The front: its socket, its page and its reaper
+# ---------------------------------------------------------------------
+
+- name: Install the front's units of {{ executor_instance.name }}
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ executor_unit }}-{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: front.socket.j2, dest: front.socket}
+    - {src: front.service.j2, dest: front@.service}
+    - {src: page.service.j2, dest: page.service}
+    - {src: reap.service.j2, dest: reap.service}
+    - {src: reap.timer.j2, dest: reap.timer}
+  loop_control:
+    label: "{{ executor_unit }}-{{ item.dest }}"
+  register: executor_front_units
+  become: true
+
+- name: Reload systemd for the front of {{ executor_instance.name }}
+  when: executor_front_units.changed  # noqa: no-handler -- per instance, which a handler cannot be
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  become: true
+
+- name: Start the front's socket, page and reaper of {{ executor_instance.name }}
+  ansible.builtin.systemd_service:
+    name: "{{ executor_unit }}-{{ item }}"
+    enabled: true
+    state: started
+  loop: [front.socket, page.service, reap.timer]
+  become: true
+
+- name: Restart the page of {{ executor_instance.name }} on a new config or unit
+  when: executor_front_units.changed or executor_config.changed  # noqa: no-handler -- per instance, which a handler cannot be
+  ansible.builtin.systemd_service:
+    name: "{{ executor_unit }}-page.service"
+    state: restarted
+  become: true
+
+# The whole chain but a caller: the front's account, through the agent's
+# directory, to the agent's socket unit, to podman as the exec account.
+- name: Ask the agent of {{ executor_instance.name }}, as the front, what it runs
+  when: not ansible_check_mode
+  ansible.builtin.command:
+    argv: ["{{ executor_front_bin }}", check, "{{ executor_instance_config_dir }}/instance.json"]
+  register: executor_check
+  changed_when: false
+  become: true
+  become_user: "{{ executor_front_user }}"
+
+- name: Assert the agent of {{ executor_instance.name }} answered
+  when: not ansible_check_mode
+  ansible.builtin.assert:
+    that: (executor_check.stdout | from_json).exit == 0
+    fail_msg: "The agent of {{ executor_instance.name }} answered: {{ executor_check.stdout }}"
+    quiet: true

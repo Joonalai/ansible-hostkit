@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The phone page of the executor instance {{ executor_instance.name }}, on port {{ executor_instance.ports_start | int + 1 }}
+
+[Service]
+User={{ executor_front_user }}
+Group={{ executor_front_user }}
+ExecStart={{ executor_front_bin }} page {{ executor_instance_config_dir }}/instance.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths={{ executor_instance_state_dir }}
+MemoryMax=256M
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

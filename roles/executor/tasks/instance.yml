@@ -1,0 +1,33 @@
+---
+# One instance: its names, then the rest of it (instance_setup.yml), unless
+# a dry run finds no exec account to look at.
+
+- name: Name the parts of {{ executor_instance.name }}
+  ansible.builtin.set_fact:
+    executor_exec_user: "{{ executor_instance.name }}-exec"
+    executor_front_user: "{{ executor_instance.name }}-executor"
+    executor_exec_home: "/home/{{ executor_instance.name }}-exec"
+    executor_instance_config_dir: "{{ executor_config_dir }}/{{ executor_instance.name }}"
+    executor_instance_state_dir: "{{ executor_state_dir }}/{{ executor_instance.name }}"
+    executor_instance_run_dir: "{{ executor_run_dir }}/{{ executor_instance.name }}"
+    executor_unit: "executor-{{ executor_instance.name }}"
+
+- name: Look for the exec account of {{ executor_instance.name }}
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ executor_exec_user }}"
+    fail_key: false
+
+# A first dry run, before the account exists, has nothing to compare: its
+# user units cannot be asked for and the check of the agent cannot run.
+# Only this instance stops; the others are checked as usual.
+- name: Note that a dry run stops at {{ executor_instance.name }}, which has no exec account yet
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[executor_exec_user] is none
+  ansible.builtin.debug:
+    msg: "{{ executor_exec_user }} does not exist yet: a real run sets {{ executor_instance.name }} up."
+
+- name: Set up the rest of {{ executor_instance.name }}
+  when: not ansible_check_mode or ansible_facts.getent_passwd[executor_exec_user] is not none
+  ansible.builtin.include_tasks: instance_setup.yml

@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Stop idle stacks and remove old ones of the executor instance {{ executor_instance.name }}, every quarter hour
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

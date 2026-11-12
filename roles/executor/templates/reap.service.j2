@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Stop idle stacks and remove old ones of the executor instance {{ executor_instance.name }}
+
+[Service]
+Type=oneshot
+User={{ executor_front_user }}
+Group={{ executor_front_user }}
+ExecStart={{ executor_front_bin }} reap {{ executor_instance_config_dir }}/instance.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ReadWritePaths={{ executor_instance_state_dir }}
