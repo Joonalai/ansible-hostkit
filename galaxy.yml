@@ -1,0 +1,24 @@
+---
+namespace: joonalai
+name: hostkit
+version: 0.1.0
+readme: README.md
+authors:
+  - Joonalai
+description: >-
+  Roles for self-hosted Debian servers: rootless podman accounts, ephemeral
+  CI runners, and the runners and workbench Claude Code works in
+license:
+  - MIT
+tags:
+  - linux
+  - infrastructure
+  - podman
+  - ci
+repository: https://github.com/Joonalai/ansible-hostkit
+build_ignore:
+  - .venv
+  - .ansible
+  - .agents
+  - .claude
+  - uv.lock
