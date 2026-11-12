@@ -784,8 +784,7 @@ def warm_command(config: Config) -> list[str]:
 
 
 # Where a job's time goes, for the report. Written by the dispatcher alone,
-# root's to read, and nothing in it feeds a decision: the allocation never
-# reads it.
+# and nothing in it feeds a decision: the allocation never reads it.
 TIMING_VERSION = 1
 # A poll sample is written when what it holds changes, and at least this often.
 SAMPLE_EVERY = timedelta(minutes=5)
@@ -878,14 +877,19 @@ def job_record(pending: JsonObject, job: JsonObject | None, runner: JsonObject |
 
 class Timing:
     """Records where each job's time went, as JSON lines in a file per UTC
-    day, root's alone. The jobs and runners still in flight are kept in
+    day, root's and the readers' the play names. The jobs and runners still in flight are kept in
     pending.json, so a restart of the dispatcher loses none. Nothing here
     may stop a poll: a write that fails is logged once a day and dropped.
     """
 
-    def __init__(self, directory: Path | None, keep_days: int, job_max_seconds: int) -> None:
-        """Off without a directory or with keep_days 0. Reads what was pending."""
+    def __init__(self, directory: Path | None, keep_days: int, job_max_seconds: int, *,
+                 group_read: bool = False) -> None:
+        """Off without a directory or with keep_days 0. Reads what was pending.
+        With group_read, the day files are the directory's group's to read
+        too; pending.json stays root's.
+        """
         self.directory = directory if directory is not None and keep_days > 0 else None
+        self.file_mode = 0o640 if group_read else 0o600
         self.keep_days = keep_days
         self.pending_max = timedelta(seconds=job_max_seconds) + PENDING_SLACK
         # By job id, as a string since they go to JSON as keys.
@@ -965,7 +969,7 @@ class Timing:
             return
         path = self.directory / f"{utc_now():%Y-%m-%d}.jsonl"
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, self.file_mode)
             with os.fdopen(fd, "w") as handle:
                 handle.write(json.dumps(record, sort_keys=False) + "\n")
         except OSError as error:
@@ -1313,7 +1317,7 @@ class Dispatcher:
         self.claims: dict[int, tuple[datetime, str]] = {}
         timing_dir = config.get("timing_dir")
         self.timing = Timing(Path(timing_dir) if timing_dir else None, int(config.get("timing_keep_days", 0)),
-                             config["job_max_seconds"])
+                             config["job_max_seconds"], group_read=bool(config.get("timing_group_read")))
         # What the last poll saw, for its timing sample.
         self.seen: JsonObject = {}
         # Pending jobs whose runs ended, by repository, looked up after the
@@ -1717,12 +1721,25 @@ def load_config(path: Path) -> Config:
     return config
 
 
-def print_report(config: Config, days: int) -> int:
+def timing_dir() -> Path:
+    """Where the play keeps the timing records, by the name the script is
+    installed under (vars/main.yml's ci_runner_timing_dir). The report finds
+    them there without the config, which is root's alone.
+    """
+    return Path("/var/lib") / NAME / "timing"
+
+
+def print_report(directory: Path, days: int) -> int:
     """Print where the jobs' time went over the last days."""
-    if not config.get("timing_dir"):
-        log("No timing_dir in the config: nothing is recorded.")
+    try:
+        records = read_records(directory, days, utc_now())
+    except FileNotFoundError:
+        log(f"No timing records in {directory}.")
         return 1
-    print(report(read_records(Path(config["timing_dir"]), days, utc_now()), days), end="")
+    except PermissionError:
+        log(f"Only root and the group of {directory}, if the play gave it one (ci_runner_timing_group), read the records.")
+        return 1
+    print(report(records, days), end="")
     return 0
 
 
@@ -1745,8 +1762,10 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
         return 2
     global NAME  # noqa: PLW0603
     NAME = installed_name(argv[0])
-    config = load_config(Path("/etc") / NAME / "dispatcher.json")
     command = argv[1]
+    if command == "report":
+        return print_report(timing_dir(), int(argv[2]) if len(argv) > 2 else REPORT_DAYS)  # noqa: PLR2004
+    config = load_config(Path("/etc") / NAME / "dispatcher.json")
     pause_file = Path(config["pause_file"])
     if command == "pause":
         pause_file.touch()
@@ -1756,8 +1775,6 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
         pause_file.unlink(missing_ok=True)
         log("Resumed.")
         return 0
-    if command == "report":
-        return print_report(config, int(argv[2]) if len(argv) > 2 else REPORT_DAYS)  # noqa: PLR2004
     token = Path(config["token_file"]).read_text().strip()
     dispatcher = Dispatcher(config, GitHub(token), Account(config["account"]))
     if command == "stop":

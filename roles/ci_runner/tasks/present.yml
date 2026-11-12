@@ -215,7 +215,8 @@
           'job_env': ci_runner_job_env,
           'poll_seconds': ci_runner_poll_seconds | int,
           'timing_dir': ci_runner_timing_dir,
-          'timing_keep_days': ci_runner_timing_keep_days | int} | to_nice_json }}
+          'timing_keep_days': ci_runner_timing_keep_days | int,
+          'timing_group_read': ci_runner_timing_group | length > 0} | to_nice_json }}
     dest: "{{ ci_runner_config }}"
     owner: root
     group: root
@@ -233,13 +234,49 @@
     mode: "0755"
   become: true
 
+- name: Look for the group that reads the timing records
+  when: ci_runner_timing_group | length > 0
+  ansible.builtin.getent:
+    database: group
+    key: "{{ ci_runner_timing_group }}"
+    fail_key: false
+
+- name: Assert the group that reads the timing records exists
+  when: ci_runner_timing_group | length > 0
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group[ci_runner_timing_group] is not none
+    fail_msg: >-
+      ci_runner_timing_group is {{ ci_runner_timing_group }}, which is no
+      group of the host's. The role makes no group: name one the host has.
+    quiet: true
+
+# Root's alone, or with ci_runner_timing_group to read; the group's bit
+# makes the new day files the group's too.
 - name: Create the timing records' directory
   ansible.builtin.file:
     path: "{{ ci_runner_timing_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "0700"
+    group: "{{ ci_runner_timing_group or 'root' }}"
+    mode: "{{ '2750' if ci_runner_timing_group else '0700' }}"
+  become: true
+
+- name: Find the timing records written so far
+  ansible.builtin.find:
+    paths: "{{ ci_runner_timing_dir }}"
+    patterns: "*.jsonl"
+  register: ci_runner_timing_files
+  become: true
+
+- name: Give the records written so far to the readers the play names now
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: "{{ ci_runner_timing_group or 'root' }}"
+    mode: "{{ '0640' if ci_runner_timing_group else '0600' }}"
+  loop: "{{ ci_runner_timing_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
   become: true
 
 # Root's: every runner mounts it, before the first image is there too.

@@ -66,6 +66,11 @@ ci_runner_poll_seconds: 20
 # its container gone, to find what CI jobs wait for. JSON lines in
 # a directory only root reads. 0 records nothing.
 ci_runner_timing_keep_days: 90
+# A group of the host's whose members may read the timing records and run
+# `<name>-dispatcher report` without root, such as the admins' own. The
+# records name the private repositories, their workflows and their jobs.
+# Empty: root alone.
+ci_runner_timing_group: ""
 
 # The token that registers runners: fine-grained, only the repositories
 # above, Administration read and write (runners), Actions read (queued
