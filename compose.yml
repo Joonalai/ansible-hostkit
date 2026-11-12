@@ -1,0 +1,33 @@
+# The dev container the roles are tried in: `make dev-up`, then
+# `make converge` (Makefile). A local test host, never a deployment: it runs
+# only this repository's roles, under the workstation user's rootless podman.
+#
+# Privileged because the roles need what a booted host has: systemd as PID 1,
+# and nested rootless podman, which needs /dev/fuse and mounts of its own.
+# Under rootless podman that is the workstation user's own privileges, no
+# more. Nothing in here holds a real token: every play leaves the secrets
+# empty and the flags that would need them off.
+name: hostkit-dev
+
+services:
+  host:
+    build:
+      context: dev
+      dockerfile: Containerfile
+    image: localhost/hostkit-dev:latest
+    container_name: hostkit-dev
+    hostname: hostkit-dev
+    privileged: true
+    devices:
+      - /dev/fuse
+    tmpfs:
+      - /tmp
+      - /run
+      - /run/lock
+    volumes:
+      # The accounts' homes, where their images and layers are, kept until
+      # `make dev-clean` so that a fresh container need not rebuild them.
+      - hostkit-dev-home:/home
+
+volumes:
+  hostkit-dev-home:

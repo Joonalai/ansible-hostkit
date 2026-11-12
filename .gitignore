@@ -9,3 +9,6 @@ __pycache__/
 
 # JetBrains project files: local editor state, not project configuration.
 .idea/
+
+# The dev container's logs (Makefile).
+.dev/

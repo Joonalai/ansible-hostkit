@@ -1,0 +1,19 @@
+# The dev container's host: Debian trixie, as the real hosts run, booting
+# systemd, so the roles' units, accounts and nested rootless podman run as
+# they would there. Pinned by digest; renovate moves it.
+FROM docker.io/library/debian:trixie@sha256:bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99
+
+ENV container=podman
+ENV DEBIAN_FRONTEND=noninteractive
+
+# What Ansible needs to reach it (python3, sudo for become_user, and
+# python3-apt, which the apt module needs in a dry run) and what a booted
+# Debian has: systemd, dbus and logind for the accounts' managers. The
+# package lists stay, as on a real host: a dry run cannot fetch them, and
+# without them apt finds no package to compare.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv dbus libpam-systemd python3 python3-apt sudo ca-certificates curl
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

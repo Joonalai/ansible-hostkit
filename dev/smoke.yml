@@ -1,0 +1,226 @@
+---
+# An executor stack, end to end, on the dev container after `make converge`:
+# a caller of its own, a repository with a stack.toml, then `stack up` and a
+# request to the page; ups the executor must refuse, after which the page
+# must still answer; then `stack run`, `list`, `logs` and `down`.
+
+- name: Bring a stack up and down on the executor
+  hosts: all
+  vars:
+    dev_smoke_repo: /root/smoke
+    dev_smoke_env: /root/smoke.env
+    dev_smoke_socket: /run/hostkit-executor/stacks/api.sock
+    # Alpine rather than busybox: busybox's /home is nobody's, 65534, past
+    # the dev container's ID range (inventory.yml).
+    dev_smoke_image: docker.io/library/alpine:3.22@sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63
+  tasks:
+    - name: Install the stack command
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.executor
+        tasks_from: client
+      vars:
+        executor_client_dest: /usr/local/bin/stack
+
+    - name: Register root as a caller of the instance
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.executor
+        tasks_from: callers
+      vars:
+        executor_callers_prefix: dev-
+        executor_callers:
+          - instance: stacks
+            name: dev-smoke
+            uid: 0
+            repos: [example/smoke]
+            waits: false
+            env_file: "{{ dev_smoke_env }}"
+            env_mode: "0600"
+            local_host: 127.0.0.1
+
+    - name: Make the repository's directory
+      ansible.builtin.file:
+        path: "{{ dev_smoke_repo }}/site"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: Write the repository's files
+      ansible.builtin.copy:
+        dest: "{{ dev_smoke_repo }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - name: compose.yaml
+          content: |
+            services:
+              web:
+                image: {{ dev_smoke_image }}
+                command:
+                  - sh
+                  - -c
+                  - while true; do { printf 'HTTP/1.0 200 OK\r\n\r\n'; cat /srv/index.html; } | nc -l -p 8000; done
+                volumes: ["./site:/srv:ro"]
+                ports: ["${BIND}:${WEB_PORT}:8000"]
+                security_opt: ["no-new-privileges:true"]
+              # Turned on by the profile, and set up the way a repository
+              # whose .env is a copy of .env.example is.
+              extra:
+                image: {{ dev_smoke_image }}
+                profiles: [extra]
+                env_file: .env
+                command: ["sh", "-c", "echo \"greeting: $$SMOKE_GREETING\"; sleep 3600"]
+              # Not turned on: its writable mount refuses nothing.
+              docs:
+                image: {{ dev_smoke_image }}
+                profiles: [docs]
+                volumes: ["./site:/srv"]
+        - name: compose.privileged.yaml
+          content: |
+            services:
+              web:
+                privileged: true
+        - name: compose.profiled.yaml
+          content: |
+            services:
+              hidden:
+                image: {{ dev_smoke_image }}
+                profiles: [later]
+                privileged: true
+        - name: compose.writable.yaml
+          content: |
+            services:
+              web:
+                volumes: ["./site:/srv"]
+        - name: compose.home.yaml
+          content: |
+            services:
+              web:
+                env_file: [/home/stacks-exec/smoke-secret]
+        - name: stack.toml
+          content: |
+            [profiles.default]
+            compose = ["compose.yaml"]
+            compose_profiles = ["extra"]
+            page = 1
+            env = { WEB_PORT = "{port1}", BIND = "{bind}", SMOKE_GREETING = "hello from the profile" }
+
+            {% for name in ['privileged', 'profiled', 'writable', 'home'] %}
+            [profiles.{{ name }}]
+            compose = ["compose.yaml", "compose.{{ name }}.yaml"]
+            compose_profiles = {{ '["later"]' if name == 'profiled' else '[]' }}
+            page = 1
+            env = { WEB_PORT = "{port1}", BIND = "{bind}" }
+            {% endfor %}
+
+            [suites.check]
+            service = "web"
+            command = ["wget", "-qO-", "http://web:8000/"]
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+
+    - name: Write the page it serves
+      ansible.builtin.copy:
+        dest: "{{ dev_smoke_repo }}/site/index.html"
+        content: "hostkit smoke\n"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: Commit the repository
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          [ -d .git ] || git init -q -b main
+          git add -A
+          git -c user.name=smoke -c user.email=smoke@example.com commit -q -m smoke || true
+          git rev-parse HEAD
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      changed_when: false
+      become: true
+
+    - name: Bring the stack up
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --json
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_up
+      changed_when: true
+      become: true
+
+    - name: Ask the page
+      ansible.builtin.uri:
+        url: "{{ (dev_smoke_up.stdout | from_json).local }}"
+        return_content: true
+      register: dev_smoke_page
+      retries: 10
+      delay: 2
+      until: dev_smoke_page.status == 200
+      failed_when: "'hostkit smoke' not in dev_smoke_page.content"
+
+    # A file of the exec account's that no stack may read: its home is out
+    # of sight while the agent reads the compose files.
+    - name: Leave a file in the exec account's home
+      ansible.builtin.copy:
+        dest: /home/stacks-exec/smoke-secret
+        content: "SMOKE_SECRET=leaked\n"
+        owner: stacks-exec
+        group: stacks-exec
+        mode: "0600"
+      become: true
+
+    - name: Fail to bring up the stacks that reach past themselves
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --profile {{ item.profile }}
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      loop:
+        - {profile: privileged, says: "web: privileged"}
+        - {profile: profiled, says: "hidden: privileged"}
+        - {profile: writable, says: "not read-only"}
+        - {profile: home, says: "smoke-secret"}
+      loop_control:
+        label: "{{ item.profile }}"
+      register: dev_smoke_refused
+      changed_when: false
+      failed_when: dev_smoke_refused.rc == 0 or item.says not in dev_smoke_refused.stderr or 'leaked' in dev_smoke_refused.stderr
+      become: true
+
+    # A refused up replaces nothing: the stack above still answers.
+    - name: Ask the page again, after the refused ups
+      ansible.builtin.uri:
+        url: "{{ (dev_smoke_up.stdout | from_json).local }}"
+        return_content: true
+      register: dev_smoke_page_again
+      retries: 10
+      delay: 2
+      until: dev_smoke_page_again.status == 200
+      failed_when: "'hostkit smoke' not in dev_smoke_page_again.content"
+
+    - name: Run the suite, list the stacks and show the logs
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack {{ item }}
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      loop: [run check, list, logs web, logs extra]
+      register: dev_smoke_calls
+      changed_when: false
+      failed_when: >-
+        dev_smoke_calls.rc != 0
+        or (item == 'run check' and 'hostkit smoke' not in dev_smoke_calls.stdout + dev_smoke_calls.stderr)
+        or (item == 'logs extra' and 'greeting: hello from the profile' not in dev_smoke_calls.stdout + dev_smoke_calls.stderr)
+      become: true
+
+    - name: Take the stack down
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack down
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      changed_when: true
+      become: true

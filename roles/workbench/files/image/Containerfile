@@ -17,6 +17,12 @@ FROM docker.io/library/debian:trixie-slim
 # once a week, and within one the cache makes a rebuild a no-op.
 ARG REFRESH
 
+# apt drops to _apt and nogroup for downloads, a sandbox inside the
+# sandbox, and nogroup's 65534 is no ID at all where the account's range is
+# short, as on the dev container: "setgroups ... Invalid argument". Before
+# the first apt-get, for the build's own as well as the sessions'.
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99workbench
+
 # What every repository here wants: git for the checkouts, Chromium and
 # fonts for the browser and for anything that renders a page or a PDF,
 # poppler for reading one back, and sudo, for apt-get inside. The biggest
@@ -72,10 +78,6 @@ RUN npm install --prefix /opt/playwright-mcp --ignore-scripts --omit=optional --
 ARG UID
 RUN echo "#${UID:?} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/workbench \
     && chmod 0440 /etc/sudoers.d/workbench && visudo -cf /etc/sudoers.d/workbench
-# apt drops to _apt and nogroup for downloads, a sandbox inside the
-# sandbox, and nogroup's 65534 is no ID at all where the account's range is
-# short, as on the dev container: "setgroups ... Invalid argument".
-RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99workbench
 
 # The repositories' own packages, from the inventory, last but for the
 # client: adding one rebuilds only this.

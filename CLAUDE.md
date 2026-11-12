@@ -81,7 +81,17 @@ uv sync --locked                    # the venv: ansible, ansible-lint, prek, pyt
 .venv/bin/pytest                    # the roles' Python tests alone
 .venv/bin/ruff check                # every ruff rule, as pyproject.toml sets them
 .venv/bin/ty check                  # every ty rule, as errors
+make dev-up                         # the dev container (compose.yml, dev/)
+make converge TAGS=<play>           # the roles on it, dev/site.yml's plays
+make idempotence                    # a second run, which must change nothing
+make smoke                          # an executor stack, end to end
 ```
+
+A change to a role is tried on the dev container before it is committed:
+`make converge` and `make idempotence` for the plays it touches, and
+`make smoke` for the executor and its clients. A play that cannot run
+there says why in `dev/site.yml`, with the flag that turns its part off.
+`.github/workflows/dev-container.yml` runs every play on pull requests.
 
 The hooks include gitleaks, ansible-lint's `production` profile, ruff, ty
 and the tests. `.github/workflows/checks.yml` runs them on every pull
