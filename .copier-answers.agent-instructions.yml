@@ -8,7 +8,7 @@ has_airflow: false
 has_ansible: true
 has_java: false
 has_jenkins: false
-has_python: false
+has_python: true
 has_qgis: false
 has_sql: false
 use_external_skills: true

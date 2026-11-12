@@ -5,7 +5,7 @@ Vendored copies of third-party Agent Skills. **Do not hand-edit the contents of 
 To change what's vendored, edit the `external_skills` answer and run:
 `copier update --trust --answers-file .copier-answers.agent-instructions.yml`
 
-_Last vendored: 2026-11-12T16:31:44+00:00_
+_Last vendored: 2026-11-12T18:14:35+00:00_
 
 | Skill directory | Source | Pinned ref (resolved SHA) | License | Vendored on |
 |---|---|---|---|---|

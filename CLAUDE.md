@@ -117,6 +117,9 @@ the one whose task matches:
 
 - `nls-ansible`: Ansible conventions for roles and playbooks. Read it before
   writing or changing a role.
+- `nls-python`: Python conventions for the scripts the roles carry: type
+  hints, docstrings, naming and pytest. Read it before writing or changing
+  one.
 - `ansible-new-role`: scaffolding a new role.
 - `ansible-good-practices`: reviewing roles, playbooks or the collection
   against the Red Hat CoP good practices.
