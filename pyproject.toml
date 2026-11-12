@@ -16,6 +16,10 @@ dev = [
     "ruff>=0.17.5",
     "ty>=0.0.101",
 ]
+# The release workflow's alone: uv sync installs only dev unless asked.
+release = [
+    "python-semantic-release>=10.7.0",
+]
 
 [tool.pytest.ini_options]
 # Every Python file a role carries lives under its files/, with its tests
@@ -91,3 +95,24 @@ exclude = [".agents"]
 
 [tool.ty.rules]
 all = "error"
+
+[tool.semantic_release]
+# The collection's version is galaxy.yml's, and a release is its tag,
+# v<version>, which consumers pin. pyproject.toml's version is uv's alone.
+version_variables = ["galaxy.yml:version"]
+tag_format = "v{version}"
+commit_parser = "conventional"
+commit_message = "chore: release {version}"
+# 0.x until the first major; a breaking change is still a new major, as
+# CLAUDE.md says, so it moves 0.x to 1.0.0.
+allow_zero_version = true
+major_on_zero = true
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.changelog]
+mode = "update"
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"

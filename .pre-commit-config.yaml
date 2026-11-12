@@ -37,12 +37,15 @@ repos:
           # Keeps the subagent roles' YAML headers as YAML.
           - mdformat-frontmatter
         files: \.md$
+        # The release workflow writes the changelog, and its blank lines.
+        exclude: ^CHANGELOG\.md$
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.23.3
     hooks:
       - id: markdownlint-cli2
         files: \.md$
+        exclude: ^CHANGELOG\.md$
 
   # The Python the roles carry: every ruff rule and every ty rule, set in
   # pyproject.toml, from the venv so uv.lock pins both.

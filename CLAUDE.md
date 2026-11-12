@@ -108,12 +108,23 @@ skipping a hook.
   needs real hardware or a real kernel, and `install_dependencies` for
   `apt` tasks.
 - A breaking change to a role's variables is a new major version, with the
-  migration in the tag's notes.
+  migration in the commit's `BREAKING CHANGE:` footer (and `!` after the
+  type), which the release notes and the changelog carry.
 
 ## Commits
 
 Conventional Commits titles in lower case after the type, at most 72
 characters (`.gitlint`, checked by the commit-msg hook): `feat: add the ci runner role`.
+
+The titles are the releases. Every push to main runs
+`.github/workflows/release.yml`, where python-semantic-release, from
+`uv.lock`, reads them since the last tag: a `fix` makes a patch, a `feat` a
+minor, a breaking change a major. It bumps `galaxy.yml`, writes
+`CHANGELOG.md`, which no one edits by hand and the markdown hooks leave
+alone, and pushes the commit `chore: release <version>`, the tag
+`v<version>` and a GitHub release. Its settings are in `pyproject.toml`.
+Choose the type for what a consumer sees: `chore`, `ci`, `docs`, `style`,
+`refactor` and `test` release nothing.
 
 ## Skills
 

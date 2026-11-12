@@ -1,19 +1,9 @@
 # Changelog
 
-Releases are tags. A breaking change to a role's variables is a new major
-version, with the migration in its entry here.
+Releases are tags, `v<version>`, made by the release workflow from the
+commits' Conventional Commits titles. A breaking change to a role's
+variables is a new major version, with the migration in its commit's
+`BREAKING CHANGE:` footer, which this changelog and the release's notes
+carry.
 
-## Unreleased
-
-- `rootless_account`: an account that runs rootless podman containers from
-  its systemd manager, with a pinned subordinate ID range, limits, and its
-  manager tied to the host's sandbox units.
-- `ci_runner`: one-job GitHub Actions runners for private repositories, in
-  a rootless account behind the host's own sandbox.
-- `claude_code`: Claude Code as a Remote Control server.
-- `claude_team`: the subagent roles and skills the runner's jobs and the
-  workbench's sessions share.
-- `github_runner`: ephemeral GitHub Actions runners for Claude Code, one
-  rootless container per job.
-- `workbench`: Claude Code's team in a container per repository, writing to
-  GitHub only through a gate.
+<!-- version list -->
