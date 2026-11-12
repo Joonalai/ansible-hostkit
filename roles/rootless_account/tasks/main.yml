@@ -1,0 +1,182 @@
+---
+- name: Assert the account is named and has a range
+  ansible.builtin.assert:
+    that:
+      - rootless_account_user | length > 0
+      - rootless_account_subuid_start | string is match('^[0-9]+$')
+    fail_msg: rootless_account wants rootless_account_user and rootless_account_subuid_start.
+    quiet: true
+
+- name: Install podman for {{ rootless_account_user }}
+  when: install_dependencies | default(true) | bool
+  ansible.builtin.apt:
+    name: "{{ rootless_account_packages + (rootless_account_container_packages if is_container_environment | default(false) | bool else []) }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Create {{ rootless_account_user }}
+  when: rootless_account_create | bool
+  ansible.builtin.user:
+    name: "{{ rootless_account_user }}"
+    uid: "{{ rootless_account_uid if rootless_account_uid else omit }}"
+    home: "{{ rootless_account_home }}"
+    shell: /bin/bash
+    create_home: true
+    # Never logged into; reached with "sudo -iu".
+    password_lock: true
+  become: true
+
+- name: Give {{ rootless_account_user }} its subordinate ID range
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: "^{{ rootless_account_user }}:"
+    line: "{{ rootless_account_user }}:{{ rootless_account_subuid_start }}:{{ rootless_account_subuid_count }}"
+    create: true
+    mode: "0644"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  notify: Migrate the podman storage for rootless_account
+  become: true
+
+# systemctl --user finds the user manager through the environment and
+# nowhere else, and become opens no login session, so every user-scoped
+# task has to carry these itself.
+- name: Look up {{ rootless_account_user }}'s uid
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ rootless_account_user }}"
+
+- name: Assemble the environment {{ rootless_account_user }}'s user-scoped commands need
+  ansible.builtin.set_fact:
+    rootless_account_current_user: "{{ rootless_account_user }}"
+    rootless_account_rebuild_image: "{{ rootless_account_rebuild_bin }}"
+    rootless_account_runtime_dir: "/run/user/{{ ansible_facts.getent_passwd[rootless_account_user][1] }}"
+    rootless_account_env:
+      XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[rootless_account_user][1] }}"
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts.getent_passwd[rootless_account_user][1] }}/bus"
+
+# Without lingering the user manager exists only during a login, and nothing
+# logs in as this account: no manager, no containers after a reboot.
+- name: Keep {{ rootless_account_user }}'s systemd manager running without a login
+  when: rootless_account_create | bool
+  ansible.builtin.command:
+    cmd: loginctl enable-linger {{ rootless_account_user }}
+    creates: "/var/lib/systemd/linger/{{ rootless_account_user }}"
+  become: true
+
+# enable-linger returns before the manager is up.
+- name: Wait for {{ rootless_account_user }}'s D-Bus socket
+  when:
+    - rootless_account_create | bool
+    - not ansible_check_mode
+  ansible.builtin.wait_for:
+    path: "{{ rootless_account_runtime_dir }}/bus"
+    timeout: 30
+  become: true
+
+# Ansible would otherwise make the temp directory itself, and warn every run.
+- name: Create {{ rootless_account_user }}'s config and Ansible directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ rootless_account_user }}"
+    group: "{{ rootless_account_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ rootless_account_home }}/.config", mode: "0755"}
+    - {path: "{{ rootless_account_home }}/.config/containers", mode: "0755"}
+    - {path: "{{ rootless_account_home }}/.config/containers/systemd", mode: "0755"}
+    - {path: "{{ rootless_account_home }}/.ansible/tmp", mode: "0700"}
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+
+# For "sudo -iu <account>", which gets these from pam_systemd only where
+# libpam-systemd is installed.
+- name: Point {{ rootless_account_user }}'s login shell at its own systemd manager
+  when: rootless_account_create | bool
+  ansible.builtin.blockinfile:
+    path: "{{ rootless_account_home }}/.profile"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- {{ rootless_account_profile_marker }}"
+    create: true
+    owner: "{{ rootless_account_user }}"
+    group: "{{ rootless_account_user }}"
+    mode: "0644"
+    block: |
+      export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+      export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+  become: true
+
+- name: Pin {{ rootless_account_user }}'s storage driver
+  ansible.builtin.copy:
+    dest: "{{ rootless_account_home }}/.config/containers/storage.conf"
+    owner: "{{ rootless_account_user }}"
+    group: "{{ rootless_account_user }}"
+    mode: "0644"
+    content: |
+      # Managed by Ansible.
+      [storage]
+      driver = "{{ rootless_account_storage_driver }}"
+      {% if rootless_account_storage_mount_program %}
+
+      [storage.options.overlay]
+      mount_program = "{{ rootless_account_storage_mount_program }}"
+      {% endif %}
+  become: true
+
+# What the including role builds its image with, from the play and from its
+# nightly timer alike.
+- name: Install the image rebuild script
+  ansible.builtin.copy:
+    src: rebuild/rebuild_image.py
+    dest: "{{ rootless_account_rebuild_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# A system unit's drop-in, since the account's manager cannot limit itself.
+- name: Create the drop-in directory for {{ rootless_account_user }}'s manager
+  when: (rootless_account_memory_max ~ rootless_account_memory_swap_max ~ rootless_account_cpu_quota) | length > 0
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Bound the memory of everything {{ rootless_account_user }} runs
+  when: (rootless_account_memory_max ~ rootless_account_memory_swap_max) | length > 0
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. Every container and process {{ rootless_account_user }} runs.
+      [Service]
+      {% if rootless_account_memory_max | length > 0 %}
+      MemoryMax={{ rootless_account_memory_max }}
+      {% endif %}
+      {% if rootless_account_memory_swap_max | length > 0 %}
+      MemorySwapMax={{ rootless_account_memory_swap_max }}
+      {% endif %}
+    dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/memory.conf"
+    mode: "0644"
+  notify: Apply the limits for rootless_account
+  become: true
+
+- name: Bound the CPU time of everything {{ rootless_account_user }} runs
+  when: rootless_account_cpu_quota | length > 0
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. Every container and process {{ rootless_account_user }} runs.
+      [Service]
+      CPUQuota={{ rootless_account_cpu_quota }}
+    dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/cpu.conf"
+    mode: "0644"
+  notify: Apply the limits for rootless_account
+  become: true
+
+# Before the including role builds anything on the range, and while the
+# facts still name this account.
+- name: Migrate and reload for {{ rootless_account_user }} now
+  ansible.builtin.meta: flush_handlers
