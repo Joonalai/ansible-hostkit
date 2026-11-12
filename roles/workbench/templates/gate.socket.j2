@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The workbench gate's socket for {{ workbench_gate_repo.repo }}
+
+[Socket]
+# Mounted into this repository's container alone. The group lets the
+# workbench's account in; the gate itself then serves only its uid.
+ListenStream=/run/workbench-gate/{{ workbench_gate_repo.name }}.sock
+Accept=yes
+SocketUser=root
+SocketGroup={{ workbench_user }}
+SocketMode=0660
+DirectoryMode=0755
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

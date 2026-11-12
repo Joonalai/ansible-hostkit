@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Rebuild the workbench's image at night
+
+[Timer]
+# When nobody is likely to have a session open; a container that has one
+# is left for the next night.
+OnCalendar={{ workbench_rebuild_time }}
+
+[Install]
+WantedBy=timers.target

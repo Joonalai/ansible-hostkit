@@ -1,0 +1,217 @@
+---
+# The workbench: Claude's team in a checkout on this box, driven from the
+# phone through Remote Control, leaving on GitHub nothing but the user's own
+# commits and PRs. The runner is the other way in, for work whose
+# conversation belongs on GitHub, in the github_runner role.
+#
+# Two accounts, so that what a session can run and what can write to
+# GitHub as the user are not the same thing:
+#
+#   bench      runs a container per repository, and in each the
+#              repository's Remote Control server (claude_code's play
+#              installs Claude Code and its login in the home the
+#              containers share). Holds a read-only token, and reaches the
+#              gate through a socket per repository, mounted into that
+#              repository's container alone.
+#   benchgate  holds the write token, and runs the gate, which pushes only
+#              the user's commits to non-default branches and opens and
+#              edits only their PRs.
+#
+# Neither is ever logged into; "sudo -iu bench" for debugging.
+#
+# The account, its uid and its subordinate range, which the host's sandbox
+# holds by number: set the uid and the range in the inventory where the
+# host's firewall reads them too. The play that installs claude_code for
+# this account passes the same name and uid to it.
+workbench_user: bench
+workbench_uid: ""
+workbench_subuid_start: ""
+workbench_subuid_count: 65536
+
+# The units of the host's own hardening that keep bench, and every ID its
+# containers run as, off the host, its LAN and its private network, but for
+# its preview ports. bench's manager, and so every session and container,
+# Requires= them, and the role refuses to run with none. This collection
+# never changes the firewall itself.
+#
+#   workbench_sandbox_units: [ufw.service]
+workbench_sandbox_units: []
+
+# Who the workbench's commits are by: the user, by the noreply address
+# GitHub gives the account, which links commits to it without publishing a
+# mailbox. The gate refuses any commit by anyone else.
+workbench_git_name: ""
+workbench_git_email: ""
+# The repositories the workbench works in, one Remote Control server and one
+# checkout each, set in an inventory. Empty, the workbench's play does
+# nothing at all.
+#
+#   workbench_repositories:
+#     - name: app              # the sessions', the checkout's and the gate's name for it
+#       repo: example/app
+#       default_branch: main   # optional, what the first clone checks out
+#       packages: [ffmpeg]     # optional, Debian packages its sessions need,
+#                              # added to the one image every repository shares
+#       instructions: |        # optional, Markdown for its sessions
+#         - What its dev server needs here, what it may not touch.
+#       executor: stacks       # optional, the executor instance its stacks run on
+#
+# instructions are how this box treats the repository, and go in the rules
+# every session reads, under the repository's own heading: the containers
+# share one home and one CLAUDE.md, so each repository's section says it
+# holds in that repository's container alone. How the repository itself
+# works belongs in its own CLAUDE.md.
+#
+# executor names an instance of the executor role on this host, which must
+# have run before this role. The repository is then its caller, bench-<name>,
+# with a key and a block of its ports, and its sessions bring the checkout
+# up there with `stack up`, the preview the `preview` skill starts. A
+# repository without one previews on its own dev server, below.
+workbench_repositories: []
+
+workbench_home: /home/{{ workbench_user }}
+workbench_projects_dir: "{{ workbench_home }}/projects"
+workbench_gate_user: benchgate
+workbench_gate_dir: /var/lib/workbench-gate
+workbench_gate_config_dir: /etc/workbench
+workbench_gate_bin: /usr/local/libexec/workbench-gate
+
+# For the whole account, and for each repository's container: every
+# session, the team's subagents, whatever their tests run and the browser.
+# Size it to leave the runner's account and the host's other services what
+# they need: a suite that eats the rest should fail on its own rather than
+# take the host's other services with it.
+workbench_memory_max: 2G
+workbench_container_memory_max: 1536M
+
+# The image every repository's container runs, built on the box by bench.
+# What it carries is in files/image/Containerfile; a repository's
+# `packages` are added to it.
+workbench_image: localhost/workbench:latest
+workbench_build_dir: /usr/local/share/workbench/image
+# The play builds through this too, from the same root-owned config, so the
+# nightly build is the deploy's. It moves a container onto a new image only
+# while no session is open in it.
+workbench_rebuild_bin: /usr/local/libexec/workbench-rebuild
+workbench_rebuild_config: /usr/local/share/workbench/build.json
+workbench_rebuild_time: "*-*-* 04:15:00 Europe/Helsinki"
+workbench_uv_version: 0.13.4
+workbench_node_version: 24.22.1
+# The same knob as the runner's, for the same reason; see its defaults.
+workbench_build_options: []
+# Beyond podman, which rootless_account installs with the account.
+workbench_host_packages: [git, python3]
+
+# A browser for the sessions, as an MCP server: Playwright's, pinned, in
+# the image, driving its Chromium headless with a profile kept in memory,
+# so parallel sessions never share one.
+workbench_browser_mcp_version: 0.0.83
+workbench_browser_mcp:
+  type: stdio
+  command: /opt/playwright-mcp/node_modules/.bin/playwright-mcp
+  args:
+    - --headless
+    - --isolated
+    - --browser=chromium
+    - --executable-path=/usr/bin/chromium
+    - --output-dir=/tmp/playwright-mcp
+  env: {}
+
+# Two fine-grained personal access tokens of the user's, each for the
+# workbench's repositories only, both in the vault:
+#   read   Contents: read, Pull requests: read, Issues: read. In the
+#          sessions' environment, for fetching, for reading the issues the
+#          user names and for reading the user's pending reviews.
+#   write  Contents: read and write, Pull requests: read and write. Readable
+#          by the gate alone.
+# Neither gets Workflows, so no push through either can change a workflow.
+# A third, optional, does that for a repository whose entry in
+# workbench_repositories says `workflows: true`: Contents, Pull requests and
+# Workflows: read and write, for those repositories alone, readable by the
+# gate alone, and used only for a push whose new commits touch a workflow.
+# The dev container has neither; its inventory sets workbench_tokens_required
+# false, and the play installs everything but clones and starts nothing.
+workbench_read_token: ""
+workbench_write_token: ""
+workbench_workflow_token: ""
+workbench_tokens_required: true
+
+# Branches the gate pushes: a type, a slash and lowercase words, as the
+# runner's lead names them; or the issue's number, a dash and words, the
+# name the job starts on, which a lead now and then leaves unrenamed and a
+# PR cannot change, so that a session can still add commits to that PR.
+# Never the default branch, which no name here can spell, and never a tag.
+workbench_branch_pattern: "((feat|fix|refactor|docs|test|build|chore|perf)/[a-z0-9]+|[0-9]+-[a-z0-9]+)([._-][a-z0-9]+)*"
+
+# What the gate refuses in a commit message or a PR's title or body, case
+# blind: the trailers and footers Claude Code adds by default. Settings turn
+# those off for the account; this is what holds when a session or a
+# subagent writes one anyway.
+workbench_forbidden:
+  - "co-authored-by:.*(claude|anthropic)"
+  - "generated with \\[?claude"
+  - "noreply@anthropic\\.com"
+  - "claude\\.(ai|com)/(code|claude-code)"
+# And paths no commit may touch, which live in the checkout but are the
+# workbench's: the lead's notes, a permissions file Claude Code may write
+# when a prompt is answered "always", and the sessions' worktrees.
+workbench_forbidden_paths:
+  - "^\\.bench/"
+  - "^\\.claude/settings\\.local\\.json$"
+  - "^\\.claude/worktrees/"
+
+# The account's ~/.claude/settings.json, through claude_code_settings.
+# Bypass mode, as the runner's jobs run: the container is the boundary, and
+# the phone is asked nothing. skipDangerousModePermissionPrompt is the
+# disclaimer a unit with no keyboard cannot accept; without it Claude Code
+# drops the session to asking. No auto mode, which would hand the decision
+# to a classifier again. The deny rules below still hold in bypass mode.
+# No attribution in commits or PRs.
+workbench_claude_settings:
+  permissions:
+    defaultMode: bypassPermissions
+    disableAutoMode: disable
+    deny: "{{ workbench_denied_tools }}"
+  skipDangerousModePermissionPrompt: true
+  includeCoAuthoredBy: false
+  attribution:
+    commit: ""
+    pr: ""
+
+# A preview the user can open on the phone: whatever a session serves on
+# this port in its container, on all addresses, is published at
+# http://<workbench_preview_host>:<the repository's port>/, the ports
+# counted up from workbench_preview_ports_start in list order. One per
+# repository, shared by its sessions. Where a runner shares the host, the
+# range sits in the runner's preview range, past its slots, which the play
+# checks.
+workbench_preview_port: 8080
+workbench_preview_host: "{{ ansible_facts['fqdn'] }}"
+workbench_preview_ports_start: 9190
+
+# Where a container reaches the host, and so an executor instance's stacks
+# on it, and where the executor role puts the instances' sockets, its
+# executor_run_dir.
+workbench_executor_local_host: host.containers.internal
+workbench_executor_run_dir: /run/hostkit-executor
+
+# Sessions at once, per repository, each in a git worktree of its own, so
+# parallel sessions never share a working tree. None is pre-created: an idle
+# session in the checkout held about 230 MB per repository at all times, and
+# the server alone, about 150 MB, is what puts the machine in the app. Three,
+# because they share workbench_container_memory_max.
+workbench_capacity: 3
+
+# Denied in every mode. None of these could write anyway, with a read-only
+# token and no other credential; denying them says so at once, instead of
+# after a failed push or a 403.
+workbench_denied_tools:
+  - "Bash(git push:*)"
+  - "Bash(gh pr create:*)"
+  - "Bash(gh pr edit:*)"
+  - "Bash(gh pr comment:*)"
+  - "Bash(gh pr review:*)"
+  - "Bash(gh pr merge:*)"
+  - "Bash(gh issue create:*)"
+  - "Bash(gh issue comment:*)"
+  - "Bash(gh auth:*)"

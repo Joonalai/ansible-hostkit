@@ -1,0 +1,32 @@
+---
+# The gate's units.
+- name: Reload systemd for workbench
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  become: true
+
+# The generator only runs on daemon-reload.
+- name: Reload the systemd manager for workbench
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+    scope: user
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+# Also on the claude_code role's topic, so an answer merged into the
+# account's state restarts these containers too. A restart ends the
+# sessions in them; their commits and notes stay.
+- name: Restart the workbench sessions
+  listen: Restart Claude Code sessions
+  ansible.builtin.systemd_service:
+    name: "workbench-{{ item.name }}.service"
+    scope: user
+    state: restarted
+  environment: "{{ claude_code_user_env }}"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+  when: workbench_can_run | default(false)

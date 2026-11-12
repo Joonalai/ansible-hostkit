@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Commits as the user; the gate refuses any other author or committer.
+[user]
+	name = {{ workbench_git_name }}
+	email = {{ workbench_git_email }}
+# The read token, from the session's environment. Fetches only: it cannot
+# write, and pushes go through bench-git.
+[credential "https://github.com"]
+	helper =
+	helper = "!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$GH_TOKEN\"; }; f"
+[init]
+	defaultBranch = main
+[pull]
+	ff = only

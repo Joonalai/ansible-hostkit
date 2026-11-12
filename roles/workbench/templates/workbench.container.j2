@@ -1,0 +1,68 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Workbench for {{ item.repo }}: Claude Code's Remote Control server, in a container
+Wants=network-online.target
+After=network-online.target
+# The gate's socket missing, or the network down, fails the start; keep
+# trying rather than give up after five.
+StartLimitIntervalSec=0
+
+[Container]
+ContainerName=workbench-{{ item.name }}
+Image={{ workbench_image }}
+# The session is the account's own uid, so what it writes in the home is
+# bench's, and the gate knows it by that uid. Root in here is one of the
+# account's subordinate IDs, held by the host's sandbox as bench is.
+UserNS=keep-id
+# The account's home, as it is: Claude Code and its login, the rules and
+# the team, every checkout and its notes. Shared by every repository's
+# container, as it was by every session before.
+Volume={{ workbench_home }}:{{ workbench_home }}
+# Except its config, read-only in here: the units of these containers, the
+# account's own user units and the tokens' env files are there, and a
+# session that could write them could leave the container on the next
+# start, or step outside it as bench at once. gh keeps its state elsewhere.
+Volume={{ workbench_home }}/.config:{{ workbench_home }}/.config:ro
+Environment=GH_CONFIG_DIR={{ workbench_home }}/.local/state/gh
+# And everything else that keeps config there, Chromium's profile among
+# them, in the container's own /tmp.
+Environment=XDG_CONFIG_HOME=/tmp/.config
+Environment=HOME={{ workbench_home }}
+Environment=PATH={{ workbench_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The read token, for git's credential helper and gh.
+EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}.env
+# This repository's gate, and no other's: the gate takes the repository
+# from the socket.
+Volume=/run/workbench-gate/{{ item.name }}.sock:/run/workbench-gate.sock
+{% if item.executor | default('') %}
+# The executor instance's socket and this repository's key for it: `stack`
+# brings the checkout up there, the preview the sessions start.
+Volume={{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock:/run/stack.sock
+EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}-stack.env
+{% endif %}
+WorkingDir={{ workbench_projects_dir }}/{{ item.name }}
+# The repository's preview: its sessions serve on one port inside, and the
+# phone opens it over the host's private network; the host's sandbox keeps
+# the LAN off it.
+{% set preview = workbench_preview_ports_start | int + workbench_index %}
+PublishPort={{ preview }}:{{ workbench_preview_port }}
+Environment=WORKBENCH_PREVIEW_PORT={{ workbench_preview_port }}
+Environment=WORKBENCH_PREVIEW_URL=http://{{ workbench_preview_host }}:{{ preview }}/
+Exec={{ workbench_home }}/.local/bin/claude remote-control --name "{{ item.name }} @ {{ ansible_facts['hostname'] }}" --permission-mode bypassPermissions --spawn worktree --capacity {{ workbench_capacity }} --no-create-session-in-dir
+
+[Service]
+# A bind mount of a socket that is not there yet would fail obscurely.
+ExecStartPre=/usr/bin/test -S /run/workbench-gate/{{ item.name }}.sock
+{% if item.executor | default('') %}
+ExecStartPre=/usr/bin/test -S {{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock
+{% endif %}
+Restart=always
+RestartSec=10
+# Quadlet runs the container in this unit's cgroup, so this bounds the
+# repository's sessions and everything they start, the browser included.
+MemoryMax={{ workbench_container_memory_max }}
+
+{% if workbench_can_run | bool %}
+[Install]
+WantedBy=default.target
+{% endif %}
