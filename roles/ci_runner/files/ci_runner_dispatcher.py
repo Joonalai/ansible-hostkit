@@ -52,12 +52,16 @@ container, volume and label of the runners begins with it.
     <name>-dispatcher remove   disable, then stop every runner and remove
                                its registration. The first step of taking
                                CI off this host
+    <name>-dispatcher report [days]
+                               where the jobs' time went, the last 14 days
+                               by default, from the timing records
 
 Standard library only, so it runs on the system python3. The config is root's,
 written by the play: nothing GitHub sends names a command, a path or an
 option. The token never reaches an argument list.
 """
 
+import itertools
 import json
 import os
 import pwd
@@ -66,10 +70,12 @@ import re
 import secrets
 import shutil
 import stat
+import statistics
 import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1100,6 +1106,197 @@ class Timing:
         self.append({"v": TIMING_VERSION, "kind": "poll", "t": stamp(now), "took_s": round(took, 1)} | sample | extra)
 
 
+# The report of where the jobs' time went, from the timing records. It only
+# reads them: nothing it says feeds a decision of the dispatcher's.
+REPORT_DAYS = 14
+REPORT_MAX_DAYS = 3650
+# A poll sample holds until the next, but not over a gap longer than this,
+# where the dispatcher was down.
+SAMPLE_HOLD = SAMPLE_EVERY * 2
+# The stages of a job, in the order a job goes through them.
+STAGES = ("queue", "not yet seen", "waiting for a slot", "starting", "the job", "tidying")
+SLOWEST = 10
+
+
+def parse_stamp(value: object) -> datetime | None:
+    """A time of a record, or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def seconds(record: JsonObject, start: str, end: str) -> float | None:
+    """The seconds between two times of a record, when both are known."""
+    began, ended = parse_stamp(record.get(start)), parse_stamp(record.get(end))
+    return (ended - began).total_seconds() if began and ended else None
+
+
+def job_stages(record: JsonObject) -> dict[str, float | None]:
+    """Where a job's time went. Waiting for a slot is what is left of the
+    queue once its other parts are taken out, at least 0; it holds the time
+    a runner already up spent on another job, which from this job's side is
+    a slot it did not get.
+    """
+    queue = seconds(record, "created", "job_started")
+    not_seen = seconds(record, "created", "seen")
+    starting = seconds(record, "unit_started", "job_started")
+    waiting = (max(0.0, queue - not_seen - starting)
+               if queue is not None and not_seen is not None and starting is not None else None)
+    return {
+        "queue": queue,
+        "not yet seen": not_seen,
+        "waiting for a slot": waiting,
+        "starting": starting,
+        "the job": seconds(record, "job_started", "job_completed"),
+        "tidying": seconds(record, "job_completed", "container_removed"),
+    }
+
+
+def spread(values: list[float]) -> tuple[int, float, float, float] | None:
+    """Count, median, 90th percentile and most of the values."""
+    if not values:
+        return None
+    if len(values) == 1:
+        return 1, values[0], values[0], values[0]
+    deciles = statistics.quantiles(values, n=10, method="inclusive")
+    return len(values), statistics.median(values), deciles[8], max(values)
+
+
+def printable(value: object) -> str:
+    """A name from a record, without control or format characters, which
+    could write escapes to the terminal: job and workflow names are the
+    repositories' authors' text.
+    """
+    return "".join(char for char in str(value) if unicodedata.category(char)[0] != "C")[:NAME_MAX]
+
+
+def duration(value: float) -> str:
+    """Seconds as a reader takes them in."""
+    if value < 120:  # noqa: PLR2004
+        return f"{value:.0f} s"
+    if value < 7200:  # noqa: PLR2004
+        return f"{value / 60:.1f} min"
+    return f"{value / 3600:.1f} h"
+
+
+def read_records(directory: Path, days: int, now: datetime) -> list[JsonObject]:
+    """The records of the last days, oldest first. A line that is not a
+    record of a known version is skipped.
+    """
+    first = f"{(now - timedelta(days=days - 1)).date()}"
+    found: list[JsonObject] = []
+    for path in sorted(directory.iterdir()):
+        match = TIMING_FILE.match(path.name)
+        if not match or match.group(1) < first:
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("v") == TIMING_VERSION:
+                found.append(record)
+    return found
+
+
+def held(samples: list[JsonObject]) -> list[tuple[JsonObject, datetime, float]]:
+    """Each poll sample, its time and the seconds it holds: until the next,
+    at most SAMPLE_HOLD. The last holds nothing.
+    """
+    timed = sorted(((sample, when) for sample in samples if (when := parse_stamp(sample.get("t")))),
+                   key=lambda pair: pair[1])
+    hold = SAMPLE_HOLD.total_seconds()
+    return [(sample, when, min(hold, (after - when).total_seconds()))
+            for (sample, when), (_, after) in itertools.pairwise(timed)]
+
+
+def slot_use(samples: list[JsonObject]) -> dict[int, tuple[float, float, float]]:
+    """By hour of the day (UTC): the hours sampled, the mean share of slots
+    busy, and the share of the time every slot was busy while a job waited.
+    """
+    hours: dict[int, list[float]] = {}
+    for sample, when, length in held(samples):
+        busy, slots, waiting = sample.get("busy"), sample.get("slots"), sample.get("waiting")
+        if not isinstance(busy, int) or not isinstance(slots, int) or slots <= 0:
+            continue
+        total = hours.setdefault(when.hour, [0.0, 0.0, 0.0])
+        total[0] += length
+        total[1] += length * min(1.0, busy / slots)
+        total[2] += length if busy >= slots and isinstance(waiting, int) and waiting > 0 else 0.0
+    return {hour: (length / 3600, used / length, full / length)
+            for hour, (length, used, full) in sorted(hours.items()) if length > 0}
+
+
+def table(header: list[str], rows: list[list[str]], text_columns: int = 1) -> list[str]:
+    """Plain text columns: the first text_columns to the left, the numbers
+    after them to the right.
+    """
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
+
+    def line(row: list[str]) -> str:
+        return "  ".join(cell.ljust(widths[i]) if i < text_columns else cell.rjust(widths[i])
+                         for i, cell in enumerate(row)).rstrip()
+
+    return [line(header), line(["-" * width for width in widths]), *map(line, rows)]
+
+
+def report(records: list[JsonObject], days: int) -> str:
+    """Where the jobs' time went over the records given, in plain text."""
+    jobs = [record for record in records if record.get("kind") == "job"]
+    idle = [record for record in records if record.get("kind") == "idle"]
+    samples = [record for record in records if record.get("kind") == "poll"]
+    out = [f"Where the CI jobs' time went, the last {days} days: {len(jobs)} jobs.", ""]
+    for pool in sorted({printable(record.get("pool")) for record in jobs}):
+        stages = [job_stages(record) for record in jobs if printable(record.get("pool")) == pool]
+        rows = []
+        for stage in STAGES:
+            known = spread([value for each in stages if (value := each[stage]) is not None])
+            if known:
+                count, median, p90, most = known
+                rows.append([stage, f"{count}", duration(median), duration(p90), duration(most)])
+        out += [f"Pool {pool}:", *table(["", "jobs", "p50", "p90", "max"], rows), ""]
+
+    use = slot_use(samples)
+    if use:
+        rows = [[f"{hour:02d}", f"{hours:.1f}", f"{used:.0%}", f"{full:.0%}"] for hour, (hours, used, full) in use.items()]
+        out += ["Slot use by hour of day (UTC):", *table(["hour", "sampled h", "busy", "saturated"], rows), ""]
+
+    if idle:
+        by_why: dict[str, float] = {}
+        for record in idle:
+            length = seconds(record, "started", "stopped")
+            if length is not None:
+                why = printable(record.get("why"))
+                by_why[why] = by_why.get(why, 0.0) + length
+        rows = [[why, f"{total / 60:.0f}"] for why, total in sorted(by_why.items())]
+        out += ["Slot-minutes held by runners that took no job:", *table(["why", "minutes"], rows), ""]
+
+    took = [value for sample in samples if isinstance(value := sample.get("took_s"), int | float)]
+    if took:
+        _, median, p90, most = spread([float(value) for value in took]) or (0, 0.0, 0.0, 0.0)
+        spans = held(samples)
+        low = sum(length for sample, _, length in spans
+                  if isinstance(left := sample.get("rate_left"), int) and left < RATE_LOW)
+        paused = sum(length for sample, _, length in spans if sample.get("paused") is True)
+        unheld = sum(length for sample, _, length in spans if sample.get("sandbox") is False)
+        polls = (f"Polls: took p50 {median:.1f} s, p90 {p90:.1f} s, max {most:.1f} s;"
+                 f" {duration(low)} with fewer than {RATE_LOW} GitHub calls left;"
+                 f" paused {duration(paused)}, without the sandbox {duration(unheld)}.")
+        out += [polls, ""]
+
+    starts = sorted(((value, record) for record in jobs if (value := job_stages(record)["starting"]) is not None),
+                    key=lambda pair: -pair[0])[:SLOWEST]
+    if starts:
+        rows = [[printable(record.get("repo")), printable(record.get("workflow")), printable(record.get("job")),
+                 printable(record.get("job_started")), duration(value)] for value, record in starts]
+        out += ["Slowest starts:", *table(["repository", "workflow", "job", "started", "starting"], rows, 4), ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
 class Dispatcher:
     """Decides at each poll which runners start and which stop, and carries out the commands."""
 
@@ -1520,12 +1717,30 @@ def load_config(path: Path) -> Config:
     return config
 
 
+def print_report(config: Config, days: int) -> int:
+    """Print where the jobs' time went over the last days."""
+    if not config.get("timing_dir"):
+        log("No timing_dir in the config: nothing is recorded.")
+        return 1
+    print(report(read_records(Path(config["timing_dir"]), days, utc_now()), days), end="")
+    return 0
+
+
+COMMANDS = {"run", "poll", "pause", "resume", "stop", "warm", "enable", "disable", "remove", "report"}
+
+
+def usage_ok(argv: list[str]) -> bool:
+    """The script's own name and one command; for the report, maybe its days."""
+    if len(argv) == 2:  # noqa: PLR2004
+        return argv[1] in COMMANDS
+    return (len(argv) == 3 and argv[1] == "report"  # noqa: PLR2004
+            and argv[2].isascii() and argv[2].isdigit() and 1 <= int(argv[2]) <= REPORT_MAX_DAYS)
+
+
 # One branch for each command, plainer than a table of them.
 def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
     """Carry out the command given. For run, poll until stopped."""
-    commands = {"run", "poll", "pause", "resume", "stop", "warm", "enable", "disable", "remove"}
-    # The script's own name and one command.
-    if len(argv) != 2 or argv[1] not in commands:  # noqa: PLR2004
+    if not usage_ok(argv):
         print(__doc__, file=sys.stderr)
         return 2
     global NAME  # noqa: PLW0603
@@ -1541,6 +1756,8 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
         pause_file.unlink(missing_ok=True)
         log("Resumed.")
         return 0
+    if command == "report":
+        return print_report(config, int(argv[2]) if len(argv) > 2 else REPORT_DAYS)  # noqa: PLR2004
     token = Path(config["token_file"]).read_text().strip()
     dispatcher = Dispatcher(config, GitHub(token), Account(config["account"]))
     if command == "stop":

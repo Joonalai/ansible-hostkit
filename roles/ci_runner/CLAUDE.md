@@ -17,6 +17,15 @@ every runner that is running: a check that fails now and then costs jobs,
 so the host's command should be quick and sure. What the sandbox
 must hold is in [docs/ci_runner.md](../../docs/ci_runner.md).
 
+**The timing records never feed a decision.** The dispatcher writes them
+for `report` and reads back only its own `pending.json`, which feeds
+nothing but the records. Starting, stopping and the slots never look at
+them: podman's events come from the account, where a job runs as the
+container's root, so they are parsed strictly and could at worst skew the
+job's own row. Keep it that way. Job and workflow names are the
+repositories' authors' text, and `report` strips control characters before
+it prints them.
+
 **A restart of the sandbox unit stops every job,** since the account's
 manager requires it. A host that changes its rules reloads the unit instead.
 

@@ -212,6 +212,43 @@ journalctl -u ci-runner-dispatcher
 
 The command is named after `ci_runner_name`.
 
+## Where the time goes
+
+The dispatcher records where each job's time goes, from GitHub queueing it
+to its runner's container being removed, in
+`/var/lib/<name>/timing/`, a JSON line per job, per runner stopped unused
+and per poll sample, in a file per UTC day that only root reads. It keeps
+`ci_runner_timing_keep_days` of them, 90 by default, and 0 records
+nothing. The report reads them:
+
+```sh
+sudo ci-runner-dispatcher report      # the last 14 days
+sudo ci-runner-dispatcher report 60
+```
+
+Per pool, the count, median, 90th percentile and longest of each part of a
+job's time:
+
+| Part               | From → to                                                  |
+| ------------------ | ---------------------------------------------------------- |
+| queue              | GitHub queued it → a runner took it                        |
+| not yet seen       | queued → a poll listed it                                  |
+| waiting for a slot | what is left of the queue, also a runner busy with another |
+| starting           | its runner's unit started → the runner took it             |
+| the job            | taken → GitHub says it completed                           |
+| tidying            | completed → the container removed and its slot free again  |
+
+Then the slots' use by hour of day, and how often every slot was busy while
+a job waited; the slot-minutes runners held without taking a job, and why
+they were stopped; how long polls took; and the slowest starts.
+
+How to read it: *not yet seen* long while polls are quick says poll more
+often (`ci_runner_poll_seconds`); *waiting for a slot* long while the slots
+are saturated says more slots, if the account's memory allows them; long
+*starting* is the runner's own start, dockerd and loading the warm images;
+long *tidying* holds the slot after the job. A job that another host's
+runner took has its queue but no split of it.
+
 ## Taking it off
 
 Setting `ci_runner_enabled` to `false` and running the play takes CI off the

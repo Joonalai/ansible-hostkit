@@ -1192,3 +1192,106 @@ def test_an_event_overrides_the_listings_start_and_not_the_other_way(timed: dict
     github.queued = {}
     d.poll(NOW)
     assert d.timing.runners[name]["container_started"] == "2026-11-12T10:00:03Z"
+
+
+# The report, on a small day of records written by hand.
+
+
+def job(repo: str = APP, pool: str = "main", **times: str | None) -> dict[str, Any]:
+    record: dict[str, Any] = {"v": 1, "kind": "job", "repo": repo, "pool": pool, "workflow": "checks", "job": "test"}
+    return record | {key: None if value is None else f"2026-11-12T{value}Z" for key, value in times.items()}
+
+
+QUICK = job(created="10:00:00", seen="10:00:15", slot_given="10:00:15", registered="10:00:16",
+            unit_started="10:00:17", job_started="10:00:47", job_completed="10:05:47", container_removed="10:06:07")
+WAITED = job(created="10:10:00", seen="10:10:10", unit_started="10:12:00", job_started="10:12:20",
+             job_completed="10:20:00", container_removed=None)
+ELSEWHERE = job(pool="pr", created="10:00:00", seen="10:00:05", job_started="10:03:00", job_completed="10:04:00")
+
+
+def sample(t: str, busy: int, waiting: int = 0, took: float = 1.0, left: int = 4000) -> dict[str, Any]:
+    return {"v": 1, "kind": "poll", "t": f"2026-11-12T{t}Z", "took_s": took, "queued": {"main": waiting, "pr": 0},
+            "busy": busy, "slots": 2, "waiting": waiting, "rate_left": left, "sandbox": True}
+
+
+def test_a_jobs_stages_add_up_to_its_queue() -> None:
+    stages = dispatcher.job_stages(QUICK)
+    assert stages == {"queue": 47, "not yet seen": 15, "waiting for a slot": 2, "starting": 30, "the job": 300,
+                      "tidying": 20}
+    waited = dispatcher.job_stages(WAITED)
+    assert (waited["waiting for a slot"], waited["tidying"]) == (110, None)
+    parts = [waited["not yet seen"], waited["waiting for a slot"], waited["starting"]]
+    assert sum(part or 0 for part in parts) == waited["queue"]
+
+
+def test_a_job_another_host_ran_has_no_split_of_its_queue() -> None:
+    stages = dispatcher.job_stages(ELSEWHERE)
+    assert (stages["queue"], stages["starting"], stages["waiting for a slot"]) == (180, None, None)
+
+
+def test_waiting_for_a_slot_is_never_below_zero() -> None:
+    odd = QUICK | {"seen": "2026-11-12T10:00:40Z"}
+    assert dispatcher.job_stages(odd)["waiting for a slot"] == 0
+
+
+def test_slot_use_holds_each_sample_until_the_next_and_not_over_a_gap() -> None:
+    samples = [sample("10:00:00", 2, waiting=1), sample("10:05:00", 1), sample("10:10:00", 2), sample("10:15:00", 0),
+               sample("12:00:00", 1), sample("13:00:00", 1)]
+    use = dispatcher.slot_use(samples)
+    assert set(use) == {10, 12}
+    hours, busy, saturated = use[10]
+    # 10:00 to 10:15, then the sample of 10:15 held ten minutes, not until 12:00.
+    assert hours == pytest.approx(1500 / 3600)
+    assert busy == pytest.approx((300 * 1 + 300 * 0.5 + 300 * 1 + 600 * 0) / 1500)
+    assert saturated == pytest.approx(300 / 1500)
+    assert use[12][0] == pytest.approx(600 / 3600)
+
+
+def test_the_report_splits_each_pools_queue_and_shows_the_rest() -> None:
+    records = [QUICK, WAITED, ELSEWHERE, sample("10:00:00", 2, waiting=1, took=2.0, left=100), sample("10:05:00", 1),
+               {"v": 1, "kind": "idle", "runner": "r", "pool": "main", "slot": 2, "started": "2026-11-12T10:00:00Z",
+                "stopped": "2026-11-12T10:03:00Z", "why": "surplus"}]
+    text = dispatcher.report(records, 14)
+    assert "the last 14 days: 3 jobs" in text
+    main = text[text.index("Pool main:"):text.index("Pool pr:")]
+    assert "waiting for a slot  " in main
+    assert "Pool pr:" in text
+    assert "surplus" in text and " 3\n" in text
+    assert "with fewer than 500 GitHub calls left" in text and "5.0 min with" in text
+    assert "paused 0 s, without the sandbox 0 s" in text
+    slowest = text[text.index("Slowest starts:"):]
+    assert slowest.index("10:00:47") < slowest.index("10:12:20")
+
+
+def test_a_name_with_control_characters_is_printed_without_them() -> None:
+    sneaky = QUICK | {"job": "te\x1b[2Jst\u202e\x07", "workflow": "ch\recks"}
+    text = dispatcher.report([sneaky], 1)
+    assert "\x1b" not in text and "\u202e" not in text and "\x07" not in text and "\r" not in text
+    assert "te[2Jst" in text
+
+
+def test_records_are_read_from_the_days_asked_and_strange_lines_skipped(tmp_path: Path) -> None:
+    (tmp_path / "2026-11-10.jsonl").write_text(json.dumps(QUICK) + "\n")
+    (tmp_path / "2026-11-11.jsonl").write_text(
+        json.dumps(WAITED) + "\nnot json\n" + json.dumps(QUICK | {"v": 2}) + "\n[1]\n")
+    (tmp_path / "2026-11-12.jsonl").write_text(json.dumps(ELSEWHERE) + "\n")
+    (tmp_path / "pending.json").write_text("{}")
+    assert dispatcher.read_records(tmp_path, 2, NOW) == [WAITED, ELSEWHERE]
+
+
+@pytest.mark.parametrize(
+    ("argv", "ok"),
+    [
+        (["x", "report"], True),
+        (["x", "report", "30"], True),
+        (["x", "report", "0"], False),
+        (["x", "report", "-1"], False),
+        (["x", "report", "٣"], False),
+        (["x", "report", "99999"], False),
+        (["x", "poll", "3"], False),
+        (["x", "poll"], True),
+        (["x", "nope"], False),
+    ],
+)
+def test_only_the_report_takes_days(argv: list[str], ok: bool) -> None:
+    assert dispatcher.usage_ok(argv) is ok
