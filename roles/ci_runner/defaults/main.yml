@@ -62,6 +62,10 @@ ci_runner_job_max_seconds: 3600
 # such as PYTEST_XDIST_AUTO_NUM_WORKERS.
 ci_runner_job_env: {}
 ci_runner_poll_seconds: 20
+# Days of timing records kept: where each job's time went, from queued to
+# its container gone, to find what CI jobs wait for. JSON lines in
+# a directory only root reads. 0 records nothing.
+ci_runner_timing_keep_days: 90
 
 # The token that registers runners: fine-grained, only the repositories
 # above, Administration read and write (runners), Actions read (queued

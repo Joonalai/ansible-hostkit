@@ -18,3 +18,6 @@ ci_runner_run_dir: /run/{{ ci_runner_name }}
 # writable, and root's files are still read only to it.
 ci_runner_state_dir: /var/lib/{{ ci_runner_name }}
 ci_runner_images_dir: "{{ ci_runner_state_dir }}/images"
+# Where each job's time went, root's alone: job and workflow names are the
+# repositories' authors' text.
+ci_runner_timing_dir: "{{ ci_runner_state_dir }}/timing"

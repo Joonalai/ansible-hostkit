@@ -15,6 +15,10 @@ Runs as root from its service. Each poll:
    slot is free. A runner that has waited for a job longer than IDLE_MAX is
    stopped.
 
+Where each job's time went is written to timing_dir, a JSON line per job,
+per runner stopped unused and per poll sample (Timing). Only the records
+read it back.
+
 A poll comes every poll_seconds, counted from the start of the last one, and
 sooner when a runner's container is gone, so its slot is given again at once.
 
@@ -110,6 +114,8 @@ API_TIMEOUT = 15
 API_PARALLEL = 8
 # Below this many calls left in the hour, polls slow down (run()).
 RATE_LOW = 500
+# Ended jobs looked up for their timing records in one poll, at most.
+LOOK_UPS = 20
 # A call to GitHub slower than this is logged, so a poll held up by one call
 # names it.
 SLOW_CALL = 5
@@ -231,9 +237,10 @@ class GitHub:
         # Anything but a plain true is public to this host.
         return self.get(f"/repos/{repo}").get("private") is True
 
-    def queued_jobs(self, repo: str, labels: list[str]) -> dict[str, int]:
-        """Jobs of the repository waiting for a runner, by label."""
-        counts = dict.fromkeys(labels, 0)
+    def jobs(self, repo: str, labels: list[str]) -> list[JsonObject]:
+        """The jobs of the repository's queued and running workflow runs that
+        ask for one of the labels, whatever their own status.
+        """
         run_ids = []
         for status in ("queued", "in_progress"):
             runs = self.get(f"/repos/{repo}/actions/runs", status=status, per_page=50)
@@ -242,15 +249,16 @@ class GitHub:
         def jobs_of(run_id: int) -> JsonObject:
             return self.get(f"/repos/{repo}/actions/runs/{run_id}/jobs", filter="latest", per_page=100)
 
+        wanted = set(labels)
+        found = []
         with ThreadPoolExecutor(API_PARALLEL) as pool:
             for jobs in pool.map(jobs_of, run_ids):
-                for job in jobs.get("jobs", []):
-                    if job.get("status") != "queued":
-                        continue
-                    for label in labels:
-                        if label in job.get("labels", []):
-                            counts[label] += 1
-        return counts
+                found += [job for job in jobs.get("jobs", []) if wanted & set(job.get("labels", []))]
+        return found
+
+    def job(self, repo: str, job_id: int) -> JsonObject:
+        """One job, as GitHub has it now."""
+        return self.get(f"/repos/{repo}/actions/jobs/{job_id}")
 
     def runners(self, repo: str, labels: list[str]) -> list[JsonObject]:
         """The repository's self-hosted runners that carry one of the labels."""
@@ -530,6 +538,18 @@ def to_stop(free: list[Runner], queued: int, now: datetime) -> list[Runner]:
     return stop
 
 
+def queued_counts(jobs: list[JsonObject], labels: list[str]) -> dict[str, int]:
+    """Jobs waiting for a runner, by label."""
+    counts = dict.fromkeys(labels, 0)
+    for job in jobs:
+        if job.get("status") != "queued":
+            continue
+        for label in labels:
+            if label in job.get("labels", []):
+                counts[label] += 1
+    return counts
+
+
 def to_start(queued: int, waiting_runners: int) -> int:
     """Runners to start: one for each queued job no waiting runner will take."""
     return max(0, queued - waiting_runners)
@@ -701,6 +721,292 @@ def warm_command(config: Config) -> list[str]:
     ]
 
 
+# Where a job's time goes, for the report. Written by the dispatcher alone,
+# root's to read, and nothing in it feeds a decision: the allocation never
+# reads it.
+TIMING_VERSION = 1
+# A poll sample is written when what it holds changes, and at least this often.
+SAMPLE_EVERY = timedelta(minutes=5)
+# A job pending longer than a job may run and this is written with what is
+# known, and dropped.
+PENDING_SLACK = timedelta(hours=1)
+TIMING_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
+# Job and workflow names are the repositories' authors' text.
+NAME_MAX = 200
+# What every job record holds, null when unknown.
+JOB_FIELDS = (
+    "repo", "pool", "job_id", "run_id", "run_attempt", "workflow", "job", "conclusion", "runner", "slot",
+    "created", "seen", "slot_given", "registered", "unit_started", "container_started", "job_started",
+    "job_completed", "container_died", "container_removed",
+)
+RUNNER_FIELDS = ("slot", "slot_given", "registered", "unit_started", "container_started", "container_died",
+                 "container_removed")
+
+
+def utc_now() -> datetime:
+    """The time now, for the records."""
+    return datetime.now(UTC)
+
+
+def stamp(when: datetime | None) -> str | None:
+    """A time as the records hold it: UTC, to the second."""
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if when else None
+
+
+def github_time(value: object) -> str | None:
+    """A time GitHub gave, in the records' form, or null if it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return stamp(when if when.tzinfo else when.replace(tzinfo=UTC))
+
+
+def number(value: object) -> int | None:
+    """A whole number GitHub gave, or null."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def text(value: object) -> str | None:
+    """A name GitHub gave, cut short, or null."""
+    return value[:NAME_MAX] if isinstance(value, str) and value else None
+
+
+def job_fields(job: JsonObject) -> JsonObject:
+    """What a job record takes from GitHub's answer for the job. Unknown
+    fields are left out, so they do not replace what an earlier answer gave.
+    The job started when its first step did, which is when a runner took it;
+    started_at is the fallback.
+    """
+    steps = job.get("steps")
+    first = steps[0] if isinstance(steps, list) and steps and isinstance(steps[0], dict) else {}
+    fields = {
+        "job_id": number(job.get("id")),
+        "run_id": number(job.get("run_id")),
+        "run_attempt": number(job.get("run_attempt")),
+        "workflow": text(job.get("workflow_name")),
+        "job": text(job.get("name")),
+        "created": github_time(job.get("created_at")),
+        "conclusion": text(job.get("conclusion")),
+        "runner": text(job.get("runner_name")),
+        "job_started": github_time(first.get("started_at")) or github_time(job.get("started_at")),
+        "job_completed": github_time(job.get("completed_at")),
+    }
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+def job_record(pending: JsonObject, job: JsonObject | None, runner: JsonObject | None) -> JsonObject:
+    """A finished job's record: what was noted while it was pending, GitHub's
+    last answer, and the times of the runner that ran it, which need not be
+    the runner started for it.
+    """
+    record: JsonObject = {"v": TIMING_VERSION, "kind": "job"} | dict.fromkeys(JOB_FIELDS)
+    record |= {key: value for key, value in pending.items() if key in JOB_FIELDS}
+    if job is not None:
+        record |= job_fields(job)
+    if runner is not None:
+        record |= {key: runner.get(key) for key in RUNNER_FIELDS}
+    return record
+
+
+class Timing:
+    """Records where each job's time went, as JSON lines in a file per UTC
+    day, root's alone. The jobs and runners still in flight are kept in
+    pending.json, so a restart of the dispatcher loses none. Nothing here
+    may stop a poll: a write that fails is logged once a day and dropped.
+    """
+
+    def __init__(self, directory: Path | None, keep_days: int, job_max_seconds: int) -> None:
+        """Off without a directory or with keep_days 0. Reads what was pending."""
+        self.directory = directory if directory is not None and keep_days > 0 else None
+        self.keep_days = keep_days
+        self.pending_max = timedelta(seconds=job_max_seconds) + PENDING_SLACK
+        # By job id, as a string since they go to JSON as keys.
+        self.jobs: dict[str, JsonObject] = {}
+        # By runner name.
+        self.runners: dict[str, JsonObject] = {}
+        # What pending.json holds: nothing until something is pending.
+        self.saved = json.dumps({"jobs": {}, "runners": {}}, sort_keys=True)
+        self.failed_on: str | None = None
+        self.pruned_on: str | None = None
+        self.sampled: tuple[JsonObject, datetime] | None = None
+        self.load()
+
+    def fail(self, error: OSError) -> None:
+        """Log a failed write, once a day."""
+        day = f"{utc_now():%Y-%m-%d}"
+        if self.failed_on != day:
+            self.failed_on = day
+            log(f"timing: {error}; not recorded")
+
+    def load(self) -> None:
+        """What was pending when the last dispatcher stopped."""
+        if self.directory is None:
+            return
+        try:
+            data = json.loads((self.directory / "pending.json").read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as error:
+            log(f"timing: could not read what was pending: {error}")
+            return
+        if not isinstance(data, dict):
+            return
+        jobs, runners = data.get("jobs"), data.get("runners")
+        if isinstance(jobs, dict):
+            self.jobs = {key: entry for key, entry in jobs.items()
+                         if isinstance(entry, dict) and key == f"{number(entry.get('job_id'))}"
+                         and isinstance(entry.get("noted"), str)}
+        if isinstance(runners, dict):
+            self.runners = {name: entry for name, entry in runners.items()
+                            if isinstance(entry, dict) and isinstance(entry.get("slot_given"), str)}
+        self.saved = json.dumps({"jobs": self.jobs, "runners": self.runners}, sort_keys=True)
+
+    def save(self) -> None:
+        """Write what is pending, when it changed."""
+        if self.directory is None:
+            return
+        content = json.dumps({"jobs": self.jobs, "runners": self.runners}, sort_keys=True)
+        if content == self.saved:
+            return
+        partial = self.directory / ".pending.json"
+        try:
+            partial.unlink(missing_ok=True)
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(content)
+            os.replace(partial, self.directory / "pending.json")
+        except OSError as error:
+            self.fail(error)
+            return
+        self.saved = content
+
+    def append(self, record: JsonObject) -> None:
+        """Add a record to today's file."""
+        if self.directory is None:
+            return
+        path = self.directory / f"{utc_now():%Y-%m-%d}.jsonl"
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(json.dumps(record, sort_keys=False) + "\n")
+        except OSError as error:
+            self.fail(error)
+
+    def prune(self) -> None:
+        """Remove the days past keep_days, at the first poll of a day."""
+        if self.directory is None:
+            return
+        today = utc_now().date()
+        if self.pruned_on == f"{today}":
+            return
+        oldest = f"{today - timedelta(days=self.keep_days - 1)}"
+        try:
+            for path in self.directory.iterdir():
+                match = TIMING_FILE.match(path.name)
+                if match and match.group(1) < oldest:
+                    path.unlink()
+        except OSError as error:
+            self.fail(error)
+            return
+        self.pruned_on = f"{today}"
+
+    def note_jobs(self, repo: str, pools: dict[str, str], jobs: list[JsonObject]) -> None:
+        """The jobs of this poll's listing: a job queued or running is
+        pending, from the first time it is listed; one completed is written.
+        A job first listed already running was not seen queued.
+        """
+        if self.directory is None:
+            return
+        for job in jobs:
+            job_id = number(job.get("id"))
+            if job_id is None:
+                continue
+            key = f"{job_id}"
+            status = job.get("status")
+            if key not in self.jobs:
+                if status not in {"queued", "in_progress"}:
+                    continue
+                pool = next((pool for label, pool in pools.items() if label in job.get("labels", [])), None)
+                now = utc_now()
+                self.jobs[key] = {"repo": repo, "pool": pool, "noted": stamp(now),
+                                  "seen": stamp(now) if status == "queued" else None}
+            self.jobs[key] |= job_fields(job)
+            if status == "completed":
+                self.finish(job)
+
+    def gone(self, repo: str, listed: list[JsonObject]) -> list[int]:
+        """The repository's pending jobs this poll's listing no longer has:
+        their runs ended, and GitHub is asked for each once.
+        """
+        ids = {number(job.get("id")) for job in listed}
+        return [entry["job_id"] for entry in self.jobs.values()
+                if entry.get("repo") == repo and entry.get("job_id") not in ids]
+
+    def finish(self, job: JsonObject) -> None:
+        """Write a pending job GitHub says is completed, with the times of
+        the runner that ran it.
+        """
+        key = f"{number(job.get('id'))}"
+        pending = self.jobs.pop(key, None)
+        if pending is None:
+            return
+        runner = self.runners.pop(text(job.get("runner_name")) or "", None)
+        self.append(job_record(pending, job, runner))
+
+    def drop(self, job_id: int) -> None:
+        """Write a pending job with what is known, as when GitHub no longer has it."""
+        pending = self.jobs.pop(f"{job_id}", None)
+        if pending is not None:
+            self.append(job_record(pending, None, None))
+
+    def expire(self) -> None:
+        """Write and drop the jobs pending too long, and forget such runners."""
+        if self.directory is None:
+            return
+        cutoff = stamp(utc_now() - self.pending_max) or ""
+        for entry in [entry for entry in self.jobs.values() if entry["noted"] < cutoff]:
+            self.drop(entry["job_id"])
+        self.runners = {name: entry for name, entry in self.runners.items()
+                        if (entry.get("slot_given") or "") >= cutoff}
+
+    def started(self, name: str, slot: int, slot_given: datetime, registered: datetime) -> None:
+        """A runner this dispatcher registered and started."""
+        if self.directory is not None:
+            self.runners[name] = {"slot": slot, "slot_given": stamp(slot_given), "registered": stamp(registered),
+                                  "unit_started": stamp(utc_now())}
+
+    def containers(self, running: list[Runner]) -> None:
+        """When each runner's container started, as podman lists it."""
+        for runner in running:
+            if runner.name in self.runners:
+                self.runners[runner.name]["container_started"] = stamp(runner.started)
+
+    def idle(self, runner: Runner, why: str) -> None:
+        """A runner stopped before it took a job, and why."""
+        if self.directory is None:
+            return
+        self.runners.pop(runner.name, None)
+        self.append({"v": TIMING_VERSION, "kind": "idle", "runner": runner.name, "pool": runner.pool,
+                     "slot": runner.slot, "started": stamp(runner.started), "stopped": stamp(utc_now()),
+                     "why": why})
+
+    def sample(self, sample: JsonObject, took: float, extra: JsonObject) -> None:
+        """A poll's sample, how long the poll took and what else it notes,
+        written when the sample differs from the last one written, and at
+        least every SAMPLE_EVERY.
+        """
+        if self.directory is None:
+            return
+        now = utc_now()
+        if self.sampled is not None and self.sampled[0] == sample and now - self.sampled[1] < SAMPLE_EVERY:
+            return
+        self.sampled = (sample, now)
+        self.append({"v": TIMING_VERSION, "kind": "poll", "t": stamp(now), "took_s": round(took, 1)} | sample | extra)
+
+
 class Dispatcher:
     """Decides at each poll which runners start and which stop, and carries out the commands."""
 
@@ -715,15 +1021,44 @@ class Dispatcher:
         self.recent: dict[str, datetime] = {}
         # Slots given out lately: when, and to which pool (CLAIM_HOLD).
         self.claims: dict[int, tuple[datetime, str]] = {}
+        timing_dir = config.get("timing_dir")
+        self.timing = Timing(Path(timing_dir) if timing_dir else None, int(config.get("timing_keep_days", 0)),
+                             config["job_max_seconds"])
+        # What the last poll saw, for its timing sample.
+        self.seen: JsonObject = {}
+        # Pending jobs whose runs ended, by repository, looked up after the
+        # runners are started.
+        self.ended: dict[str, list[int]] = {}
 
     def labels(self) -> dict[str, str]:
         """The label of each pool."""
         return {pool: self.config["label"] + suffix for pool, suffix in POOLS.items()}
 
+    def poll(self, now: datetime | None = None) -> None:
+        """One poll, then what is still pending kept for the next dispatcher."""
+        self.seen = {"queued": dict.fromkeys(POOLS, 0), "busy": None, "slots": self.config["slots"],
+                     "waiting": 0, "sandbox": None, "paused": None}
+        self.ended = {}
+        self.timing.prune()
+        try:
+            self.poll_steps(now or datetime.now(UTC))
+        finally:
+            self.look_up_ended()
+            self.timing.expire()
+            self.timing.save()
+
+    def sample(self, took: float) -> None:
+        """Record what the last poll saw and how long it took. Calls left
+        change at nearly every poll, so only whether they are few makes a
+        sample new.
+        """
+        left = getattr(self.github, "rate_remaining", None)
+        low = left is not None and left < RATE_LOW
+        self.timing.sample(self.seen | {"rate_low": low}, took, {"rate_left": left})
+
     # The steps of a poll in their order, which reads best in one piece.
-    def poll(self, now: datetime | None = None) -> None:  # noqa: C901, PLR0912
+    def poll_steps(self, now: datetime) -> None:  # noqa: C901, PLR0912
         """One poll, in the steps the module's docstring gives."""
-        now = now or datetime.now(UTC)
         self.clean_env_files(now)
         try:
             running = self.account.runners()
@@ -731,6 +1066,8 @@ class Dispatcher:
             log(f"could not list the runners: {error}")
             running = None
         if running is not None:
+            self.seen["busy"] = len({runner.slot for runner in running})
+            self.timing.containers(running)
             self.stop_overdue(running, now)
 
         # First, even without the runners listed, paused or unfiltered.
@@ -753,8 +1090,8 @@ class Dispatcher:
         # every repository at once, the answers are acted on one by one.
         labels = list(self.labels().values())
 
-        def ask(repo: str) -> tuple[list[JsonObject], dict[str, int]]:
-            return self.github.runners(repo, labels), self.github.queued_jobs(repo, labels)
+        def ask(repo: str) -> tuple[list[JsonObject], list[JsonObject]]:
+            return self.github.runners(repo, labels), self.github.jobs(repo, labels)
 
         wanted: dict[str, dict[str, int]] = {}
         for repo, answer in zip(private, self.each_repo(ask, private), strict=True):
@@ -768,11 +1105,13 @@ class Dispatcher:
 
         # Before the pause: a paused dispatcher lets running jobs finish, and
         # none may go on outside the sandbox.
-        if not sandbox_held(self.config):
+        self.seen["sandbox"] = sandbox_held(self.config)
+        if not self.seen["sandbox"]:
             log("The host's sandbox for the CI account is not held. No runner starts until it is.")
             self.stop_unheld(running)
             return
-        if self.pause_file.exists():
+        self.seen["paused"] = self.pause_file.exists()
+        if self.seen["paused"]:
             return
         self.allocate(wanted, running, now)
         self.warn_token(now)
@@ -797,24 +1136,58 @@ class Dispatcher:
             forget()
 
     def survey(self, repo: str, running: list[Runner], now: datetime,
-               listed: list[JsonObject], queued: dict[str, int]) -> dict[str, int]:
+               listed: list[JsonObject], jobs: list[JsonObject]) -> dict[str, int]:
         """Stop the repository's runners no job waits for and remove its
         leftover registrations. Gives the runners to start, by pool.
         """
         labels = self.labels()
+        queued = queued_counts(jobs, list(labels.values()))
+        self.timing.note_jobs(repo, {label: pool for pool, label in labels.items()}, jobs)
+        self.ended[repo] = self.timing.gone(repo, jobs)
         registered = {entry["name"]: entry for entry in listed}
         wanted = {}
         for pool, label in labels.items():
+            self.seen["queued"][pool] += queued[label]
             free = free_runners(repo, pool, running, registered)
             stopping = to_stop(free, queued[label], now)
             for runner in stopping:
                 self.account.stop(runner.container)
+                self.timing.idle(runner, "idle" if now - runner.started >= IDLE_MAX else "surplus")
                 log(f"{repo}: stopped {runner.name}, no job for it")
             wanted[pool] = to_start(queued[label], len(free) - len(stopping))
         for runner in leftovers(listed, running, self.recent, now):
             self.github.remove_runner(repo, runner["id"])
             log(f"{repo}: removed the offline runner {runner['name']}")
         return wanted
+
+    def look_up_ended(self) -> None:
+        """Ask GitHub for the pending jobs whose runs have ended, for their
+        records. Only the records depend on it, so it comes after the
+        runners are started, at most LOOK_UPS at once, the rest at the next
+        polls, and not while few calls are left this hour: a cancelled
+        matrix would otherwise hold the next poll for every one of its jobs.
+        """
+        left = getattr(self.github, "rate_remaining", None)
+        if left is not None and left < RATE_LOW:
+            return
+        asked = [(repo, job_id) for repo, job_ids in self.ended.items() for job_id in job_ids][:LOOK_UPS]
+
+        def ask(pair: tuple[str, int]) -> JsonObject | Exception:
+            try:
+                return self.github.job(*pair)
+            except POLL_ERRORS as error:
+                return error
+
+        with ThreadPoolExecutor(API_PARALLEL) as pool:
+            answers = list(pool.map(ask, asked))
+        # The timing is the poll's thread's alone.
+        for (repo, job_id), answer in zip(asked, answers, strict=True):
+            if not isinstance(answer, Exception):
+                self.timing.finish(answer)
+            elif isinstance(answer, urllib.error.HTTPError) and answer.code == HTTPStatus.NOT_FOUND:
+                self.timing.drop(job_id)
+            else:
+                log(f"{repo}: could not look up job {job_id}: {answer}")
 
     def allocate(self, wanted: dict[str, dict[str, int]], running: list[Runner], now: datetime) -> None:
         """Every repository's main jobs before any pull request's, since main's
@@ -837,6 +1210,7 @@ class Dispatcher:
                     free = free_slots(slots, running, set(self.claims) | failed)
                     if not free or (pool == "pr" and pr_room <= 0):
                         waiting = sum(left.values())
+                        self.seen["waiting"] += waiting
                         log(f"{waiting} {pool} jobs wait for a free slot")
                         left = {}
                         break
@@ -873,7 +1247,9 @@ class Dispatcher:
     def start(self, repo: str, pool: str, label: str, slot: int, now: datetime) -> None:
         """Register a runner for the repository and start its container in the slot."""
         name = runner_name(repo, pool)
+        slot_given = utc_now()
         jit = self.github.jit_config(repo, name, label)
+        registered = utc_now()
         self.recent[name] = now
         env_file = self.env_dir / f"{name}.env"
         # Readable by the account alone, which podman reads it as. Removed on a
@@ -887,6 +1263,7 @@ class Dispatcher:
             unit=slot_unit(pool, slot),
             max_seconds=self.config["job_max_seconds"],
         )
+        self.timing.started(name, slot, slot_given, registered)
         log(f"{repo}: started {name} in {pool} slot {slot}")
 
     def stop_overdue(self, running: list[Runner], now: datetime) -> None:
@@ -1091,6 +1468,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
         took = time.monotonic() - started
         if took > config["poll_seconds"]:
             log(f"a poll took {took:.0f} s")
+        dispatcher.sample(took)
         left = dispatcher.github.rate_remaining
         pause = pause_after(took, config["poll_seconds"], left)
         if left is not None and left < RATE_LOW:
