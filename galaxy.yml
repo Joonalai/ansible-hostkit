@@ -7,18 +7,23 @@ authors:
   - Joonalai
 description: >-
   Roles for self-hosted Debian servers: rootless podman accounts, ephemeral
-  CI runners, and the runners and workbench Claude Code works in
+  CI runners, GitHub Actions runners for Claude Code, and the workbench
+  Claude Code's team works in. The host provides its own hardening.
 license:
   - MIT
-tags:
-  - linux
-  - infrastructure
-  - podman
-  - ci
+tags: [linux, infrastructure, podman, github, ci, claude]
+dependencies:
+  community.general: ">=10.0.0"
 repository: https://github.com/Joonalai/ansible-hostkit
+issues: https://github.com/Joonalai/ansible-hostkit/issues
 build_ignore:
-  - .venv
-  - .ansible
   - .agents
   - .claude
+  - .venv
+  - .ansible
+  - .copier-answers.agent-instructions.yml
   - uv.lock
+  - "*.pyc"
+  - __pycache__
+  - .pytest_cache
+  - "**/tests"
