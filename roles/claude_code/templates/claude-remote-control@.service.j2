@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Claude Code Remote Control session in %h/projects/%i
+# It dials out to register itself, and there is nothing to do until it can.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/projects/%i
+# A user unit gets HOME but not the login shell's PATH, and both claude and
+# whatever a project runs, such as uv, live in ~/.local/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Per-project flags -- the session's name and permission mode -- come from the
+# consumer role, one file per instance. Quotes inside the value are honoured
+# when systemd splits the unquoted variable into arguments.
+EnvironmentFile=-%h/.config/claude-remote-control/%i.env
+ExecStart={{ claude_code_bin }} remote-control $CLAUDE_REMOTE_CONTROL_ARGS
+# Always: a crash, an update replacing the binary, or a network outage that
+# outlasts its own retries all end with a process that should come back. The
+# session it comes back with is a new one; what carries across is whatever
+# the project keeps for itself.
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

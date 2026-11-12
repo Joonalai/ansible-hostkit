@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Update Claude Code nightly
+
+[Timer]
+OnCalendar={{ claude_code_update_on_calendar }}
+# A night the box was off is made up at the next boot.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

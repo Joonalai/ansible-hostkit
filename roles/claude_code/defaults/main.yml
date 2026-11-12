@@ -1,0 +1,71 @@
+---
+# Claude Code on the host, as a Remote Control server: a long-running
+# `claude remote-control` that registers with Anthropic over outbound HTTPS
+# and is driven from the Claude phone app or claude.ai/code. Nothing listens;
+# the host dials out and polls, so it works behind CGNAT and needs no open
+# port. This role owns the account, the binary and the unit template. What
+# runs in a session -- which checkout, which permissions -- is a consumer
+# role's business: the workbench, or a role of the host's own.
+
+# One account, one login, however many projects. Reached with
+# "sudo -iu claude", never by logging in.
+claude_code_user: claude
+claude_code_home: /home/{{ claude_code_user }}
+# Empty lets the system pick. Pin it when the host's firewall names the
+# account by number, as the workbench's account needs.
+claude_code_uid: ""
+
+# Each Remote Control session is a directory under here, and the systemd
+# instance name is the directory name: claude-remote-control@app.service
+# works in ~/projects/app.
+claude_code_projects_dir: "{{ claude_code_home }}/projects"
+
+# The native build, no Node. The installer downloads the release, verifies
+# its checksum and puts the binary in ~/.local/bin. What version runs is this
+# play's decision, every run: "stable" and "latest" are resolved through the
+# release service the installer itself asks, and "x.y.z" is taken as is. The
+# binary's own background updater is not relied on -- a fresh native install
+# reports it off. "latest" because Remote Control is new enough that the
+# older channel has not been tried with it.
+claude_code_installer_url: https://claude.ai/install.sh
+claude_code_releases_url: https://downloads.claude.ai/claude-code-releases
+claude_code_version: latest
+claude_code_bin: "{{ claude_code_home }}/.local/bin/claude"
+
+# The play moves to the version above when it runs, and a timer does the same
+# every night in between, restarting the sessions onto the new binary: this is
+# the most exposed thing on the host, holding a login and talking to the
+# internet, and a play nobody runs leaves it on a release for weeks. At
+# night, and clear of a nightly unattended-upgrades reboot at 04:30; a run
+# a reboot takes is made up after it.
+claude_code_update_script: "{{ claude_code_home }}/.local/libexec/claude-update"
+claude_code_update_on_calendar: "*-*-* 04:00:00"
+# The user units the timer restarts onto a new binary, as a glob; empty
+# restarts none, and the sessions move whenever they next start.
+claude_code_update_restarts: "claude-remote-control@*.service"
+
+# ~/.claude/settings.json for the account, the user-scope settings every
+# session starts from. Not the model: a Remote Control session's model is
+# chosen by the client that opens it, and a "model" here was ignored.
+#
+# No auto mode and no bypass, for every session on the account. The unit
+# starts a session in the mode a consumer role names, but that is only the
+# starting mode, and a session can be switched to auto mode, which hands the
+# decision to a classifier and drops the broad allow rules, so a consumer's
+# allow list stops being the boundary.
+# Every session here runs a protocol whose commands are all on its allow
+# list, so auto mode buys no convenience, only reach. Deny rules are what
+# still bind in any mode; consumers carry those per checkout.
+claude_code_settings:
+  permissions:
+    disableAutoMode: disable
+    disableBypassPermissionsMode: disable
+
+# Remote Control needs a claude.ai login, not an API key, and the login is a
+# browser round trip a human does once ("sudo -iu claude claude auth login").
+# The role refuses to proceed without one rather than installing a unit that
+# can only restart-loop. A test container has no account and never will, so
+# its inventory turns this off; the sessions are then installed and enabled
+# but not started.
+claude_code_login_required: true
+claude_code_credentials: "{{ claude_code_home }}/.claude/.credentials.json"

@@ -1,0 +1,26 @@
+---
+- name: Reload the systemd manager for claude_code
+  ansible.builtin.systemd_service:
+    scope: user
+    daemon_reload: true
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+- name: Restart the Claude Code update timer
+  ansible.builtin.systemd_service:
+    name: claude-update.timer
+    scope: user
+    state: restarted
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+# A topic, not a handler with work of its own: the sessions are consumer
+# roles' units, and each of them listens here. Notifying a name no handler
+# carries is an error, which this placeholder prevents when no consumer runs.
+- name: Restart Claude Code sessions
+  ansible.builtin.debug:
+    msg: A consumer role's session handler runs on this topic.
+  listen: Restart Claude Code sessions
+  changed_when: false

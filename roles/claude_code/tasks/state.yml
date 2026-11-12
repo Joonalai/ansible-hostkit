@@ -1,0 +1,37 @@
+---
+# ~/.claude.json is Claude Code's own state, and two of its keys are answers
+# to questions asked at a keyboard nobody is sitting at: whether to trust a
+# directory's files, and the one-time "Enable Remote Control? (y/n)" that a
+# unit with no stdin sits on for good. Claude Code rewrites the file freely,
+# so this merges keys into it rather than templating it. Takes
+# claude_code_state, a dict of top-level keys, and optionally
+# claude_code_project_dir, whose keys go under projects[<dir>]:
+#   include_role: {name: joonalai.hostkit.claude_code, tasks_from: state}
+#   vars: {claude_code_state: {hasTrustDialogAccepted: true}, claude_code_project_dir: "..."}
+- name: Merge {{ claude_code_state.keys() | join(', ') }} into ~/.claude.json
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, os, sys
+        path = os.path.expanduser("~/.claude.json")
+        state = json.load(open(path)) if os.path.exists(path) else {}
+        wanted = json.loads(sys.argv[1])
+        target = state
+        if sys.argv[2]:
+            target = state.setdefault("projects", {}).setdefault(sys.argv[2], {})
+        if all(target.get(k) == v for k, v in wanted.items()):
+            sys.exit(0)
+        target.update(wanted)
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+        print("merged")
+      - "{{ claude_code_state | to_json }}"
+      - "{{ claude_code_project_dir | default('') }}"
+  register: claude_code_state_merge
+  changed_when: claude_code_state_merge.stdout == 'merged'
+  # An answer given after the process started is one it never saw.
+  notify: Restart Claude Code sessions
+  become: true
+  become_user: "{{ claude_code_user }}"
