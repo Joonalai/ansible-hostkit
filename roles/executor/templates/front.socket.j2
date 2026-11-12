@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The API socket of the executor instance {{ executor_instance.name }}
+
+[Socket]
+# Any account may connect: the front takes a request only with a caller's
+# key, from the uid the caller is registered with. The runner's and the
+# workbench's containers mount it.
+ListenStream={{ executor_instance_run_dir }}/api.sock
+Accept=yes
+SocketUser={{ executor_front_user }}
+SocketGroup={{ executor_front_user }}
+SocketMode=0666
+DirectoryMode=0755
+MaxConnections=64
+
+[Install]
+WantedBy=sockets.target

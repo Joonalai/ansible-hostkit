@@ -1,0 +1,81 @@
+---
+# Executor instances: each runs what a change needs running, compose stacks
+# and the previews people and the testers open, for its callers, the
+# runner's slots, the workbench's repositories and people. An instance has
+# no Claude, no Claude login and no GitHub credential: it takes code as a
+# git bundle and answers up, run, logs, down and list. Each is two
+# accounts of its own:
+#
+#   <name>-exec      a rootless_account: the stacks' podman, its own
+#                    subordinate range, memory, swap and CPU caps, and
+#                    the host's sandbox units, which its manager Requires=.
+#                    Its agent, a user socket unit, builds and runs them.
+#   <name>-executor  no privileges and no podman. It holds the callers'
+#                    keys, listens on the instance's socket, queues, and
+#                    keeps the list of stacks; it hands each request, the
+#                    bundle unopened, to the agent.
+#
+# Neither is ever logged into; "sudo -iu <name>-exec" for debugging.
+#
+#   executor_instances:
+#     - name: stacks                # letters and digits, at most 16
+#       exec_uid: 2101              # pinned, as the sandbox names it
+#       exec_subuid_start: 300000   # pinned, its own range
+#       sandbox_units: [sandbox.service]
+#       ports_start: 9200           # the API port, reserved for a remote
+#                                   # instance; the phone page is the next
+#       ports_end: 9299             # and the callers' blocks fill the rest
+#       host: stacks.example.ts.net # optional, where the users open a stack
+#       overrides:                  # optional, the host's profiles per repository
+#         example/app:
+#           profiles:
+#             seed:
+#               compose: [compose.yaml, compose.seed.yaml]
+#
+# Any key of executor_instance_defaults below may be set per instance.
+#
+# The callers are not listed here: the roles whose sessions call an
+# instance register them, a runner's slot or a workbench's repository
+# whose entry says `executor: <name>`, after this role has run on the host.
+executor_instances: []
+
+executor_instance_defaults:
+  exec_subuid_count: 65536
+  # Where a user opens a stack, as the URLs the callers get name it.
+  host: "{{ ansible_facts['fqdn'] }}"
+  # Ports per caller, its stack's to publish. A caller keeps its block for
+  # as long as it is a caller, so a stack's URL is stable across ups.
+  ports_per_caller: 3
+  # The exec account's caps: every stack and every build at once.
+  memory_max: 4G
+  # Leave it bounded: unbounded, a full account pages instead of failing.
+  memory_swap_max: 512M
+  cpu_quota: ""
+  # The exec account's container storage and the stacks' trees. Past it, an
+  # up first removes the images no container uses, then refuses.
+  disk_max_gb: 20
+  # Stacks running at once. At the limit, an up stops the stack idle
+  # longest, if it has been idle evict_idle_minutes; a caller that waits,
+  # a runner's job, then waits for queue_timeout_minutes and goes on
+  # without a stack, and a person is refused at once.
+  max_stacks: 3
+  evict_idle_minutes: 30
+  queue_timeout_minutes: 20
+  # A stack nobody has used for idle_hours is stopped, its tree and volumes
+  # kept for a start from the phone page; one brought up max_age_hours ago
+  # is removed with its data.
+  idle_hours: 12
+  max_age_hours: 72
+  # The largest bundle an up may send, the checkout's whole history.
+  bundle_max_mb: 200
+  overrides: {}
+
+# Host packages beyond podman, which rootless_account installs with the
+# account: git for the bundles, docker-compose for the stacks.
+executor_packages: [git, python3, docker-compose]
+
+executor_front_bin: /usr/local/libexec/executor-front
+executor_agent_bin: /usr/local/libexec/executor-agent
+executor_config_dir: /etc/hostkit-executor
+executor_state_dir: /var/lib/hostkit-executor
+executor_run_dir: /run/hostkit-executor

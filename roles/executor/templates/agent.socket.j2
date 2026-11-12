@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The agent of the executor instance {{ executor_instance.name }}
+
+[Socket]
+# In a directory of this account's that only the front's account may open:
+# the agent takes any request that reaches it, the front having checked it.
+ListenStream={{ executor_instance_run_dir }}/agent/agent.sock
+Accept=yes
+SocketMode=0666
+MaxConnections=32
+
+[Install]
+WantedBy=sockets.target

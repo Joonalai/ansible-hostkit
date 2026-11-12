@@ -1,0 +1,167 @@
+---
+# Registers callers of the instances on this host, for the roles whose
+# sessions call one, after this role has set the instances up:
+#
+#   - ansible.builtin.include_role:
+#       name: joonalai.hostkit.executor
+#       tasks_from: callers
+#     vars:
+#       executor_callers_prefix: runner-
+#       executor_callers:
+#         - instance: stacks
+#           name: runner-app-1          # starts with the prefix
+#           uid: 2001                   # the only uid that may use its key
+#           repos: [example/app]        # what it may bring up
+#           waits: true                 # a job waits for a place; a person does not
+#           env_file: /home/coder/claude/app-1/stack.env
+#           env_owner: root
+#           env_group: coder
+#           env_mode: "0640"
+#           local_host: host.containers.internal
+#
+# Each caller gets a key, made on the host and kept by root, and an env
+# file with the key and what `stack` needs, for the caller's unit to hand
+# its container. The instance keeps only the key's SHA-256. A caller of
+# the prefix that is no longer listed loses its registration and its key,
+# on every instance of the host, and the reaper takes its stack.
+
+- name: Look for the instances the callers name
+  ansible.builtin.stat:
+    path: "{{ executor_config_dir }}/{{ item }}/instance.json"
+  loop: "{{ executor_callers | map(attribute='instance') | unique }}"
+  register: executor_callers_instances
+  become: true
+
+# A first dry run of a play that sets up the executor and its callers
+# together has no instance yet to register with.
+- name: Stop a dry run that has no instance to register with
+  when:
+    - ansible_check_mode
+    - executor_callers_instances.results | rejectattr('stat.exists') | list | length > 0
+  ansible.builtin.meta: end_role
+
+- name: Assert every instance named is on this host
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      A repository names the executor instance {{ item.item }}, which is not
+      on this host: list it in executor_instances and run the executor role
+      before this one. A remote instance is not supported yet.
+    quiet: true
+  loop: "{{ executor_callers_instances.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Assert every caller is named for its role
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - item.name.startswith(executor_callers_prefix)
+      - item.repos is not string
+    fail_msg: "{{ item.name }}: a caller is a name of lowercase letters, digits and dashes starting {{ executor_callers_prefix }}."
+    quiet: true
+  loop: "{{ executor_callers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Made once, kept: a caller's key changes only when it is removed.
+- name: Make each caller's key
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os, secrets, sys
+        fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, secrets.token_urlsafe(32).encode())
+        os.close(fd)
+      - "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
+    creates: "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
+  loop: "{{ executor_callers }}"
+  loop_control:
+    label: "{{ item.instance }}/{{ item.name }}"
+  become: true
+
+- name: Read the callers' keys
+  when: not ansible_check_mode
+  ansible.builtin.slurp:
+    src: "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
+  loop: "{{ executor_callers }}"
+  loop_control:
+    label: "{{ item.instance }}/{{ item.name }}"
+  register: executor_callers_keys
+  no_log: true
+  become: true
+
+- name: Register each caller with its instance
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: >-
+      {{ {'key_sha256': item.1.content | b64decode | hash('sha256'),
+          'uid': item.0.uid | int,
+          'repos': item.0.repos,
+          'waits': item.0.waits | default(false) | bool}
+         | to_nice_json }}
+    dest: "{{ executor_config_dir }}/{{ item.0.instance }}/callers/{{ item.0.name }}.json"
+    owner: root
+    group: "{{ item.0.instance }}-executor"
+    mode: "0640"
+  loop: "{{ executor_callers | zip(executor_callers_keys.results | default([])) | list }}"
+  loop_control:
+    label: "{{ item.0.instance }}/{{ item.0.name }}"
+  no_log: true
+  become: true
+
+# The key goes to the caller only through its own unit's environment.
+- name: Write each caller's environment
+  when: not ansible_check_mode
+  ansible.builtin.copy:
+    content: |
+      STACK_KEY={{ item.1.content | b64decode }}
+      STACK_SOCKET=/run/stack.sock
+      STACK_REPO={{ item.0.repos | first }}
+      STACK_LOCAL_HOST={{ item.0.local_host | default('') }}
+    dest: "{{ item.0.env_file }}"
+    owner: "{{ item.0.env_owner | default('root') }}"
+    group: "{{ item.0.env_group | default('root') }}"
+    mode: "{{ item.0.env_mode | default('0640') }}"
+  loop: "{{ executor_callers | zip(executor_callers_keys.results | default([])) | list }}"
+  loop_control:
+    label: "{{ item.0.env_file }}"
+  no_log: true
+  become: true
+
+# A host with no executor has nothing to prune, and no directory to look in.
+- name: Look for the instances' configuration
+  ansible.builtin.stat:
+    path: "{{ executor_config_dir }}"
+  register: executor_callers_config_dir
+  become: true
+
+- name: Find the registrations of the prefix's callers
+  when: executor_callers_config_dir.stat.exists
+  ansible.builtin.find:
+    paths: "{{ executor_config_dir }}"
+    recurse: true
+    patterns: "{{ executor_callers_prefix }}*"
+  register: executor_callers_found
+  become: true
+
+- name: Remove the callers no longer listed, with their keys
+  vars:
+    executor_callers_wanted: >-
+      {{ executor_callers | map(attribute='instance') | zip(executor_callers | map(attribute='name'))
+         | map('join', '/') | list }}
+    executor_found_kind: "{{ item.path | dirname | basename }}"
+    executor_found_caller: >-
+      {{ item.path | dirname | dirname | basename }}/{{ item.path | basename | regex_replace('\.json$', '') }}
+  when:
+    - executor_found_kind in ['callers', 'keys']
+    - executor_found_caller not in executor_callers_wanted
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ executor_callers_found.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
