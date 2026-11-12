@@ -1,0 +1,733 @@
+---
+- name: Fail early on non-Debian targets
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "This role targets Debian."
+
+# The sessions run whatever a session decides to: never without the host's
+# sandbox, which this collection does not provide.
+- name: Refuse to run sessions outside a sandbox
+  ansible.builtin.assert:
+    that: workbench_sandbox_units | length > 0
+    fail_msg: >-
+      workbench_sandbox_units is empty. Name the units of the host's own
+      hardening that keep {{ workbench_user }} and its subordinate range off
+      the host, its LAN and its private network, such as [ufw.service]. This
+      collection never changes the firewall; the host's hardening provides
+      them.
+    quiet: true
+
+- name: Assert the account and the commits' author are set
+  ansible.builtin.assert:
+    that:
+      - workbench_uid | string is match('^[0-9]+$')
+      - workbench_git_name | length > 0
+      - workbench_git_email | length > 0
+    fail_msg: >-
+      The workbench wants workbench_uid, which the host's sandbox names, and
+      workbench_git_name and workbench_git_email, the user its commits are by.
+    quiet: true
+
+# Same stance as github_runner: refuse, rather than install sessions that
+# cannot fetch, or a gate that cannot push.
+- name: Refuse to set up the workbench without its tokens
+  when:
+    - workbench_tokens_required | bool
+    - workbench_read_token | length == 0 or workbench_write_token | length == 0
+  ansible.builtin.fail:
+    msg: |-
+      workbench_repositories names {{ workbench_repositories | map(attribute='repo') | join(', ') }},
+      but workbench_read_token or workbench_write_token is empty. Make two
+      fine-grained personal access tokens on github.com, Settings > Developer
+      settings, each for those repositories only:
+
+        read:  Contents: read, Pull requests: read, Issues: read
+        write: Contents: read and write, Pull requests: read and write
+
+      and nothing else, Workflows least of all. Then put both in the
+      inventory's vault, for example:
+
+          ansible-vault encrypt_string --name workbench_read_token '<token>'
+
+      and the same for workbench_write_token. The role's CLAUDE.md has the
+      rest.
+
+# The name is a directory under projects/, a unit, a socket and the gate's
+# mirror, so keep it to what all of them take. Packages go to apt-get in
+# the image build, so they are package names and nothing else.
+- name: Assert every repository has a usable name, a repository and packages
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z0-9][a-z0-9-]*$')
+      - item.repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
+      - item.packages | default([]) | reject('match', '^[a-z0-9][a-z0-9+.-]+$') | list | length == 0
+      - item.executor | default('') is match('^([a-z][a-z0-9]{0,15})?$')
+    fail_msg: >-
+      {{ item }}: a repository wants a name of lowercase letters, digits and
+      dashes, which becomes its container's and checkout's name, a
+      repository as owner/name, and optionally packages, a list of Debian
+      package names, and an executor instance's name.
+    quiet: true
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+# podman itself comes with the account, from rootless_account below.
+- name: Install git and python for the gate
+  when: install_dependencies | default(true) | bool
+  ansible.builtin.apt:
+    name: "{{ workbench_host_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Assert the previews' ports fit in the runner's preview range
+  when: github_runner_preview_ports_end is defined
+  vars:
+    workbench_preview_last: "{{ workbench_preview_ports_start | int + workbench_repositories | length - 1 }}"
+  ansible.builtin.assert:
+    that:
+      - workbench_preview_ports_start | int >= github_runner_preview_ports_start | int
+      - workbench_preview_last | int <= github_runner_preview_ports_end | int
+    fail_msg: >-
+      The workbench's previews take {{ workbench_preview_ports_start }} to
+      {{ workbench_preview_last }}, one per repository, which must lie in the
+      runner's preview range, {{ github_runner_preview_ports_start }} to
+      {{ github_runner_preview_ports_end }}, past the runner's slots.
+    quiet: true
+
+- name: Look for {{ workbench_user }}
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ workbench_user }}"
+    fail_key: false
+
+# A first dry run, before the account exists, has nothing more to compare:
+# its uid, its manager and its user units cannot be looked up yet. What
+# came before, the checks and the gate's packages, it has checked.
+- name: Stop a dry run that has no {{ workbench_user }} to look at
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[workbench_user] is none
+  ansible.builtin.meta: end_role
+
+- name: Work out how to reach the workbench's systemd manager
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.claude_code
+    tasks_from: user_env
+
+- name: Note whether sessions can run
+  ansible.builtin.set_fact:
+    workbench_can_run: "{{ claude_code_logged_in and workbench_read_token | length > 0 }}"
+
+# ---------------------------------------------------------------------
+# The gate: the only account that can read the write token
+# ---------------------------------------------------------------------
+
+- name: Create the gate's account
+  ansible.builtin.user:
+    name: "{{ workbench_gate_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: "{{ workbench_gate_dir }}"
+  become: true
+
+# Its mirrors, its lock files and the bundles in flight. Nobody else's.
+- name: Create the gate's state directory
+  ansible.builtin.file:
+    path: "{{ workbench_gate_dir }}"
+    state: directory
+    owner: "{{ workbench_gate_user }}"
+    group: "{{ workbench_gate_user }}"
+    mode: "0700"
+  become: true
+
+- name: Create the gate's config directory
+  ansible.builtin.file:
+    path: "{{ workbench_gate_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ workbench_gate_user }}"
+    mode: "0750"
+  become: true
+
+- name: Install the write token
+  when: workbench_write_token | length > 0
+  ansible.builtin.copy:
+    content: "{{ workbench_write_token | trim }}\n"
+    dest: "{{ workbench_gate_config_dir }}/token"
+    owner: "{{ workbench_gate_user }}"
+    group: "{{ workbench_gate_user }}"
+    mode: "0400"
+  no_log: true
+  become: true
+
+# A repository opted in with `workflows: true` pushes workflows with this.
+- name: Install the workflow token
+  when: workbench_workflow_token | length > 0
+  ansible.builtin.copy:
+    content: "{{ workbench_workflow_token | trim }}\n"
+    dest: "{{ workbench_gate_config_dir }}/workflow-token"
+    owner: "{{ workbench_gate_user }}"
+    group: "{{ workbench_gate_user }}"
+    mode: "0400"
+  no_log: true
+  become: true
+
+# Root's, and only readable by the gate: what it may push, as whom, where,
+# and the one uid it serves on its sockets.
+- name: Write the gate's config
+  vars:
+    workbench_gate_repos: >-
+      {%- set repos = {} -%}
+      {%- for repo in workbench_repositories -%}
+      {%- set entry = {'repo': repo.repo} -%}
+      {%- if repo.workflows | default(false) and workbench_workflow_token | length > 0 -%}
+      {%- set _ = entry.update({'workflow_token': workbench_gate_config_dir ~ '/workflow-token'}) -%}
+      {%- endif -%}
+      {%- set _ = repos.update({repo.name: entry}) -%}
+      {%- endfor -%}
+      {{- repos -}}
+  ansible.builtin.copy:
+    content: >-
+      {{ {'token': workbench_gate_config_dir ~ '/token',
+          'api': 'https://api.github.com',
+          'git_base': 'https://github.com',
+          'state_dir': workbench_gate_dir,
+          'client_uid': workbench_uid | int,
+          'identity': {'name': workbench_git_name, 'email': workbench_git_email},
+          'branch_pattern': workbench_branch_pattern,
+          'forbidden': workbench_forbidden,
+          'forbidden_paths': workbench_forbidden_paths,
+          'repos': workbench_gate_repos}
+         | to_nice_json }}
+    dest: "{{ workbench_gate_config_dir }}/gate.json"
+    owner: root
+    group: "{{ workbench_gate_user }}"
+    mode: "0640"
+  become: true
+
+# Root's, so neither account can rewrite what the sockets run.
+- name: Install the gate
+  ansible.builtin.copy:
+    src: gate/workbench_gate.py
+    dest: "{{ workbench_gate_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# A socket per repository, and a gate per connection to it. The container
+# of that repository is the only one it is mounted into, and the gate
+# takes the repository from the unit, never from what it is sent.
+- name: Install each repository's gate socket and service
+  ansible.builtin.template:
+    src: "gate.{{ item.1 }}.j2"
+    dest: "/etc/systemd/system/workbench-gate-{{ item.0.name }}{{ '@' if item.1 == 'service' else '' }}.{{ item.1 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    workbench_gate_repo: "{{ item.0 }}"
+  loop: "{{ workbench_repositories | product(['socket', 'service']) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} {{ item.1 }}"
+  notify: Reload systemd for workbench
+  become: true
+
+- name: Find the gate sockets on the box
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: "workbench-gate-*.socket"
+  register: workbench_gate_sockets
+  become: true
+
+- name: Note which gate sockets are wanted
+  ansible.builtin.set_fact:
+    workbench_gate_unwanted: >-
+      {{ workbench_gate_sockets.files | map(attribute='path') | map('basename')
+         | difference(workbench_repositories | map(attribute='name')
+                      | map('regex_replace', '^(.*)$', 'workbench-gate-\1.socket') | list) }}
+
+- name: Stop the gate sockets of repositories no longer listed
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ workbench_gate_unwanted }}"
+  become: true
+
+- name: Remove their units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.0 | regex_replace('\\.socket$', '') }}{{ item.1 }}"
+    state: absent
+  loop: "{{ workbench_gate_unwanted | product(['.socket', '@.service']) | list }}"
+  notify: Reload systemd for workbench
+  become: true
+
+- name: Read the gate's units before starting them
+  ansible.builtin.meta: flush_handlers
+
+- name: Start each repository's gate socket
+  ansible.builtin.systemd_service:
+    name: "workbench-gate-{{ item.name }}.socket"
+    state: started
+    enabled: true
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+# ---------------------------------------------------------------------
+# The workbench's account: claude_code's play created it
+# ---------------------------------------------------------------------
+
+# Its range, storage and memory cap, as the runner's coder has them; the
+# account itself, its lingering and its login shell are claude_code's.
+# Root in every container is one of the range's IDs, which the host's
+# sandbox holds with the account.
+- name: Set up the workbench's account for rootless podman
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: "{{ workbench_user }}"
+    rootless_account_home: "{{ workbench_home }}"
+    rootless_account_subuid_start: "{{ workbench_subuid_start }}"
+    rootless_account_subuid_count: "{{ workbench_subuid_count }}"
+    rootless_account_create: false
+    rootless_account_memory_max: "{{ workbench_memory_max }}"
+    rootless_account_sandbox_units: "{{ workbench_sandbox_units }}"
+
+- name: Create the account's own directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ workbench_home }}/.config/workbench", mode: "0700"}
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+
+# Commits as the user. The credential helper hands git the read token from
+# the container's environment, so nothing on disk but the env files holds it.
+- name: Write the account's git config
+  ansible.builtin.template:
+    src: gitconfig.j2
+    dest: "{{ workbench_home }}/.gitconfig"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  become: true
+
+# The runner's team, unchanged: the roles know nothing of GitHub beyond the
+# PR the lead opens. The rules are the workbench's own.
+- name: Note where this role's own skills are
+  ansible.builtin.set_fact:
+    workbench_skills_dir: "{{ role_path }}/files/skills"
+
+- name: Install the team
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.claude_team
+  vars:
+    claude_team_dest: "{{ workbench_home }}/.claude"
+    claude_team_owner: "{{ workbench_user }}"
+    claude_team_directory_mode: "0700"
+    claude_team_skill_sources: ["{{ workbench_skills_dir }}"]
+
+- name: Write the workbench's rules
+  ansible.builtin.template:
+    src: CLAUDE.md.j2
+    dest: "{{ workbench_home }}/.claude/CLAUDE.md"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  become: true
+
+- name: Give the sessions the browser
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.claude_code
+    tasks_from: state
+  vars:
+    claude_code_state:
+      mcpServers:
+        browser: "{{ workbench_browser_mcp }}"
+
+# ---------------------------------------------------------------------
+# The image
+# ---------------------------------------------------------------------
+
+# Root's, outside the home every container mounts, so no session can
+# change what the next build runs.
+- name: Create the image's build directory
+  ansible.builtin.file:
+    path: "{{ workbench_build_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Copy the image's build context
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ workbench_build_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: image/Containerfile, dest: Containerfile}
+    - {src: client/bench_git.py, dest: bench_git.py}
+  loop_control:
+    label: "{{ item.dest }}"
+  become: true
+
+# The executor's client, for the sessions of a repository with an instance.
+- name: Put the stack command in the image's build context
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.executor
+    tasks_from: client
+  vars:
+    executor_client_dest: "{{ workbench_build_dir }}/stack.py"
+    executor_client_mode: "0644"
+
+- name: Install the rebuild script
+  ansible.builtin.copy:
+    src: rebuild/workbench_rebuild.py
+    dest: "{{ workbench_rebuild_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# What the play and the nightly rebuild both build from. Root's, beside the
+# context, so no session can change what the next build is.
+- name: Write the build's config
+  vars:
+    workbench_build_args:
+      UV_VERSION: "{{ workbench_uv_version }}"
+      NODE_VERSION: "{{ workbench_node_version }}"
+      NODE_ARCH: "{{ {'x86_64': 'x64', 'aarch64': 'arm64'}[ansible_facts['architecture']] }}"
+      BROWSER_MCP_VERSION: "{{ workbench_browser_mcp_version }}"
+      UID: "{{ workbench_uid | string }}"
+      PACKAGES: "{{ workbench_repositories | map(attribute='packages', default=[]) | flatten | unique | sort | join(' ') }}"
+  ansible.builtin.copy:
+    content: >-
+      {{ {'image': workbench_image,
+          'context': workbench_build_dir,
+          'options': workbench_build_options,
+          'args': workbench_build_args,
+          'containers': workbench_repositories | map(attribute='name') | map('regex_replace', '^', 'workbench-') | list}
+         | to_nice_json }}
+    dest: "{{ workbench_rebuild_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Note the image before building
+  ansible.builtin.command:
+    argv: [podman, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ workbench_image }}"]
+  register: workbench_image_before
+  changed_when: false
+  failed_when: false
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+# Unconditional, as the runner's is: the layer cache makes a no-op cheap.
+# Every repository's packages go into the one image, so adding a
+# repository is a list entry, not a Containerfile. The deploy restarts the
+# containers itself, when the image changed, and builds with the nightly
+# rebuild's own script and config, so the two never differ.
+- name: Build the image
+  ansible.builtin.command:
+    argv: ["{{ rootless_account_rebuild_image }}", --config, "{{ workbench_rebuild_config }}"]
+  changed_when: false
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+- name: Note the image after building
+  ansible.builtin.command:
+    argv: [podman, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ workbench_image }}"]
+  register: workbench_image_after
+  changed_when: workbench_image_after.stdout != workbench_image_before.stdout
+  notify: Restart the workbench sessions
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+# ---------------------------------------------------------------------
+# One checkout and one container per repository
+# ---------------------------------------------------------------------
+
+# Clone only: after that the checkout is the sessions' to move.
+- name: Clone the repositories
+  when: workbench_read_token | length > 0
+  ansible.builtin.git:
+    repo: "https://github.com/{{ item.repo }}.git"
+    dest: "{{ workbench_projects_dir }}/{{ item.name }}"
+    version: "{{ item.default_branch | default('main') }}"
+    update: false
+  environment:
+    GH_TOKEN: "{{ workbench_read_token | trim }}"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+# In the main checkout, where every session's notes are, worktrees' too:
+# a worktree's own directory goes when the worktree does.
+- name: Create each checkout's notes directory
+  when: workbench_read_token | length > 0
+  ansible.builtin.file:
+    path: "{{ workbench_projects_dir }}/{{ item.name }}/.bench"
+    state: directory
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0755"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+# In the clone's own exclude file, not .gitignore: a .gitignore line naming
+# the workbench would be a trace of it. Every worktree reads the same file.
+# The gate refuses these paths anyway.
+- name: Keep the workbench's files out of commits
+  when: workbench_read_token | length > 0
+  ansible.builtin.blockinfile:
+    path: "{{ workbench_projects_dir }}/{{ item.name }}/.git/info/exclude"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- workbench"
+    block: |
+      /.bench/
+      /.claude/settings.local.json
+      /.claude/worktrees/
+    create: true
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+- name: Trust the checkouts
+  when: workbench_read_token | length > 0
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.claude_code
+    tasks_from: state
+  vars:
+    claude_code_state:
+      hasTrustDialogAccepted: true
+    claude_code_project_dir: "{{ workbench_projects_dir }}/{{ item.name }}"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# The read token rides in the container's environment, for git's credential
+# helper and for gh.
+- name: Write each container's token
+  ansible.builtin.template:
+    src: session.env.j2
+    dest: "{{ workbench_home }}/.config/workbench/{{ item.name }}.env"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0600"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart the workbench sessions
+  become: true
+
+# A repository with an executor is its caller: a key and a block of its
+# ports, the key in an env file of bench's, which the container's unit
+# hands the sessions as it does the read token. A person drives the
+# sessions, so an up with no room is refused at once rather than queued.
+- name: Register the repositories with their executor
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.executor
+    tasks_from: callers
+  vars:
+    executor_callers_prefix: bench-
+    executor_callers: >-
+      {%- set callers = [] -%}
+      {%- for repo in workbench_repositories | selectattr('executor', 'defined') | selectattr('executor') -%}
+      {%- set _ = callers.append({'instance': repo.executor, 'name': 'bench-' ~ repo.name,
+                                  'uid': workbench_uid, 'repos': [repo.repo], 'waits': false,
+                                  'env_file': workbench_home ~ '/.config/workbench/' ~ repo.name ~ '-stack.env',
+                                  'env_owner': workbench_user, 'env_group': workbench_user, 'env_mode': '0600',
+                                  'local_host': workbench_executor_local_host}) -%}
+      {%- endfor -%}
+      {{- callers -}}
+
+- name: Remove the stack environment of repositories with no executor
+  ansible.builtin.file:
+    path: "{{ workbench_home }}/.config/workbench/{{ item.name }}-stack.env"
+    state: absent
+  loop: "{{ workbench_repositories | rejectattr('executor', 'defined') | list
+            + workbench_repositories | selectattr('executor', 'defined') | rejectattr('executor') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+- name: Install each repository's container
+  ansible.builtin.template:
+    src: workbench.container.j2
+    dest: "{{ workbench_home }}/.config/containers/systemd/workbench-{{ item.name }}.container"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: workbench_index
+  notify:
+    - Reload the systemd manager for workbench
+    - Restart the workbench sessions
+  become: true
+
+- name: Find the containers on the box
+  ansible.builtin.find:
+    paths: "{{ workbench_home }}/.config/containers/systemd"
+    patterns: "workbench-*.container"
+  register: workbench_containers
+  become: true
+
+- name: Note which containers are wanted
+  ansible.builtin.set_fact:
+    workbench_containers_unwanted: >-
+      {{ workbench_containers.files | map(attribute='path') | map('basename')
+         | difference(workbench_repositories | map(attribute='name')
+                      | map('regex_replace', '^(.*)$', 'workbench-\1.container') | list) }}
+
+- name: Stop the containers of repositories no longer listed
+  ansible.builtin.systemd_service:
+    name: "{{ item | regex_replace('\\.container$', '.service') }}"
+    scope: user
+    state: stopped
+  loop: "{{ workbench_containers_unwanted }}"
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+- name: Remove their units
+  ansible.builtin.file:
+    path: "{{ workbench_home }}/.config/containers/systemd/{{ item }}"
+    state: absent
+  loop: "{{ workbench_containers_unwanted }}"
+  notify: Reload the systemd manager for workbench
+  become: true
+
+- name: Generate the containers' units before starting them
+  ansible.builtin.meta: flush_handlers
+
+# Started only with a login and a token; without, the unit is written with
+# no [Install] and left stopped, since it would only restart-loop.
+- name: Start the containers
+  ansible.builtin.systemd_service:
+    name: "workbench-{{ item.name }}.service"
+    scope: user
+    state: "{{ 'started' if workbench_can_run else 'stopped' }}"
+  environment: "{{ claude_code_user_env }}"
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+- name: Install the nightly rebuild
+  ansible.builtin.template:
+    src: "workbench-rebuild.{{ item }}.j2"
+    dest: "{{ workbench_home }}/.config/systemd/user/workbench-rebuild.{{ item }}"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  loop: [service, timer]
+  notify: Reload the systemd manager for workbench
+  become: true
+
+- name: Read the rebuild's units before enabling them
+  ansible.builtin.meta: flush_handlers
+
+# Only where the containers run: on the dev container it would rebuild a
+# gigabyte every week for nobody.
+- name: Enable the nightly rebuild
+  ansible.builtin.systemd_service:
+    name: workbench-rebuild.timer
+    scope: user
+    enabled: "{{ workbench_can_run | bool }}"
+    state: "{{ 'started' if workbench_can_run else 'stopped' }}"
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+# ---------------------------------------------------------------------
+# Verification
+#
+# Every repository's socket, as its container reaches it: as bench, through
+# the socket's mode, to a gate that checks the peer's uid, reads the config
+# and, with a token, asks GitHub whether it may push. Without a token, as
+# on the dev container, the gate answering at all is the check. Skipped
+# under --check, where the sockets may not exist yet.
+# ---------------------------------------------------------------------
+
+- name: Ask each repository's gate, as the workbench, what it sees
+  when: not ansible_check_mode
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import socket, sys
+        conn = socket.socket(socket.AF_UNIX)
+        conn.settimeout(60)
+        conn.connect(sys.argv[1])
+        conn.sendall(b'["check"]\n')
+        conn.shutdown(socket.SHUT_WR)
+        answer = b""
+        while chunk := conn.recv(65536):
+            answer += chunk
+        print(answer.decode())
+      - "/run/workbench-gate/{{ item.name }}.sock"
+  register: workbench_gate_check
+  changed_when: false
+  loop: "{{ workbench_repositories }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: "{{ workbench_user }}"
+
+- name: Assert each gate answers, and with a token can push
+  when: not ansible_check_mode
+  ansible.builtin.assert:
+    that:
+      - item.stdout_lines | length > 0
+      - item.stdout_lines[-1] is match('^status [0-9]+$')
+      - >-
+        workbench_write_token | length == 0
+        or (item.stdout_lines[-1] == 'status 0'
+            and (item.stdout_lines[0] | from_json).repo == item.item.repo
+            and (item.stdout_lines[0] | from_json).push)
+    fail_msg: "The gate for {{ item.item.repo }} answered: {{ item.stdout }}"
+    quiet: true
+  loop: "{{ workbench_gate_check.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Report the workbench
+  ansible.builtin.debug:
+    msg: >-
+      {{ workbench_repositories | map(attribute='name') | join(', ') }}:
+      {{ 'containers running; in the Claude app, start a session on this machine.'
+         if workbench_can_run
+         else 'installed, but no '
+              ~ ('login' if not claude_code_logged_in else 'read token')
+              ~ ', so no container is started.' }}

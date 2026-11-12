@@ -1,0 +1,91 @@
+# The workbench: one long-lived container per repository, running that
+# repository's Remote Control server. The container is the boundary, so
+# the sessions in it run without asking: a root of their own for apt-get,
+# their own loopback for dev servers, their own /tmp on disk. What leaves
+# it is fenced by the firewall, by uid, and what reaches GitHub as the
+# user goes through the gate's socket. Built on the box by the bench user.
+
+# uv from astral's own image, which is how they publish it for this; Debian
+# packages none.
+ARG UV_VERSION
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM docker.io/library/debian:trixie-slim
+
+# The ISO week, from workbench-rebuild: a new one misses the cache for
+# every layer below, so the image is built afresh from an updated Debian
+# once a week, and within one the cache makes a rebuild a no-op.
+ARG REFRESH
+
+# What every repository here wants: git for the checkouts, Chromium and
+# fonts for the browser and for anything that renders a page or a PDF,
+# poppler for reading one back, and sudo, for apt-get inside. The biggest
+# layer by far, a gigabyte with Chromium's graphics stack, so nothing that
+# changes more often comes before it: a repository's own packages are
+# added at the end.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates curl git jq less make procps sudo unzip xz-utils \
+       python3 \
+       chromium fontconfig fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
+       poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+# gh from GitHub's own repository, not Debian's, as the runner's: trixie's
+# 2.46 is far behind the API.
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+       https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Node from its own release, npm included: one archive, where Debian's npm
+# is 340 packages and trixie's Node a major version behind. Checked against
+# the release's checksums.
+ARG NODE_VERSION
+ARG NODE_ARCH=x64
+RUN cd /tmp \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION:?}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+       | grep " node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz\$" | sha256sum -c - \
+    && tar -xJf "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -C /usr/local --strip-components=1 \
+       --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' \
+    && rm "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && node --version && npm --version
+
+# A browser for the sessions, as an MCP server: Playwright's, pinned and
+# installed with no install scripts, driving Debian's Chromium. Its config
+# in the account's ~/.claude.json names this path.
+ARG BROWSER_MCP_VERSION
+RUN npm install --prefix /opt/playwright-mcp --ignore-scripts --omit=optional --no-audit --no-fund \
+       "@playwright/mcp@${BROWSER_MCP_VERSION:?}" \
+    && /opt/playwright-mcp/node_modules/.bin/playwright-mcp --help >/dev/null
+
+# The session runs as the workbench account's own uid (UserNS=keep-id), and
+# root in here is a uid of the account's subordinate range on the host,
+# which the firewall fences as it does the account. sudo makes apt-get the
+# session's to run, and what it installs lasts until the container is
+# recreated: a package a repository always needs belongs in the inventory.
+ARG UID
+RUN echo "#${UID:?} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/workbench \
+    && chmod 0440 /etc/sudoers.d/workbench && visudo -cf /etc/sudoers.d/workbench
+# apt drops to _apt and nogroup for downloads, a sandbox inside the
+# sandbox, and nogroup's 65534 is no ID at all where the account's range is
+# short, as on the dev container: "setgroups ... Invalid argument".
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99workbench
+
+# The repositories' own packages, from the inventory, last but for the
+# client: adding one rebuilds only this.
+ARG PACKAGES=""
+RUN if [ -n "$PACKAGES" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends $PACKAGES \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+COPY --chmod=0755 bench_git.py /usr/local/bin/bench-git
+# The executor's client, the executor role's, for a repository whose stacks
+# run on an instance.
+COPY --chmod=0755 stack.py /usr/local/bin/stack

@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The workbench gate, for {{ workbench_gate_repo.repo }}
+
+[Service]
+# One per connection, as the only account that can read the write token,
+# for the repository the socket is for.
+User={{ workbench_gate_user }}
+Group={{ workbench_gate_user }}
+ExecStart={{ workbench_gate_bin }} serve {{ workbench_gate_repo.name }}
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# It needs its config, its token, its mirrors and the network; nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths={{ workbench_gate_dir }}
+RuntimeMaxSec=900
+MemoryMax=512M

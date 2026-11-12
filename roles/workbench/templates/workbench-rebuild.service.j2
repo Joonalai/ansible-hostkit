@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Rebuild the workbench's image, and move the idle containers onto it
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ workbench_rebuild_bin }}
