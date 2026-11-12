@@ -1,0 +1,52 @@
+# A release for every push to main that carries a feat or fix: the version
+# in galaxy.yml, the changelog, a tag v<version> and a GitHub release, all
+# from the Conventional Commits titles (python-semantic-release).
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  release:
+    # GitHub's runner: no self-hosted runner ever runs this repository's
+    # workflows, and only a push to main starts this one.
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      # To push the release commit and its tag, and create the release.
+      contents: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          # python-semantic-release pushes with the token it is given.
+          persist-credentials: false
+
+      - name: Release only the commit this run was started for
+        run: git reset --hard "$GITHUB_SHA"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+
+      # From uv.lock, so every package is pinned with its hash; the
+      # project's own action would pip-install them unpinned.
+      - name: Install python-semantic-release
+        run: uv sync --locked --only-group release
+
+      - name: Version, changelog, tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          uv run --no-sync semantic-release version
