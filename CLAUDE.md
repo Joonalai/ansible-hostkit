@@ -124,7 +124,9 @@ minor, a breaking change a major. It bumps `galaxy.yml`, writes
 alone, and pushes the commit `chore: release <version>`, the tag
 `v<version>` and a GitHub release. Its settings are in `pyproject.toml`.
 Choose the type for what a consumer sees: `chore`, `ci`, `docs`, `style`,
-`refactor` and `test` release nothing.
+`refactor` and `test` release nothing. Pull requests are merged by rebase,
+so every commit of a branch lands on main as it is and its title becomes a
+line of the changelog: fold fixes into the commit they fix before merging.
 
 ## Skills
 
