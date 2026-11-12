@@ -67,11 +67,11 @@ jobs:
     steps:
       # git for checkout and the tests' repositories, openssl for the
       # registrar's signing.
-      - name: Install Debian's python3, pytest and yaml
+      - name: Install Debian's python3, pytest, xdist and yaml
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git openssl python3-pytest python3-yaml
+            ca-certificates git openssl python3-pytest python3-pytest-xdist python3-yaml
 
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
