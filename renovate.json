@@ -1,0 +1,100 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Pull requests for every pinned version in the roles, so a pin is reviewed, not forgotten.",
+    "Weekly, after a three-day cooldown that keeps a pulled release off the hosts; a",
+    "known vulnerability skips both. Nothing merges by itself: the roles run as root."
+  ],
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Europe/Helsinki",
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "minimumReleaseAge": "3 days",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null
+  },
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "uv, pinned for the runner image and the workbench image; one pull request moves both",
+      "managerFilePatterns": [
+        "/^roles/[^/]+/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "_uv_version: (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "astral-sh/uv",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "prek in the runner image",
+      "managerFilePatterns": [
+        "/^roles/github_runner/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "github_runner_prek_version: (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "prek",
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "Bun in the runner image; keep it at what the repositories' workflows pin",
+      "managerFilePatterns": [
+        "/^roles/github_runner/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "github_runner_bun_version: (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "oven/bun",
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Node in the workbench image",
+      "managerFilePatterns": [
+        "/^roles/workbench/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "workbench_node_version: (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "node-version"
+    },
+    {
+      "customType": "regex",
+      "description": "The browser MCP server in the workbench image",
+      "managerFilePatterns": [
+        "/^roles/workbench/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "workbench_browser_mcp_version: (?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "@playwright/mcp",
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Node majors only on an LTS line, which is even",
+      "matchDepNames": [
+        "node"
+      ],
+      "allowedVersions": "/^\\d*[02468]\\./"
+    }
+  ]
+}
