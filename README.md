@@ -46,4 +46,9 @@ uv sync --locked
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The agent skills vendored under
+`.agents/skills/`, which the collection's package leaves out, keep their
+own: the `nls-*` skills are MIT, copyright 2026 National Land Survey of
+Finland (Maanmittauslaitos), and the `leogallego-*` skills GPLv3, each with
+its `THIRD_PARTY_LICENSE`; `.agents/skills/EXTERNAL_SKILLS.md` names their
+sources.
