@@ -1,0 +1,21 @@
+[project]
+name = "ansible-hostkit"
+version = "0.1.0"
+description = "Ansible roles for self-hosted Debian servers: rootless accounts, an egress sandbox, CI runners and Claude Code's runners and workbench"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ansible>=14.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "ansible-lint>=26.10.1",
+    "prek>=0.5.6",
+    "pytest>=9.1",
+]
+
+[tool.pytest.ini_options]
+# Every Python file a role carries lives under its files/, with its tests
+# beside it in tests/.
+testpaths = ["roles"]

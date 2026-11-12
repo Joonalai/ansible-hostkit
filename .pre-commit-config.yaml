@@ -1,0 +1,75 @@
+# .pre-commit-config.yaml, run with prek: .venv/bin/prek run --all-files
+minimum_pre_commit_version: "4.4.0"
+default_stages: [pre-commit]
+default_install_hook_types: [pre-commit, commit-msg]
+# The agents' skills and copier's answers come from a template and are kept
+# as it writes them.
+exclude: ^(\.agents/|\.copier-answers\..*\.yml$)
+
+repos:
+  # General recommended hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+      - id: check-case-conflict
+
+  # Secrets in what is about to be committed. The repository is meant to go
+  # public, and making it so publishes its whole history.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # Markdown formatting / linting
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 1.0.0
+    hooks:
+      - id: mdformat
+        additional_dependencies:
+          - mdformat-gfm
+          # Keeps the subagent roles' YAML headers as YAML.
+          - mdformat-frontmatter
+        files: \.md$
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.3
+    hooks:
+      - id: markdownlint-cli2
+        files: \.md$
+
+  # Unit tests for the Python the roles carry. Every Python file here has
+  # tests beside it, and a commit with a failing one is not one to make.
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/pytest
+        language: system
+        pass_filenames: false
+        files: \.py$
+
+  # Ansible linting
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v26.10.1
+    hooks:
+      - id: ansible-lint
+        files: ^(roles|playbooks|meta|plugins|tests)/|\.ya?ml$
+        # The hook runs in its own venv, so it needs the full ansible bundle to
+        # resolve the community.general modules the roles use.
+        additional_dependencies:
+          - ansible>=14.5.0
+
+  # Commit titles: Conventional Commits, lower case, at most 72 characters
+  # (.gitlint).
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: acc9d9de6369b76d22cb4167029d2035e8730b98  # frozen: v0.19.1
+    hooks:
+      - id: gitlint
+        stages: [commit-msg]

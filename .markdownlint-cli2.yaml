@@ -1,0 +1,6 @@
+config:
+  # Prose is wrapped at ~76 chars by hand; fenced shell commands are not.
+  MD013: false
+  # The subagent roles open with a YAML header, whose name is their title.
+  MD041:
+    front_matter_title: "^\\s*name\\s*[:=]"

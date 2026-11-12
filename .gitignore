@@ -1,0 +1,11 @@
+.venv
+
+# Python caches pytest leaves beside the tests.
+__pycache__/
+.pytest_cache/
+
+# ansible-lint's cache of installed collections.
+.ansible/
+
+# JetBrains project files: local editor state, not project configuration.
+.idea/

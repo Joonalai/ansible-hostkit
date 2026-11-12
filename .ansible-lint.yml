@@ -1,0 +1,14 @@
+---
+# .ansible-lint
+profile: production
+
+# ansible-lint walks the whole repository whatever prek passes it, so the
+# template's files are excluded here too.
+exclude_paths:
+  - .agents/
+  - .copier-answers.*.yml
+
+skip_list:
+  - name[template]
+
+var_naming_pattern: "^[a-z_][a-z0-9_]*$"
