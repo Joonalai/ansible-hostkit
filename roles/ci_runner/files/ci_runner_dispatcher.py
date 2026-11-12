@@ -61,6 +61,7 @@ option. The token never reaches an argument list.
 import json
 import os
 import pwd
+import queue
 import re
 import secrets
 import shutil
@@ -416,20 +417,66 @@ class Account:
         self.podman("stop", "--time", "30", container, check=False)
 
 
+# The container events a record takes, and the field each one sets.
+CONTAINER_EVENTS = {"start": "container_started", "died": "container_died", "remove": "container_removed"}
+# An event further than this from the dispatcher's clock is not believed.
+EVENT_SKEW = timedelta(days=1)
+# A runner's container event: its name, the event and when.
+type ContainerEvent = tuple[str, str, datetime]
+
+
+def runner_name_re() -> re.Pattern[str]:
+    """What runner_name() makes, and nothing else."""
+    return re.compile(rf"^{re.escape(NAME)}-[a-z0-9-]+-({'|'.join(POOLS)})-[0-9a-f]{{8}}$")
+
+
+def parse_event(line: str, now: datetime) -> tuple[str | None, ContainerEvent | None]:
+    """A line of podman events --format json: the event, and when it is a
+    runner's start, died or remove, the runner's name, the event and its
+    time. The account's containers can make events, and a job runs as the
+    account, so anything strange is dropped: only the times of records come
+    from here, and the wake.
+    """
+    try:
+        item = json.loads(line)
+    except ValueError:
+        return None, None
+    if not isinstance(item, dict):
+        return None, None
+    event = item.get("Status")
+    if not isinstance(event, str):
+        return None, None
+    labels = item.get("Attributes")
+    name = labels.get(f"{NAME}.name") if isinstance(labels, dict) else None
+    nanos, seconds = item.get("timeNano"), item.get("time")
+    if isinstance(nanos, int) and not isinstance(nanos, bool):
+        when = datetime.fromtimestamp(nanos / 1e9, UTC)
+    elif isinstance(seconds, int) and not isinstance(seconds, bool):
+        when = datetime.fromtimestamp(seconds, UTC)
+    else:
+        return event, None
+    if (event not in CONTAINER_EVENTS or item.get("Type") != "container" or not isinstance(name, str)
+            or not runner_name_re().match(name) or abs(when - now) > EVENT_SKEW):
+        return event, None
+    return event, (name, event, when)
+
+
 class ExitWatcher:
     """Wakes the next poll as soon as a runner's container is gone, so its
-    slot is given again within seconds rather than at the next poll. Polls
-    still come on time without it: a watcher that fails only logs and tries
-    again.
+    slot is given again within seconds rather than at the next poll, and
+    passes the runners' container events on to the timing. Polls still come
+    on time without it: a watcher that fails only logs and tries again.
     """
 
     RETRY = 10
 
     def __init__(self, command: list[str], env: dict[str, str] | None = None) -> None:
-        """Watch with the command, which prints a line for each container gone."""
+        """Watch with the command, which prints podman's events as JSON."""
         self.command = command
         self.env = env
         self.wake = threading.Event()
+        # The runners' events, for the poll to read; the thread only adds.
+        self.events: queue.SimpleQueue[ContainerEvent] = queue.SimpleQueue()
 
     def start(self) -> None:
         """Watch in a thread of its own, which ends with the process."""
@@ -442,7 +489,10 @@ class ExitWatcher:
             time.sleep(self.RETRY)
 
     def watch(self) -> None:
-        """Wake the poll at each line of the command, until the command ends."""
+        """Wake the poll at each container removed, until the command ends.
+        A line that is not an event wakes it too, so a podman that prints
+        another form still frees slots at once.
+        """
         try:
             with subprocess.Popen(
                 self.command, env=self.env, cwd="/", stdout=subprocess.PIPE,
@@ -450,8 +500,12 @@ class ExitWatcher:
             ) as events:
                 # Always there with stdout=PIPE: said for the type checker.
                 assert events.stdout is not None  # noqa: S101
-                for _ in events.stdout:
-                    self.wake.set()
+                for line in events.stdout:
+                    event, runner = parse_event(line, utc_now())
+                    if runner is not None:
+                        self.events.put(runner)
+                    if event in {None, "remove"}:
+                        self.wake.set()
             log(f"podman events ended with {events.returncode}, watching again in {self.RETRY} s")
         except OSError as error:
             log(f"could not watch for runners ending: {error}")
@@ -462,12 +516,14 @@ class ExitWatcher:
 
 
 def exit_watcher(account: "Account") -> ExitWatcher:
-    """Each of the account's runner containers removed, which with --rm is
-    when its job and its tidying are over.
+    """The account's runner containers starting, ending and removed, which
+    with --rm is when a job and its tidying are over.
     """
     return ExitWatcher(
         [RUNUSER, "-u", account.user, "--", "podman", "events",
-         "--filter", f"label={runner_label()}=1", "--filter", "event=remove", "--format", "{{.Name}}"],
+         "--filter", f"label={runner_label()}=1",
+         *[option for event in CONTAINER_EVENTS for option in ("--filter", f"event={event}")],
+         "--format", "json"],
         env=account.env(),
     )
 
@@ -730,6 +786,9 @@ SAMPLE_EVERY = timedelta(minutes=5)
 # A job pending longer than a job may run and this is written with what is
 # known, and dropped.
 PENDING_SLACK = timedelta(hours=1)
+# A finished job's record waits this long for its container to be removed,
+# which is when its tidying is over, and is then written without it.
+TIDY_WAIT = timedelta(minutes=30)
 TIMING_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
 # Job and workflow names are the repositories' authors' text.
 NAME_MAX = 200
@@ -827,8 +886,11 @@ class Timing:
         self.jobs: dict[str, JsonObject] = {}
         # By runner name.
         self.runners: dict[str, JsonObject] = {}
+        # Finished jobs' records waiting for their runner's container to be
+        # removed, by runner name: when they began to wait, and the record.
+        self.tidying: dict[str, JsonObject] = {}
         # What pending.json holds: nothing until something is pending.
-        self.saved = json.dumps({"jobs": {}, "runners": {}}, sort_keys=True)
+        self.saved = self.state()
         self.failed_on: str | None = None
         self.pruned_on: str | None = None
         self.sampled: tuple[JsonObject, datetime] | None = None
@@ -840,6 +902,10 @@ class Timing:
         if self.failed_on != day:
             self.failed_on = day
             log(f"timing: {error}; not recorded")
+
+    def state(self) -> str:
+        """What is pending, as pending.json holds it."""
+        return json.dumps({"jobs": self.jobs, "runners": self.runners, "tidying": self.tidying}, sort_keys=True)
 
     def load(self) -> None:
         """What was pending when the last dispatcher stopped."""
@@ -854,7 +920,7 @@ class Timing:
             return
         if not isinstance(data, dict):
             return
-        jobs, runners = data.get("jobs"), data.get("runners")
+        jobs, runners, tidying = data.get("jobs"), data.get("runners"), data.get("tidying")
         if isinstance(jobs, dict):
             self.jobs = {key: entry for key, entry in jobs.items()
                          if isinstance(entry, dict) and key == f"{number(entry.get('job_id'))}"
@@ -862,13 +928,17 @@ class Timing:
         if isinstance(runners, dict):
             self.runners = {name: entry for name, entry in runners.items()
                             if isinstance(entry, dict) and isinstance(entry.get("slot_given"), str)}
-        self.saved = json.dumps({"jobs": self.jobs, "runners": self.runners}, sort_keys=True)
+        if isinstance(tidying, dict):
+            self.tidying = {name: entry for name, entry in tidying.items()
+                            if isinstance(entry, dict) and isinstance(entry.get("held"), str)
+                            and isinstance(entry.get("record"), dict)}
+        self.saved = self.state()
 
     def save(self) -> None:
         """Write what is pending, when it changed."""
         if self.directory is None:
             return
-        content = json.dumps({"jobs": self.jobs, "runners": self.runners}, sort_keys=True)
+        content = self.state()
         if content == self.saved:
             return
         partial = self.directory / ".pending.json"
@@ -947,14 +1017,32 @@ class Timing:
 
     def finish(self, job: JsonObject) -> None:
         """Write a pending job GitHub says is completed, with the times of
-        the runner that ran it.
+        the runner that ran it. One of this host's runners is still tidying
+        its slot, and its record waits for the container to be removed.
         """
         key = f"{number(job.get('id'))}"
         pending = self.jobs.pop(key, None)
         if pending is None:
             return
-        runner = self.runners.pop(text(job.get("runner_name")) or "", None)
-        self.append(job_record(pending, job, runner))
+        name = text(job.get("runner_name")) or ""
+        runner = self.runners.pop(name, None)
+        record = job_record(pending, job, runner)
+        if runner is None or runner.get("container_removed"):
+            self.append(record)
+        else:
+            self.tidying[name] = {"held": stamp(utc_now()), "record": record}
+
+    def container_event(self, name: str, event: str, when: datetime) -> None:
+        """A runner's container started, died or was removed. Its removal
+        writes the record of the job it ran, if that waits for it.
+        """
+        field = CONTAINER_EVENTS[event]
+        if name in self.tidying:
+            self.tidying[name]["record"][field] = stamp(when)
+            if event == "remove":
+                self.append(self.tidying.pop(name)["record"])
+        elif name in self.runners:
+            self.runners[name][field] = stamp(when)
 
     def drop(self, job_id: int) -> None:
         """Write a pending job with what is known, as when GitHub no longer has it."""
@@ -969,6 +1057,9 @@ class Timing:
         cutoff = stamp(utc_now() - self.pending_max) or ""
         for entry in [entry for entry in self.jobs.values() if entry["noted"] < cutoff]:
             self.drop(entry["job_id"])
+        tidied = stamp(utc_now() - TIDY_WAIT) or ""
+        for name in [name for name, entry in self.tidying.items() if entry["held"] < tidied]:
+            self.append(self.tidying.pop(name)["record"])
         self.runners = {name: entry for name, entry in self.runners.items()
                         if (entry.get("slot_given") or "") >= cutoff}
 
@@ -979,10 +1070,12 @@ class Timing:
                                   "unit_started": stamp(utc_now())}
 
     def containers(self, running: list[Runner]) -> None:
-        """When each runner's container started, as podman lists it."""
+        """When each runner's container started, as podman lists it, where
+        no event has said so: the events are the closer.
+        """
         for runner in running:
             if runner.name in self.runners:
-                self.runners[runner.name]["container_started"] = stamp(runner.started)
+                self.runners[runner.name].setdefault("container_started", stamp(runner.started))
 
     def idle(self, runner: Runner, why: str) -> None:
         """A runner stopped before it took a job, and why."""
@@ -1029,6 +1122,8 @@ class Dispatcher:
         # Pending jobs whose runs ended, by repository, looked up after the
         # runners are started.
         self.ended: dict[str, list[int]] = {}
+        # The runners' container events, from the ExitWatcher's thread.
+        self.events: queue.SimpleQueue[ContainerEvent] = queue.SimpleQueue()
 
     def labels(self) -> dict[str, str]:
         """The label of each pool."""
@@ -1044,8 +1139,18 @@ class Dispatcher:
             self.poll_steps(now or datetime.now(UTC))
         finally:
             self.look_up_ended()
+            self.take_events()
             self.timing.expire()
             self.timing.save()
+
+    def take_events(self) -> None:
+        """Hand the container events that came since the last poll to the timing."""
+        while True:
+            try:
+                name, event, when = self.events.get_nowait()
+            except queue.Empty:
+                return
+            self.timing.container_event(name, event, when)
 
     def sample(self, took: float) -> None:
         """Record what the last poll saw and how long it took. Calls left
@@ -1455,6 +1560,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
         dispatcher.poll()
         return 0
     watcher = exit_watcher(dispatcher.account)
+    dispatcher.events = watcher.events
     watcher.start()
     while True:
         started = time.monotonic()

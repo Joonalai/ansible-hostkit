@@ -871,9 +871,17 @@ def test_a_job_gets_the_times_of_the_runner_that_ran_it_not_of_the_one_started_f
     clock.now = NOW + timedelta(minutes=6)
     github.queued, github.listed = {}, {APP: [done(5, name)]}
     github.answers[1000] = done(1000, None, "cancelled") | {"steps": [], "started_at": None}
+    d.events.put((name, "start", NOW + timedelta(seconds=4)))
+    d.poll(clock.now)
+    # Its record waits for the container to go, after its tidying.
+    assert [record["job_id"] for record in records(timed)] == [1000]
+    d.events.put((name, "died", NOW + timedelta(minutes=5, seconds=30)))
+    d.events.put((name, "remove", NOW + timedelta(minutes=5, seconds=50)))
     d.poll(clock.now)
     by_id = {record["job_id"]: record for record in records(timed)}
     ran = by_id[5]
+    assert (ran["container_started"], ran["container_died"], ran["container_removed"]) == (
+        "2026-11-12T10:00:04Z", "2026-11-12T10:05:30Z", "2026-11-12T10:05:50Z")
     assert (ran["runner"], ran["slot"], ran["conclusion"]) == (name, 1, "success")
     assert ran["slot_given"] == ran["registered"] == ran["unit_started"] == "2026-11-12T10:00:00Z"
     assert ran["job_started"] == "2026-11-12T10:01:05Z"
@@ -884,7 +892,8 @@ def test_a_job_gets_the_times_of_the_runner_that_ran_it_not_of_the_one_started_f
     assert cancelled["conclusion"] == "cancelled"
     # Once, after the runners were started.
     assert github.asked == [1000]
-    assert json.loads((Path(timed["timing_dir"]) / "pending.json").read_text()) == {"jobs": {}, "runners": {}}
+    assert json.loads((Path(timed["timing_dir"]) / "pending.json").read_text()) == {
+        "jobs": {}, "runners": {}, "tidying": {}}
 
 
 def test_what_is_pending_survives_a_new_dispatcher(timed: dict[str, Any], clock: Clock) -> None:
@@ -1072,3 +1081,114 @@ def test_ended_jobs_are_not_looked_up_while_calls_are_few(timed: dict[str, Any])
     d.poll(NOW)
     assert github.asked == []
     assert len(d.timing.jobs) == 2
+
+
+def event_line(name: str = "ci-runner-app-main-0a1b2c3d", status: str = "remove", **extra: object) -> str:
+    item = {"ID": "c0ffee", "Name": "ci-runner-main-1", "Status": status, "Type": "container",
+            "time": int(NOW.timestamp()), "timeNano": int(NOW.timestamp()) * 10**9,
+            "Attributes": {"ci-runner.name": name, "ci-runner.runner": "1"}} | extra
+    return json.dumps(item)
+
+
+def test_a_runners_event_gives_its_name_event_and_time() -> None:
+    assert dispatcher.parse_event(event_line(status="died"), NOW) == ("died", ("ci-runner-app-main-0a1b2c3d", "died", NOW))
+    assert dispatcher.parse_event(event_line(timeNano=None), NOW)[1] == ("ci-runner-app-main-0a1b2c3d", "remove", NOW)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        event_line(name="ci-runner-app-main-0a1b2c3d\nX"),
+        event_line(name="other-app-main-0a1b2c3d"),
+        event_line(name="ci-runner-app-dev-0a1b2c3d"),
+        event_line(name="ci-runner-app-main-0A1B2C3D"),
+        event_line(Attributes={"ci-runner.runner": "1"}),
+        event_line(Attributes=["ci-runner.name"]),
+        event_line(Type="image"),
+        event_line(status="exec"),
+        event_line(timeNano=True, time=True),
+        event_line(timeNano="1", time="1"),
+        event_line(timeNano=int((NOW + timedelta(days=2)).timestamp()) * 10**9),
+    ],
+)
+def test_a_strange_event_gives_no_runner(line: str) -> None:
+    assert dispatcher.parse_event(line, NOW)[1] is None
+
+
+@pytest.mark.parametrize("line", ["ci-runner-pr-2", "[1]", '{"Status": 1}', ""])
+def test_a_line_that_is_no_event_gives_nothing(line: str) -> None:
+    assert dispatcher.parse_event(line, NOW) == (None, None)
+
+
+def test_a_removal_wakes_the_poll_and_its_events_are_kept(clock: Clock) -> None:
+    watcher = dispatcher.ExitWatcher(["printf", "%s\\n", event_line(status="start"), event_line(status="died")])
+    watcher.watch()
+    assert not watcher.wake.is_set()
+    assert [watcher.events.get_nowait()[1] for _ in range(2)] == ["start", "died"]
+    watcher = dispatcher.ExitWatcher(["printf", "%s\\n", event_line(name="nameless")])
+    watcher.watch()
+    assert watcher.wake.is_set()
+    assert watcher.events.empty()
+
+
+def test_the_watcher_follows_the_runners_starting_ending_and_removed() -> None:
+    account = dispatcher.Account.__new__(dispatcher.Account)
+    account.user, account.uid, account.home = "ci-runner", 1005, "/home/ci-runner"
+    command = dispatcher.exit_watcher(account).command
+    assert [command[i + 1] for i, part in enumerate(command) if part == "--filter"] == [
+        f"label={dispatcher.runner_label()}=1", "event=start", "event=died", "event=remove"]
+    assert command[-2:] == ["--format", "json"]
+
+
+def finished_runner(timed: dict[str, Any]) -> tuple[dispatcher.Dispatcher, FakeGitHub, str]:
+    """A dispatcher whose runner ran job 1000, which GitHub then says is done."""
+    github = FakeGitHub(queued={(APP, LABEL): 1})
+    d = dispatcher_for(timed, github, FakeAccount())
+    d.poll(NOW)
+    (_, name, _), = github.made
+    github.queued, github.listed = {}, {APP: [done(1000, name)]}
+    return d, github, name
+
+
+def test_a_record_waiting_for_its_container_is_written_after_a_while(timed: dict[str, Any], clock: Clock) -> None:
+    d, _, _ = finished_runner(timed)
+    d.poll(NOW)
+    assert records(timed) == []
+    clock.now = NOW + dispatcher.TIDY_WAIT + timedelta(seconds=1)
+    d.poll(clock.now)
+    record, = records(timed)
+    assert record["container_removed"] is None
+
+
+def test_a_container_removed_before_github_said_done_writes_at_once(timed: dict[str, Any]) -> None:
+    d, github, name = finished_runner(timed)
+    github.listed = {}
+    d.events.put((name, "remove", NOW))
+    d.poll(NOW)
+    github.listed = {APP: [done(1000, name)]}
+    d.poll(NOW)
+    record, = records(timed)
+    assert record["container_removed"] == "2026-11-12T10:00:00Z"
+
+
+def test_a_record_waiting_for_its_container_survives_a_new_dispatcher(timed: dict[str, Any]) -> None:
+    d, github, name = finished_runner(timed)
+    d.poll(NOW)
+    again = dispatcher_for(timed, github, FakeAccount())
+    again.events.put((name, "remove", NOW))
+    again.poll(NOW)
+    record, = records(timed)
+    assert (record["job_id"], record["container_removed"]) == (1000, "2026-11-12T10:00:00Z")
+
+
+def test_an_event_overrides_the_listings_start_and_not_the_other_way(timed: dict[str, Any]) -> None:
+    github = FakeGitHub(queued={(APP, LABEL): 1})
+    account = FakeAccount()
+    d = dispatcher_for(timed, github, account)
+    d.poll(NOW)
+    (_, name, _), = github.made
+    d.events.put((name, "start", NOW + timedelta(seconds=3)))
+    account.running = [runner(name, age=timedelta(0))]
+    github.queued = {}
+    d.poll(NOW)
+    assert d.timing.runners[name]["container_started"] == "2026-11-12T10:00:03Z"
