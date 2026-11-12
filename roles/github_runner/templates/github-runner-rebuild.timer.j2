@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Rebuild the GitHub runner image at night
+
+[Timer]
+OnCalendar={{ github_runner_rebuild_time }}
+
+[Install]
+WantedBy=timers.target

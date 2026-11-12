@@ -1,0 +1,181 @@
+<!-- {{ ansible_managed }} -->
+
+# Working on {{ github_runner_host_name }}
+
+You are running as a GitHub Actions job on {{ github_runner_host_name }}, {{ github_runner_host_description }}, working in
+a checkout of {{ item.repo }}: as the lead the workflow starts, or as one of
+the roles in `~/.claude/agents/` the lead calls. These rules hold for all of
+you, in every repository here, on top of the repository's own CLAUDE.md.
+The lead has rules of its own besides, in its system prompt.
+
+## Where you are
+
+- **Nothing you leave here survives the job.** Every job gets a fresh
+  container, removed when the job ends, checkout included. The preview is
+  the one thing that stays, and it is not here: it runs on the executor,
+  from what you send it.
+- **There is no root.** `apt-get` and `sudo` do not work. Use the toolchains
+  the workflow sets up, or tell the user in a comment what the image lacks.
+- **`uv` and `docker` are installed.** Use `uv` for Python: `uv sync`,
+  `uv run pytest`, `uvx <tool>`, and `uv python install` when the
+  repository wants a Python the image lacks. `docker` and `docker-compose`
+  are the podman on this box, through `DOCKER_HOST`, so what you start
+  outlives the job: start containers with `docker run --rm`, for the
+  tests' services only; the preview is the executor's, below. Your
+  checkout is at the same path on the host, so a compose file's bind
+  mounts of it work.
+- **docker-compose refuses `start_interval` here.** This box's podman
+  reports Docker API 1.41, and compose will not start a file whose health
+  check sets `start_interval` ("feature require Docker Engine v25 or
+  later"). Never take it out of the repository's files: it is a limit of
+  this box. The executor resets it in a stack by itself; for every compose
+  run of your own, write `$RUNNER_TEMP/no-start-interval.yaml`, outside the
+  checkout so nothing commits it, with `healthcheck: start_interval: !reset null`
+  under each service that sets it, and add it last:
+  `docker-compose -f compose.yaml -f "$RUNNER_TEMP/no-start-interval.yaml" up …`.
+  A script or `make` target that names its compose files itself, an e2e
+  script among them, you run as its steps, with the file added to each
+  compose call, and the PR says it was run that way.
+- **A repository's dev containers are yours to run, and its plays on them,**
+  through its own `make` targets, privileged systemd containers included:
+  they are only as privileged as this box's runner account, and fenced as
+  you are. Its `.env`, which on the user's workstation names their keys,
+  you write from `.env.example` with throwaway values: a key from
+  `ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/dev-key"`, and `/dev/null`
+  for a file the dev containers do not read, such as `known_hosts`. Never
+  under `/tmp`, which the containers you start cannot see. Take them down
+  with the repository's own target or `docker-compose down -v` before your
+  turn ends; they would otherwise hold memory the box's other runners need.
+- **The network is the internet only.** Every port on this box outside this
+  repository's own, and every address on its LAN and private network, is
+  firewalled off for you and for everything you start. A refused connection
+  to one of them is the firewall doing its job, not a bug to work around.
+  The one exception is the GPU model server's API and manifest on the
+  host's private network, and only a repository that has the `gpu-models` skill, and so
+  the key in its environment, has any use for them.
+- **What you start is reached through the host, on your own ports.** A
+  container you start is at `host.containers.internal:<port>`, on one of
+  the ports under "Your ports". `localhost` is your own container, any other
+  port is firewalled but the stack's, and a port published on `127.0.0.1`,
+  as many compose files do, refuses you even in your range, so publish on
+  all addresses. When tests need a service and the stack is up, use the
+  stack's rather than starting another. Tests that still could not run are
+  named in the PR with the exact error.
+- **Run one plain command per call.** The permissions here allow commands
+  by their first word, and refuse what they cannot read that way: a `for`
+  or `while` loop, a variable set and used (`url=...; curl $url`), a
+  command's output in another's arguments (`$(...)`), and a command
+  with a variable in front of it: write `env APP_X=1 bun test`, never
+  `APP_X=1 bun test`. Reading is allowed in the checkout,
+  the work folder, `/tmp`, `~/.claude` and `/usr/local/bin`, and refused
+  anywhere else. Every refusal costs a turn and a retry. Write values out
+  instead of in variables, run a loop's commands one by one, and prefer
+  absolute paths and `git -C <dir>` to `cd`.
+- **Scratch files go under `/tmp`**, never in the checkout.
+- **A related repository sits beside the checkout.** When the lead's prompt
+  names related repositories, `claude-job-clone <name>` clones one to
+  `../<name>`, and only those; do it when the work needs that repository,
+  not before. Claude Code does not load its CLAUDE.md for you, so read
+  `../<name>/CLAUDE.md` first and follow it there. Run its own tests, and
+  use `git -C <path>`, since every rule here holds there too, the default
+  branch's above all. A stack is the checkout's HEAD alone, so a preview
+  that needs a related repository's change cannot have it: say so in the
+  PR.
+
+## What only the user does
+
+- **Never push to the default branch.** Work on your own branch and open a
+  PR, also for a one-line fix. Your token can push to it, and on GitHub's
+  free plan nothing on GitHub's side stops it, so this rule is what does.
+- **Never merge a PR**, yours or anyone's, and never approve or mark ready
+  someone else's. Merging is how the user accepts the work.
+- **Never rewrite what the user approved.** Commits up to the PR's latest
+  approving review are fixed, unless the user asks in a comment to squash
+  them. Force push only your own PR branch, and only
+  with `--force-with-lease`. Never delete branches or tags you did not
+  create.
+- **Workflow files are the user's to push.** Nothing under
+  `.github/workflows/` goes in a commit, new files included: your token
+  cannot push it, and GitHub refuses the whole push. When the work needs a
+  workflow changed, write the change as a unified diff under `/tmp`, never
+  in the checkout, and give it to the lead, which proposes it in the PR.
+- **Never change what guards the repository**: branch rules, the
+  repository's settings, or its workflows' triggers and permissions. If one
+  of them is in your way, say so in a comment.
+
+## What GitHub may see of this box
+
+Nothing you write on GitHub, a comment, the PR, an issue or a commit
+message, names this box's insides: no paths outside the checkout, no
+account, unit or runner names, no ports but the preview's own. Say "the
+preview", "the runner" or "the test service" instead. The preview's URL
+and its phone page are the exception, since they are how the user opens it.
+
+## Tests
+
+A change in behaviour comes with a test that fails without it: a feature,
+a fixed bug, a changed rule. A change no test could tell apart needs none:
+documentation, a CLAUDE.md, comments, wording no test checks, a refactor
+the existing tests already cover. Never add a test only to have one. The
+PR says which it was, under its summary: the tests added, or
+"No new tests: <why>", with no counts or results. Whenever the change touches code, the whole suite
+passes before you push.
+
+**A repository's hooks hold too.** With a `.pre-commit-config.yaml`, run
+`prek run --all-files` before you push, as `uv run prek` when the repository
+depends on it. That leaves out the commit message rules, which the job's
+`commit-msg` hook runs at each commit: a commit it refuses is reworded, never
+sent with `--no-verify`. The types a repository allows are in its commit
+rules, such as `.gitlint`, not in your habits.
+
+**On a PR, the Claude settings in the checkout are the default branch's.** The
+action puts back `CLAUDE.md`, `CLAUDE.local.md`, `.claude`, `.husky`,
+`.gitmodules`, `.mcp.json`, `.claude.json` and `.ripgreprc` from it before the
+job starts, so they show as changed, and committing them undoes the PR's own
+changes to them. Stage files by name, never with `git add -A`, `git add .` or
+`git commit -a`, and leave those out. To change one, take the PR's version
+first with `git restore --source=HEAD --staged --worktree -- <path>`. What the
+job leaves uncommitted in them is not saved.
+
+## Your ports
+
+{{ item.port_first }}–{{ item.port_last }}, this runner's alone, for the
+services your tests start through `docker`. Nothing else you publish is
+reachable, by you or anyone, and the user cannot open these: their
+preview is the stack's. This repository has
+{{ github_runner_repos | selectattr('name', 'equalto', item.name) | map(attribute='runners') | first | default(github_runner_runners) }}
+runners, each with its own ports, and podman lets you touch another
+runner's containers: never do.
+
+## Your stack
+
+{% if item.executor %}
+The repository's preview, for the user to try the change before merging,
+runs on the executor, a server of this box's own, as this runner's stack:
+`stack up` sends your checkout's HEAD, commits not pushed included, and it
+builds and starts it from the repository's `stack.toml`. The `preview`
+skill says how. What you need to know every turn:
+
+- **One stack per runner.** Your next `stack up` replaces it, keeping its
+  volumes, and the next job on this runner replaces it too; its URL stays
+  the same. Another runner's stack is never yours to touch.
+- **The roles reach it from here, the user from their devices.** `stack up`
+  prints both URLs: give the roles the one "from here", and the user the
+  other, in the PR.
+- **It outlives the job**, until this runner's next stack, or until nobody
+  has used it for hours, when it is stopped; the phone page `stack up`
+  prints starts it again.
+- **Exit status 75 is no room**, or a paused executor: go on without the
+  stack, and say so in the PR.
+{% else %}
+This repository has no executor, so its jobs have no preview: say so in
+the PR when the change would want one, and test what you can with the
+services your tests start.
+{% endif %}
+
+{% if item.instructions | trim %}
+
+## {{ item.repo }} on this box
+
+{{ item.instructions | trim }}
+{% endif %}

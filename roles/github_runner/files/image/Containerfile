@@ -1,0 +1,151 @@
+# One GitHub Actions job, then gone: the unit starts this with a fresh JIT
+# config, the runner takes a single job and exits, and the container is
+# removed with everything the job wrote. Built on the box by the coder user.
+
+# uv from astral's own image, which is how they publish it for this; Debian
+# packages none.
+# Bun the same way, from its own image's Debian build, which links glibc.
+# Both arguments before the first FROM: one declared after it belongs to
+# that stage alone, and the next FROM reads it empty.
+ARG UV_VERSION
+ARG BUN_VERSION
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+FROM docker.io/oven/bun:${BUN_VERSION}-debian AS bun
+
+FROM docker.io/library/debian:trixie-slim
+
+# The ISO week, from rebuild-image: a new week misses the cache for every
+# layer below, which is how Debian's security updates reach the image at all.
+ARG REFRESH
+
+# The runner's own libraries (ICU, Kerberos, zlib, LTTng), what every job
+# here needs (git and gh for Claude's commits and PRs, curl and unzip for
+# the setup actions that download toolchains, docker, docker-compose and
+# rsync for test services, chromium for the UX role's screenshots of them,
+# python3 for the cost report), and whatever the role adds for the repositories' own
+# builds. No sudo: a job cannot apt-get, so a package a repository needs
+# goes in github_runner_image_packages.
+ARG PACKAGES=""
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates curl git jq unzip xz-utils rsync docker-cli docker-compose \
+       chromium fonts-liberation python3 \
+       libicu76 libkrb5-3 zlib1g liblttng-ust1t64 \
+       $PACKAGES \
+    && rm -rf /var/lib/apt/lists/*
+# gh from GitHub's own repository, not Debian's: trixie's 2.46 is far behind
+# the API, and its `gh pr edit` failed on every job's PR description.
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+       https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=uv /uv /uvx /usr/local/bin/
+# The workflow skips its Bun setup when this is the version asked for.
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s bun /usr/local/bin/bunx && bun --version
+# prek as a tool of the image, at its pin rather than each repository's: the
+# workflow and claude-job-clone install a repository's commit-msg hook with
+# it, and the hook's shim has to find it for every commit of the job.
+ARG PREK_VERSION
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_PREFERENCE=only-system \
+    uv tool install "prek==${PREK_VERSION:?}"
+
+# Not root in the container either, and uid 1000 is nobody on the host: it
+# maps into the coder user's subordinate range.
+RUN useradd --create-home --uid 1000 runner
+USER runner
+WORKDIR /home/runner
+# The unit mounts CLAUDE.md into this, read-only; the directory has to be
+# the runner's for Claude Code to write its settings beside it.
+RUN mkdir /home/runner/.claude
+# The action runs Claude in acceptEdits mode, which allows file edits in the
+# checkout and refuses them everywhere else. additionalDirectories makes
+# /tmp count as inside, which is the container's own, for scratch files, and the
+# runner's work folder, the slot's directory on the host mounted at the
+# same path, where a related repository is cloned beside the checkout. The
+# allow rules are every command a job may run without asking, all of them
+# here rather than in each repository's workflow, so they change with the
+# image: the team, git, the gh commands for its PRs and issues, the
+# toolchains, and the shell's basics, since Claude Code checks every
+# command of a `cd dir && ls` and a job refused 22 cd's and 8 mkdir's. And
+# one way to edit a PR's description should `gh pr edit` fail. The Read
+# rules are for the shell too: an allowed `cat` or `ls` of a path outside
+# the directories above is refused without one, and bare `cat`s and `ls`s
+# were the most common refusals of all.
+# What each refusal was in full is kept on the host, by claude-job-report. The action merges its own settings into this file rather than
+# replacing it. Each container mounts only its own slot's directory.
+ARG WORK_DIR
+COPY --chown=runner:runner settings.json /home/runner/.claude/settings.json
+RUN sed -i "s|@WORK_DIR@|${WORK_DIR:?}|" /home/runner/.claude/settings.json \
+    && python3 -c 'import json, sys; json.load(open(sys.argv[1]))' /home/runner/.claude/settings.json
+# Claude Code starts subagents in the background by default, and a lead
+# waiting for one ends its turn, which in a job ends the job: a job then
+# stops seconds in, with the product owner's answer never read. In the foreground, the role's answer comes back in the turn.
+# Every step inherits the runner's environment, the action's among them.
+ENV CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+# docker-compose builds through the podman socket's own build API, which
+# podman serves. Its default, BuildKit, boots a builder container of its own,
+# which podman refuses the mounts it asks for.
+ENV DOCKER_BUILDKIT=0
+
+# Checked against the digest GitHub publishes in the release notes, which
+# the play reads from the release itself.
+ARG RUNNER_VERSION
+ARG RUNNER_ARCH=x64
+ARG RUNNER_SHA256
+RUN curl -fsSL -o runner.tar.gz \
+       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+    && echo "${RUNNER_SHA256}  runner.tar.gz" | sha256sum -c - \
+    && tar -xzf runner.tar.gz \
+    && rm runner.tar.gz
+
+# Claude Code at the version the action pins, which the play reads from the
+# action. The workflow points the action here, so no job downloads it: when
+# every job did, claude.ai's installer refused them with 429. Retried here,
+# for the same reason, since the play builds rarely.
+ARG CLAUDE_CODE_VERSION
+RUN for attempt in 1 2 3 4 5; do \
+        curl -fsSL -o /tmp/install.sh https://claude.ai/install.sh \
+            && bash /tmp/install.sh "${CLAUDE_CODE_VERSION:?}" && break; \
+        [ "$attempt" = 5 ] && exit 1; sleep $((attempt * 20)); \
+    done \
+    && rm -f /tmp/install.sh && /home/runner/.local/bin/claude --version
+
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+# The workflow's own steps around Claude, so that they change with the
+# image rather than with every repository's copy of the workflow: the
+# level, the parts a long job runs in, pushing what Claude left, what the
+# job used, and whether the issue still says what was vouched for, which
+# settings.json's hook runs too. The lead calls claude-job-part as well, to
+# ask for its next part.
+COPY --chmod=0755 job_level.py /usr/local/bin/claude-job-level
+COPY --chmod=0755 job_part.py /usr/local/bin/claude-job-part
+COPY --chmod=0755 job_vouch.py /usr/local/bin/claude-job-vouch
+COPY --chmod=0755 job_finish.py /usr/local/bin/claude-job-finish
+COPY --chmod=0755 job_report.py /usr/local/bin/claude-job-report
+# The workflow's job on a push to the default branch: a rebase asked for on
+# each of the bot's PRs that now conflicts with it.
+COPY --chmod=0755 job_rebase.py /usr/local/bin/claude-job-rebase
+# The rebase runner's two steps around Claude: the rebase itself, and what
+# its resolution may become.
+COPY --chmod=0755 job_rebase_runner.py /usr/local/bin/claude-job-rebase-runner
+# Stopping what Claude left running before a step mints or uses a token.
+COPY --chmod=0755 job_strays.py /usr/local/bin/claude-job-strays
+# Starting a job again by itself once what stopped it has passed: a failure
+# before Claude, or the usage limit, and the scheduled sweep that does it.
+COPY --chmod=0755 job_retry.py /usr/local/bin/claude-job-retry
+# What Claude itself calls: waiting for a PR's checks, which also holds back
+# `gh pr ready` as settings.json's hook, and in a job with related
+# repositories, cloning one beside the checkout and reading a linked PR's
+# comments.
+COPY --chmod=0755 job_checks.py /usr/local/bin/claude-job-checks
+COPY --chmod=0755 job_clone.py /usr/local/bin/claude-job-clone
+COPY --chmod=0755 job_pr_comments.py /usr/local/bin/claude-job-pr-comments
+# The executor's client, the executor role's: how a job brings its
+# repository up as the slot's stack, where the slot's unit gives it one.
+COPY --chmod=0755 stack.py /usr/local/bin/stack
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# coder may run the registration script as the registrar, and nothing else
+# as anyone. The script takes a runner's name and refuses any it was not
+# configured with, so this rule registers runners for the listed
+# repositories and does nothing more. sudo resets the environment, and the
+# script runs python -I, so nothing coder sets reaches it.
+{{ github_runner_user }} ALL=({{ github_runner_registrar }}) NOPASSWD: /usr/local/libexec/github-runner-jitconfig

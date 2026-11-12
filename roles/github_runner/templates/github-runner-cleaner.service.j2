@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Remove stray containers, unused GitHub runner images and dependency caches over {{ github_runner_cache_max_gb }} GB
+
+[Service]
+Type=oneshot
+# Every repository's cache by name, with the units whose jobs use it.
+ExecStart=/usr/local/libexec/clean-runners --cache-max-gb {{ github_runner_cache_max_gb }} --strays-max-age-hours {{ github_runner_strays_max_age_hours }}{% for name, slots in github_runner_slots | groupby('name') %} {{ github_runner_home }}/cache/{{ name }}={{ slots | map(attribute='unit') | join(',') }}{% endfor %}

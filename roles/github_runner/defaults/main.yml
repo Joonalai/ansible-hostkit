@@ -1,0 +1,232 @@
+---
+# A self-hosted GitHub Actions runner for Claude Code to work issues on. The
+# runner dials out to GitHub and long-polls for jobs, so it needs no port,
+# no firewall entry and no Tailscale -- the only shape that works behind
+# CGNAT. Every job gets a fresh rootless container with a single-use
+# registration, and the container is removed when the job ends.
+#
+# Two accounts, so that what a job can reach and what can register runners
+# are not the same thing:
+#
+#   coder        runs the containers. Holds nothing but a sudo rule that
+#                asks the registrar for a registration.
+#   ghregistrar  holds the GitHub App key, which can manage runners on the
+#                listed repositories, and mints a JIT config on request.
+#
+# Neither is ever logged into; "sudo -iu coder" for debugging.
+github_runner_user: coder
+github_runner_home: /home/{{ github_runner_user }}
+github_runner_registrar: ghregistrar
+
+# coder's uid and subordinate range: the IDs its containers' users run as
+# on the host. Both pinned rather than left to useradd, since the host's
+# sandbox holds them by number and can name them before the account exists.
+# Set them in the inventory where the host's firewall reads them too.
+github_runner_uid: ""
+github_runner_subuid_start: ""
+github_runner_subuid_count: 65536
+
+# The units of the host's own hardening that keep coder and every ID its
+# containers run as off the host, its LAN and its private network, but for
+# the preview ports below. coder's manager Requires= them, so no job runs
+# without them, and the role refuses to run with none: the jobs are
+# unreviewed code. This collection never changes the firewall itself.
+#
+#   github_runner_sandbox_units: [ufw.service]
+github_runner_sandbox_units: []
+
+# Extra options for podman build, such as an isolation a test container
+# needs for nested builds.
+github_runner_build_options: []
+
+# Host packages beyond podman, which rootless_account installs with the
+# account. sudo is how coder reaches the registrar.
+github_runner_packages:
+  - sudo
+  - python3
+  - openssl
+
+# The GitHub App that registers runners: "Administration: read and write" on
+# repositories and nothing else, installed only on the repositories below.
+# Not the App Claude acts as -- that one's key is an Actions secret, and a
+# job can read it. The ID is not a secret; the key lives in the vault.
+github_runner_app_id: ""
+github_runner_app_private_key: ""
+
+# Runners per repository, each its own unit, github-runner-<name>-<slot>,
+# so that many of the repository's jobs run at once. A repository runner
+# serves only its own repository, so a job queued in one never lands on
+# another's. Empty by default: the role then installs the accounts and the
+# image and registers nothing.
+#
+#   github_runner_repos:
+#     - name: app
+#       repo: example/app
+#       port_base: 9100
+#       runners: 3          # optional, github_runner_runners otherwise
+#       instructions: |     # optional, Markdown for everyone in its jobs
+#         - How its preview wants starting, what it may not touch here.
+#       skills: [gpu-models]  # optional, from files/repo_skills/
+#       executor: stacks    # optional, the executor instance its stacks run on
+#       rebase_runner: true # optional: one more slot, for rebases alone
+#
+# instructions are how this box treats the repository: appended to the
+# CLAUDE.md its jobs read, under a heading of their own, so they reach the
+# lead and every role. How the repository itself works, its tests and its
+# conventions, belongs in its own CLAUDE.md, which the jobs read too.
+#
+# skills are the ones in files/repo_skills/ the repository opts into, beside
+# the team's that every job has. gpu-models also puts a GPU model server's
+# address and key, github_runner_gpu_models_*, into the environment of the
+# repository's jobs; a repository without it has neither.
+#
+# executor names an instance of the executor role on this host, which
+# must have run before this role. Each of the repository's work slots is
+# then a caller of it, with a key and a block of the instance's ports, and
+# its jobs bring the repository up there with `stack up`: the preview the
+# user and the testers open. A repository without one has no preview.
+#
+# Every slot also has github_runner_ports_per_runner ports of its own for
+# the test services a job starts itself through coder's podman socket, so
+# parallel jobs never take each other's. A repository's block is
+# runners * ports_per_runner ports from port_base, so app above has
+# 9100-9102, 9103-9105 and 9106-9108, inside
+# github_runner_preview_ports_start..end. Two repositories never share a
+# port.
+github_runner_repos: []
+github_runner_ports_per_runner: 3
+# Runners per repository, unless its entry says otherwise, and how many that
+# makes on this host, rebase slots included.
+github_runner_runners: 3
+github_runner_slot_count: >-
+  {{ (github_runner_repos | default([])
+      | map(attribute='runners', default=github_runner_runners) | map('int') | sum)
+     + (github_runner_repos | default([]) | selectattr('rebase_runner', 'defined')
+        | selectattr('rebase_runner') | list | length) }}
+
+# The ports the jobs' own test services may publish. Each repository gets
+# a block from here, from its port_base, and the host's sandbox should let
+# coder answer on these and connect to nothing else on the host but the
+# executor instances' stack ranges. Nothing else on the host should listen
+# in this range.
+github_runner_preview_ports_start: 9100
+github_runner_preview_ports_end: 9199
+
+# A container a job started with `docker run` and left behind, in no
+# compose project, is removed by the daily cleaner after this long, which
+# no job lasts. Its volumes stay.
+github_runner_strays_max_age_hours: 12
+
+# Where a job's container reaches the host, and so an executor instance's
+# stacks on it: the address the `stack` command prints for the roles.
+github_runner_executor_local_host: host.containers.internal
+# Where the executor role puts its instances' sockets, its executor_run_dir.
+github_runner_executor_run_dir: /run/hostkit-executor
+
+# Each repository's jobs share one dependency cache, uv's, pip's, npm's and
+# Playwright's, so a job does not download them all again. Daily, coder's
+# timer empties a cache grown past this while none of the repository's jobs
+# runs, and removes the images no build or container uses any more.
+github_runner_cache_max_gb: 5
+
+# How the jobs' rules name and describe the host they run on.
+github_runner_host_name: "{{ ansible_facts['hostname'] }}"
+github_runner_host_description: a self-hosted server
+
+# A GPU model server with an OpenAI-compatible API, for the jobs of the
+# repositories that opt into the gpu-models skill: its API and manifest
+# URLs, and the key, which the inventory keeps in its vault. The host's
+# sandbox must let coder reach these two and nothing else off the host.
+# Empty, the skill cannot be opted into.
+github_runner_gpu_models_url: ""
+github_runner_gpu_models_info_url: ""
+github_runner_gpu_models_api_key: ""
+
+# The bot's name: what a comment mentions to start a job ("@<name>"), and
+# what the labels that set a job's level and the workflow's own marks begin
+# with ("<name>:review"). The consumer's, and the same as the shared
+# workflow's trigger: the App Claude acts as, usually. Letters, digits and
+# dashes. The jobs' scripts read it as CLAUDE_BOT from the runner's unit.
+github_runner_bot: claude
+
+# What a workflow's runs-on names, besides self-hosted, which the play adds.
+# A runner registered through a JIT config gets exactly the labels it is
+# given: GitHub adds neither self-hosted nor Linux and X64.
+github_runner_labels: ["{{ github_runner_bot }}"]
+# The rebase runner's instead, one slot past a repository's runners when its
+# entry says rebase_runner: true. Its labels have none of the others', so it
+# takes only the jobs the workflow sends it: the rebases it asks for itself
+# after a merge, which no longer wait behind a two-hour job. A repository turns it on in the workflow with the variable
+# CLAUDE_REBASE_RUNNER, so one without the slot never waits for it.
+github_runner_rebase_labels: ["{{ github_runner_bot }}-rebase"]
+
+# "latest" is resolved through GitHub's releases API on every run, and the
+# image rebuilt when it moves; "x.y.z" is taken as is. The digest comes from
+# the release notes either way. A runner older than GitHub accepts updates
+# itself inside the container, which the container then throws away, so a
+# play run now and then is what keeps the image current.
+github_runner_version: latest
+github_runner_releases_url: https://api.github.com/repos/actions/runner/releases
+
+# Claude Code, baked into the image at the version the action pins, so a
+# job does not download it: with every job downloading it, GitHub's
+# releases answer 429 Too Many Requests, and jobs fail before Claude starts.
+# The workflows run the action at this ref and point it at the baked copy
+# with path_to_claude_code_executable; the play reads the action's pin on
+# every run, and the image is rebuilt when it moves.
+github_runner_claude_action_ref: v1
+github_runner_claude_action_pin_url: >-
+  https://raw.githubusercontent.com/anthropics/claude-code-action/{{ github_runner_claude_action_ref }}/src/entrypoints/run.ts
+
+# Debian packages baked into the image for the repositories' own builds and
+# tests. Jobs run without root and cannot install any themselves. Toolchains
+# with a setup action (node, say) are better fetched by the workflow.
+github_runner_image_packages:
+  - python3
+  - make
+  # ssh-keygen, for a throwaway key a repository's dev containers ask for.
+  - openssh-client
+
+# uv is in every image, for Python repositories and for Claude itself. Pinned
+# rather than latest: bump it here, and the next play run rebuilds.
+github_runner_uv_version: 0.13.4
+github_runner_prek_version: 0.5.6
+# Bun, baked in for the repositories that set one up: a job whose workflow
+# asks for this version uses the image's and downloads nothing, since
+# GitHub's release downloads fail with 504 now and then and took a job
+# down before Claude started. Keep it at what those workflows pin; any
+# other version is still downloaded by the job. The shared workflow also
+# hands it to claude-code-action as path_to_bun_executable, in place of
+# the Bun the action would download, so keep it near the action's pin too.
+github_runner_bun_version: 1.4.4
+
+github_runner_image: localhost/github-runner:latest
+github_runner_build_dir: "{{ github_runner_home }}/image"
+# The build's config, which the play writes and the nightly rebuild reads,
+# and when that runs: the cache makes it a no-op within a week, and the
+# first night of a new one builds the whole image afresh. refresh-runners
+# then moves the idle runners onto it.
+github_runner_rebuild_config: /usr/local/share/github-runner/build.json
+github_runner_rebuild_time: "*-*-* 04:15:00 Europe/Helsinki"
+
+# Per job. A test suite that eats the memory should fail on its own rather
+# than take the host's other services with it.
+github_runner_memory_max: 3G
+github_runner_cpu_quota: 200%
+# For the whole account: every job running at once, and every test service
+# still up. The test services run outside the jobs' units, so their limits
+# do not cover them. With three jobs at once this, not the per-job limit,
+# is what they share. Size it to leave the host's other services, and the
+# page cache that keeps the host responsive, what they need when every
+# slot is busy at once.
+github_runner_account_memory_max: 5G
+# Swap the account may use on top. Unbounded, a few heavy jobs fill memory
+# and swap and the account thrashes for minutes until one process is
+# killed: every runner's listener stalls with it, and GitHub fails the jobs
+# as lost. Bounded, the kernel kills the largest job process at once and
+# the rest go on.
+github_runner_account_memory_swap_max: 512M
+
+# Whether to start the runners. A test container has no App and never
+# will, so it installs everything and starts nothing.
+github_runner_start: true

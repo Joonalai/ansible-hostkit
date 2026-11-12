@@ -1,0 +1,14 @@
+---
+# "for github_runner" in every name: handler names are global to the play,
+# and the podman role's carry the plain ones.
+
+# The generator only runs on daemon-reload. No restart follows a changed
+# unit on purpose: a restart kills the job in progress, and every runner
+# restarts by itself after its next job anyway, onto the new unit.
+- name: Reload the systemd manager for github_runner
+  ansible.builtin.systemd_service:
+    scope: user
+    daemon_reload: true
+  environment: "{{ github_runner_user_env }}"
+  become: true
+  become_user: "{{ github_runner_user }}"
