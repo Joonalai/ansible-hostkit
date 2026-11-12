@@ -1,0 +1,28 @@
+#!/bin/sh
+# {{ ansible_managed }}
+#
+# Move Claude Code to the version the play names, as its "Move to that
+# version" task does, and restart the sessions onto it. A channel is
+# resolved through the release service the installer asks.
+set -eu
+
+case {{ claude_code_version | quote }} in
+    stable | latest)
+        wanted=$(curl -fsS --max-time 30 --retry 3 --retry-delay 10 {{ (claude_code_releases_url ~ '/' ~ claude_code_version) | quote }})
+        ;;
+    *)
+        wanted={{ claude_code_version | quote }}
+        ;;
+esac
+
+have=$({{ claude_code_bin }} --version | cut -d' ' -f1)
+if [ "$have" = "$wanted" ]; then
+    echo "Claude Code is at $have"
+    exit 0
+fi
+
+{{ claude_code_bin }} install "$wanted"
+echo "Moved Claude Code from $have to $wanted"
+{% if claude_code_update_restarts %}
+systemctl --user restart {{ claude_code_update_restarts | quote }}
+{% endif %}

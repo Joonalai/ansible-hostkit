@@ -1,0 +1,33 @@
+---
+# The claude user's systemd manager is reached through the environment and
+# nowhere else, and Ansible's become opens no login session. Split out so a
+# consumer role can
+#   include_role: {name: joonalai.hostkit.claude_code, tasks_from: user_env}
+# and get the environment along with this role's defaults.
+- name: Look up the claude user's uid
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ claude_code_user }}"
+
+- name: Assemble the environment user-scoped commands need
+  ansible.builtin.set_fact:
+    claude_code_runtime_dir: "/run/user/{{ ansible_facts.getent_passwd[claude_code_user][1] }}"
+    claude_code_user_env:
+      XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[claude_code_user][1] }}"
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts.getent_passwd[claude_code_user][1] }}/bus"
+      # The installers put uv and claude here, and nothing but a login shell
+      # would otherwise find them.
+      PATH: "{{ claude_code_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Whether the account has logged in decides whether a session can be started.
+# Read here rather than in main.yml so a consumer running on its own tag
+# still knows.
+- name: Check for a claude.ai login
+  ansible.builtin.stat:
+    path: "{{ claude_code_credentials }}"
+  register: claude_code_credentials_stat
+  become: true
+
+- name: Note whether sessions can be started
+  ansible.builtin.set_fact:
+    claude_code_logged_in: "{{ claude_code_credentials_stat.stat.exists }}"

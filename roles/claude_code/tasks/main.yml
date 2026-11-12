@@ -1,0 +1,280 @@
+---
+- name: Fail early on non-Debian targets
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: "This role targets Debian."
+
+# The installer is a shell script that fetches the release with curl or
+# wget, and Debian's minimal install has neither.
+- name: Install curl for the installers
+  when: install_dependencies | default(true) | bool
+  ansible.builtin.apt:
+    name: curl
+    state: present
+  become: true
+
+# ---------------------------------------------------------------------
+# The account
+# ---------------------------------------------------------------------
+
+- name: Create the claude user
+  ansible.builtin.user:
+    name: "{{ claude_code_user }}"
+    uid: "{{ claude_code_uid if claude_code_uid else omit }}"
+    home: "{{ claude_code_home }}"
+    shell: /bin/bash
+    create_home: true
+    # Never logged into directly; reached with "sudo -iu claude".
+    password_lock: true
+  become: true
+
+- name: Look for the claude user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ claude_code_user }}"
+    fail_key: false
+
+# A first dry run, before the account exists, has nothing more to compare:
+# its uid, its manager and its home cannot be looked up yet. What came
+# before, the checks and the packages, it has checked.
+- name: Stop a dry run that has no claude user to look at
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[claude_code_user] is none
+  ansible.builtin.meta: end_role
+
+- name: Work out how to reach the claude user's systemd manager
+  ansible.builtin.include_tasks: user_env.yml
+
+# Without lingering the user manager exists only while someone is logged in
+# as this account, and nobody ever is -- so no manager, and no session after
+# a reboot.
+- name: Keep the user's systemd manager running without a login
+  ansible.builtin.command:
+    cmd: loginctl enable-linger {{ claude_code_user }}
+    creates: "/var/lib/systemd/linger/{{ claude_code_user }}"
+  become: true
+
+- name: Wait for the user's D-Bus socket
+  when: not ansible_check_mode
+  ansible.builtin.wait_for:
+    path: "{{ claude_code_runtime_dir }}/bus"
+    timeout: 30
+  become: true
+
+# For the human doing "sudo -iu claude": the login shell finds claude and uv,
+# and systemctl --user finds the manager. pam_systemd would otherwise be the
+# only thing setting the latter, and "sudo -iu" cannot be relied on to run it.
+- name: Point the user's login shell at its tools and its systemd manager
+  ansible.builtin.blockinfile:
+    path: "{{ claude_code_home }}/.profile"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- claude_code"
+    block: |
+      export PATH="$HOME/.local/bin:$PATH"
+      : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+      : "${DBUS_SESSION_BUS_ADDRESS:=unix:path=$XDG_RUNTIME_DIR/bus}"
+      export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+    create: true
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0644"
+  become: true
+
+# ---------------------------------------------------------------------
+# The binary
+# ---------------------------------------------------------------------
+
+- name: Create the account's directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0700"
+  loop:
+    - "{{ claude_code_home }}/.cache"
+    - "{{ claude_code_home }}/.claude"
+    - "{{ claude_code_home }}/.config/claude-remote-control"
+    - "{{ claude_code_projects_dir }}"
+  become: true
+
+# The installer is for a box with no claude yet; after that the binary
+# installs its own releases. Fetched to a file rather than piped, so what ran
+# is on disk to read. It verifies the download against the release manifest's
+# checksum itself.
+- name: Fetch the installer
+  ansible.builtin.get_url:
+    url: "{{ claude_code_installer_url }}"
+    dest: "{{ claude_code_home }}/.cache/claude-install.sh"
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0700"
+  become: true
+
+- name: Install Claude Code
+  ansible.builtin.command:
+    cmd: "{{ claude_code_home }}/.cache/claude-install.sh {{ claude_code_version }}"
+    creates: "{{ claude_code_bin }}"
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+- name: Ask it which version it is
+  ansible.builtin.command: "{{ claude_code_bin }} --version"
+  register: claude_code_installed
+  changed_when: false
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+# A channel name is resolved the way the installer resolves it: the release
+# service answers "stable" or "latest" with a version. Then the binary is
+# asked for that one if it is not already it, which is the whole update
+# mechanism -- the native build's own updater is not relied on here, since a
+# fresh install reports it off and a server should move when the play says.
+- name: Resolve the version the channel names
+  when: claude_code_version not in ['stable', 'latest']
+  ansible.builtin.set_fact:
+    claude_code_wanted: "{{ claude_code_version }}"
+
+- name: Ask the release service what the channel points at
+  when: claude_code_version in ['stable', 'latest']
+  ansible.builtin.uri:
+    url: "{{ claude_code_releases_url }}/{{ claude_code_version }}"
+    return_content: true
+  register: claude_code_channel
+  check_mode: false
+
+- name: Note the version the channel points at
+  when: claude_code_version in ['stable', 'latest']
+  ansible.builtin.set_fact:
+    claude_code_wanted: "{{ claude_code_channel.content | trim }}"
+
+# A running session keeps the binary it started with, so the sessions
+# restart onto the new one.
+- name: Move to that version
+  when: claude_code_installed.stdout.split(' ')[0] != claude_code_wanted
+  ansible.builtin.command: "{{ claude_code_bin }} install {{ claude_code_wanted }}"
+  changed_when: true
+  notify: Restart Claude Code sessions
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+# The answers a first run asks for. Unanswered, the unit sits at "Enable
+# Remote Control? (y/n)" for good while the phone shows nothing, and nothing
+# in the journal says so.
+- name: Answer the first-run questions
+  ansible.builtin.include_tasks: state.yml
+  vars:
+    claude_code_state:
+      hasCompletedOnboarding: true
+      remoteDialogSeen: true
+
+# A running session reads a settings change on its own, the docs say, but a
+# restart is what proves it and costs nothing here (see the unit template).
+- name: Write the account's settings
+  ansible.builtin.copy:
+    content: "{{ claude_code_settings | to_nice_json }}\n"
+    dest: "{{ claude_code_home }}/.claude/settings.json"
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0600"
+  become: true
+  notify: Restart Claude Code sessions
+
+# ---------------------------------------------------------------------
+# The session unit
+# ---------------------------------------------------------------------
+
+- name: Create the user's systemd unit directory
+  ansible.builtin.file:
+    path: "{{ claude_code_home }}/.config/systemd/user"
+    state: directory
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0755"
+  become: true
+
+# A template unit: one instance per project directory, named after it. A
+# consumer role writes the project and enables its instance.
+- name: Install the Remote Control unit template
+  ansible.builtin.template:
+    src: claude-remote-control@.service.j2
+    dest: "{{ claude_code_home }}/.config/systemd/user/claude-remote-control@.service"
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0644"
+  notify: Reload the systemd manager for claude_code
+  become: true
+
+# The same move as the play's, from a timer: see the defaults.
+- name: Create the update script's directory
+  ansible.builtin.file:
+    path: "{{ claude_code_update_script | dirname }}"
+    state: directory
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0755"
+  become: true
+
+- name: Install the update script
+  ansible.builtin.template:
+    src: claude-update.sh.j2
+    dest: "{{ claude_code_update_script }}"
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0755"
+  become: true
+
+- name: Install the update service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ claude_code_home }}/.config/systemd/user/{{ item }}"
+    owner: "{{ claude_code_user }}"
+    group: "{{ claude_code_user }}"
+    mode: "0644"
+  loop:
+    - claude-update.service
+    - claude-update.timer
+  notify:
+    - Reload the systemd manager for claude_code
+    - Restart the Claude Code update timer
+  become: true
+
+- name: Re-read the unit template before any instance is started
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the update timer
+  ansible.builtin.systemd_service:
+    name: claude-update.timer
+    scope: user
+    enabled: true
+    state: started
+  environment: "{{ claude_code_user_env }}"
+  become: true
+  become_user: "{{ claude_code_user }}"
+
+# ---------------------------------------------------------------------
+# The login
+# ---------------------------------------------------------------------
+
+# Refuse, rather than report success on a host where nothing can actually
+# run.
+- name: Refuse to run sessions on an account that has not logged in
+  when:
+    - claude_code_login_required | bool
+    - not claude_code_logged_in
+  ansible.builtin.fail:
+    msg: |-
+      {{ claude_code_user }} has no claude.ai login ({{ claude_code_credentials }}
+      is missing), and Remote Control takes no API key. Log in by hand once:
+
+          sudo -iu {{ claude_code_user }} claude auth login
+
+      It prints a URL to open on any device and asks for the code that page
+      gives back. Then re-run this play. Nothing else here needs a human.
+
+- name: Report what is installed
+  ansible.builtin.debug:
+    msg: >-
+      Claude Code {{ claude_code_wanted }} for
+      {{ claude_code_user }}, sessions under {{ claude_code_projects_dir }},
+      {{ 'logged in' if claude_code_logged_in else 'not logged in, so sessions are installed but not started' }}.
