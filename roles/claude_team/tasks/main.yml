@@ -1,0 +1,39 @@
+---
+- name: Assert the team has a destination
+  ansible.builtin.assert:
+    that: claude_team_dest | length > 0
+    fail_msg: claude_team_dest names the directory that gets the team's agents/ and skills/.
+    quiet: true
+
+- name: Create the team's directories
+  ansible.builtin.file:
+    path: "{{ claude_team_dest }}/{{ item }}"
+    state: directory
+    owner: "{{ claude_team_owner }}"
+    group: "{{ claude_team_group }}"
+    mode: "{{ claude_team_directory_mode }}"
+  loop: [agents, skills]
+  become: true
+
+- name: Install the roles
+  ansible.builtin.copy:
+    src: agents/
+    dest: "{{ claude_team_dest }}/agents/"
+    owner: "{{ claude_team_owner }}"
+    group: "{{ claude_team_group }}"
+    mode: "{{ claude_team_mode }}"
+    directory_mode: "{{ claude_team_directory_mode }}"
+  become: true
+
+# The shared skills first, then the environment's own, into one directory.
+- name: Install the skills
+  ansible.builtin.copy:
+    src: "{{ item }}/"
+    dest: "{{ claude_team_dest }}/skills/"
+    owner: "{{ claude_team_owner }}"
+    group: "{{ claude_team_group }}"
+    mode: "{{ claude_team_mode }}"
+    directory_mode: "{{ claude_team_directory_mode }}"
+  loop: "{{ [role_path ~ '/files/skills'] + claude_team_skill_sources }}"
+  when: item is directory
+  become: true
