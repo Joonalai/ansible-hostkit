@@ -1,0 +1,18 @@
+---
+# Flushed at the end of the role's tasks, so they act on the account the
+# role was just included for, whose name and environment are facts by then.
+# "for rootless_account" because handler names are global to the play.
+
+# A changed range is used only once podman has re-read it.
+- name: Migrate the podman storage for rootless_account
+  ansible.builtin.command: podman system migrate
+  changed_when: true
+  environment: "{{ rootless_account_env }}"
+  become: true
+  become_user: "{{ rootless_account_current_user }}"
+
+# Applied to the live cgroup on reload; nothing restarts.
+- name: Apply the limits for rootless_account
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  become: true

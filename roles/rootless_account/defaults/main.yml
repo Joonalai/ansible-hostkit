@@ -1,0 +1,50 @@
+---
+# An account that runs rootless podman containers from its own systemd
+# manager. Included by the roles that need one, once for each account:
+#
+#   - ansible.builtin.include_role:
+#       name: joonalai.hostkit.rootless_account
+#     vars:
+#       rootless_account_user: runner
+#       rootless_account_uid: 2001
+#       rootless_account_subuid_start: 165536
+#       rootless_account_subuid_count: 65536
+#
+# It leaves rootless_account_env, the environment every user-scoped command
+# needs, and rootless_account_runtime_dir as host facts, for the including
+# role to copy into its own names before another account overwrites them;
+# and rootless_account_rebuild_image, the script it builds its image with.
+rootless_account_user: ""
+# Empty lets the system pick. Pin it when the host's hardening names the
+# account by number.
+rootless_account_uid: ""
+rootless_account_home: /home/{{ rootless_account_user }}
+# Pinned rather than left to useradd: the host's sandbox may name the range,
+# and the account's containers run in it.
+rootless_account_subuid_start: ""
+rootless_account_subuid_count: 65536
+# False when another role owns the account, its lingering and its login
+# shell.
+rootless_account_create: true
+# The marker of the .profile block, kept as the role that first wrote it
+# named it, so the block is not written twice.
+rootless_account_profile_marker: rootless_account
+# The script the including roles build their images with; the
+# Containerfile declares ARG REFRESH before its first layer.
+rootless_account_rebuild_bin: /usr/local/libexec/rebuild-image
+# Every container and process the account runs, as a cap on its
+# user@<uid>.service. Empty for none.
+rootless_account_memory_max: ""
+# How much of it may sit in swap. Unbounded, a full account pages its way
+# through the cap instead of meeting it, and everything it runs stalls for
+# minutes before the kernel kills anything. Empty for no bound.
+rootless_account_memory_swap_max: ""
+# The CPU time of everything the account runs, as systemd's CPUQuota
+# ("200%" is two cores). Empty for no limit.
+rootless_account_cpu_quota: ""
+
+rootless_account_packages: [podman, uidmap, passt, aardvark-dns, catatonit, dbus-user-session, acl]
+# Nested podman in a test container needs the userspace overlay driver.
+rootless_account_container_packages: [fuse-overlayfs]
+rootless_account_storage_driver: overlay
+rootless_account_storage_mount_program: "{{ '/usr/bin/fuse-overlayfs' if is_container_environment | default(false) | bool else '' }}"
