@@ -989,20 +989,35 @@ def dispatch(agent: Agent, config: Config, conn: IO[bytes], request: dict[str, A
     return agent.out.done(0)
 
 
+def log_failure(request: object, message: str) -> None:
+    """One line to the journal for a refused or failed request: its caller,
+    its action and what the caller was told, which is all it holds. An
+    action that ran and failed is the front's to log, with its status.
+    """
+    fields = request if isinstance(request, dict) else {}
+    caller, action = fields.get("caller"), fields.get("action")
+    who = caller if isinstance(caller, str) and CALLER.fullmatch(caller) else "-"
+    what = action if action in ACTIONS else "-"
+    print(f"{what} for {who}: {json.dumps(message)}", file=sys.stderr, flush=True)
+
+
 def handle(config: Config, conn: IO[bytes], out: Out, system: System) -> int:
     """Read one request from conn and carry it out, answering on out."""
+    request: object = None
     try:
         line = conn.readline(MAX_HEADER)
         try:
-            request = check_request(config, json.loads(line or b"null"))
+            request = json.loads(line or b"null")
         except ValueError as error:
             raise RefusedError("the request is one line of JSON") from error
-        return dispatch(Agent(config, system, out), config, conn, request)
+        return dispatch(Agent(config, system, out), config, conn, check_request(config, request))
     except RefusedError as error:
-        return out.done(1, message=str(error))
+        message = str(error)
     except (subprocess.CalledProcessError, OSError) as error:
         detail = getattr(error, "stderr", "") or str(error)
-        return out.done(1, message=f"failed: {detail.strip()}")
+        message = f"failed: {detail.strip()}"
+    log_failure(request, message)
+    return out.done(1, message=message)
 
 
 def main(argv: list[str]) -> int:

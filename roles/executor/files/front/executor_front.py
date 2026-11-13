@@ -53,6 +53,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import IO, Any, override
 
@@ -556,10 +557,12 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None) -> int
 
     bundle = None
     result: dict[str, Any]
+    action: object = None
+    caller: Caller | None = None
     try:
         request = read_header(conn)
-        caller = authenticate(front.instance, request.get("key"), uid)
         action = request.get("action")
+        caller = authenticate(front.instance, request.get("key"), uid)
         if action not in ACTIONS:
             result = {"exit": 1, "message": f"refused: the action is one of {', '.join(ACTIONS)}"}
         elif action == "list":
@@ -584,7 +587,25 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None) -> int
         if bundle is not None and os.path.exists(bundle):
             os.unlink(bundle)
     answer(out, result)
+    log_failure(caller, action, uid, result)
     return int(result["exit"])
+
+
+def log_failure(caller: Caller | None, action: object, uid: int | None, result: dict[str, Any]) -> None:
+    """One line to the journal for a request refused or failed: its caller,
+    or the uid that presented no caller's key, its action, its status and
+    what the caller was told, which is all it holds. Nothing for one that
+    did what it was asked.
+    """
+    if result["exit"] == 0:
+        return
+    who = caller.name if caller is not None else f"uid {uid}"
+    log_line(action if isinstance(action, str) and action in ACTIONS else "-", who, result["exit"], result.get("message", ""))
+
+
+def log_line(action: str, who: str, status: object, message: object) -> None:
+    """One line to the journal: the message quoted, so it stays one line."""
+    print(f"{action} for {who}: exit {status}: {json.dumps(str(message))}", file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------------
@@ -665,7 +686,10 @@ def page_post(front: Front, path: str, header_value: str | None) -> tuple[int, s
         return 404, "Not found."
     name, action = parts[1], parts[2]
     with caller_lock(front.instance, name):
-        return front.page_stop(name) if action == "stop" else front.page_start(name)
+        code, text = front.page_stop(name) if action == "stop" else front.page_start(name)
+    if code >= HTTPStatus.BAD_REQUEST:
+        log_line(f"page {action}", name, code, text)
+    return code, text
 
 
 def page_get(front: Front, path: str) -> tuple[int, bytes, str]:
