@@ -27,10 +27,12 @@ class Fake:
 
     def __init__(self, compose_config: dict[str, Any] | None = None, up_status: int = 0, disk: list[int] | None = None) -> None:
         self.calls: list[list[str]] = []
+        self.logs_fail = False
         self.compose_config = compose_config or {"name": "stack-r-1", "services": {"web": {"ports": [{"published": "9302"}]}, "e2e": {}}}
         self.up_status = up_status
         self.disk = disk or [0]
         self.containers: list[dict[str, Any]] = []
+        self.after_up: list[list[dict[str, Any]]] = []
 
     def run(self, command: list[str]) -> str:
         self.calls.append(command)
@@ -43,15 +45,26 @@ class Fake:
             subprocess.run(command[2:], check=True)
             return ""
         if command[:2] == ["podman", "ps"]:
-            return json.dumps(self.containers)
+            return json.dumps(self.listed())
         if "docker-compose" in command and "config" in command:
             return json.dumps(self.compose_config)
         return ""
 
+    def listed(self) -> list[dict[str, Any]]:
+        if not (self.after_up and any(call[0] == "docker-compose" and "up" in call for call in self.calls)):
+            return self.containers
+        return self.after_up.pop(0) if len(self.after_up) > 1 else self.after_up[0]
+
     def stream(self, command: list[str]) -> Iterator[str | int]:
         self.calls.append(command)
+        if self.logs_fail and "logs" in command:
+            raise OSError("no docker-compose")
         yield "building\n"
         yield self.up_status if "up" in command else 0
+
+
+def last_compose(fake: Fake) -> list[str]:
+    return next(call for call in reversed(fake.calls) if call[0] == "docker-compose")
 
 
 def events(stream: io.BytesIO) -> list[dict[str, Any]]:
@@ -97,9 +110,21 @@ def up_request(bundle: bytes, **changes: object) -> bytes:
     return json.dumps(request).encode() + b"\n" + bundle
 
 
+class Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def now(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.t += seconds
+
+
 def serve(config: executor_agent.Config, fake: Fake, request: bytes) -> list[dict[str, Any]]:
     out = io.BytesIO()
-    system = executor_agent.System(run=fake.run, stream=fake.stream, now=lambda: 1000.0)
+    clock = Clock()
+    system = executor_agent.System(run=fake.run, stream=fake.stream, now=clock.now, clock=clock.now, sleep=clock.sleep)
     executor_agent.handle(config, io.BytesIO(request), executor_agent.Out(out), system)
     return events(out)
 
@@ -126,9 +151,9 @@ def test_up_checks_out_the_bundle_writes_the_env_and_starts_compose(tmp_path: Pa
     assert ["-f", str(stack / "incoming" / "compose.yaml"), "config"] == check[check.index("-f") : check.index("-f") + 3]
     assert "--profile" not in check
     assert not (stack / "incoming").exists()
-    up = fake.calls[-1]
+    up = last_compose(fake)
     assert up[:3] == ["docker-compose", "-p", "stack-r-1"]
-    assert up[-4:] == ["--detach", "--build", "--force-recreate", "--remove-orphans"]
+    assert up[up.index("up") :] == ["up", "--detach", "--build", "--force-recreate", "--remove-orphans"]
     at = up.index("--env-file")
     assert ["--env-file", str(stack / "stack.env"), "-f", str(stack / "checked.json")] == up[at : at + 4]
     assert json.loads((stack / "checked.json").read_text())["services"]["web"] == {"ports": [{"published": "9302"}]}
@@ -191,6 +216,219 @@ def test_a_failed_up_is_stopped(tmp_path: Path) -> None:
 
     assert answer[-1]["exit"] == 1
     assert {"out": "building"} in answer
+
+
+def exited(container_id: str, service: str, state: str, exit_code: int, status: str = "") -> dict[str, Any]:
+    labels = {"com.docker.compose.project": "stack-r-1", "com.docker.compose.service": service}
+    return {"Id": container_id, "State": state, "ExitCode": exit_code, "Status": status, "Labels": labels}
+
+
+def test_a_failed_compose_up_answers_with_the_failed_services_logs_and_stops_the_stack(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(up_status=1)
+    bundle = bundle_of(checkout)
+    fake.containers = [
+        exited("a1", "api", "exited", 1),
+        exited("m1", "migrate", "exited", 0),
+        exited("w1", "web", "running", 0, "Up 5 seconds (unhealthy)"),
+        exited("c1", "mail", "running", 0, "Up 5 seconds"),
+    ]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    logs = next(call for call in fake.calls if "logs" in call)
+    assert logs[logs.index("logs") :] == ["logs", "--no-color", "--tail", "50", "api", "web"]
+    assert {"out": "The logs of api, web:"} in answer
+    assert ["podman", "stop", "--time", "10", "w1", "c1"] in fake.calls
+    assert answer[-1]["exit"] == 1
+    assert answer[-1]["message"] == "docker-compose up failed; the stack is stopped."
+
+
+def test_a_failed_compose_up_with_no_failed_service_reads_no_logs(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(up_status=1)
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert not any("logs" in call for call in fake.calls)
+    assert answer[-1]["message"] == "docker-compose up failed; the stack is stopped."
+
+
+def test_a_service_that_dies_as_it_starts_fails_the_up(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[exited("a1", "api", "running", 0, "Up 1 second")], [exited("a1", "api", "exited", 1)]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    logs = next(call for call in fake.calls if "logs" in call)
+    assert logs[-1] == "api"
+    assert answer[-1]["exit"] == 1
+    assert answer[-1]["message"] == "api exited with an error, restarted or is unhealthy; the stack is stopped."
+
+
+def test_an_up_settles_with_services_running_healthy_or_ended_with_status_0(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    settled = [
+        exited("w1", "web", "running", 0, "Up 3 seconds (healthy)"),
+        exited("j1", "job", "exited", 0),
+        exited("c1", "mail", "running", 0, "Up 3 seconds"),
+    ]
+    fake.after_up = [[exited("w1", "web", "running", 0, "Up 1 second (starting)"), exited("j1", "job", "running", 0)], settled]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["exit"] == 0
+    assert not any("logs" in call or call[:2] == ["podman", "stop"] for call in fake.calls)
+    polls = [call for call in fake.calls if call[:2] == ["podman", "ps"]]
+    assert len(polls) >= executor_agent.SETTLE_SECONDS
+
+
+def test_a_service_not_healthy_in_time_fails_the_up_with_its_logs(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[exited("w1", "web", "running", 0, "Up 1 second (starting)"), exited("c1", "mail", "running", 0, "Up")]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    logs = next(call for call in fake.calls if "logs" in call)
+    assert logs[-1] == "web"
+    assert answer[-1]["message"] == "web did not run, or was not healthy, within 600 s; the stack is stopped."
+
+
+def test_a_failed_up_whose_logs_cannot_be_read_still_stops_the_stack(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(up_status=1)
+    bundle = bundle_of(checkout)
+    fake.containers = [exited("a1", "api", "exited", 1), exited("w1", "web", "running", 0)]
+    fake.logs_fail = True
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert {"out": "The logs could not be read: no docker-compose"} in answer
+    assert ["podman", "stop", "--time", "10", "w1"] in fake.calls
+    assert answer[-1]["exit"] == 1
+
+
+def test_a_start_watches_the_services_and_answers_a_failure_with_its_logs(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config = make_config(tmp_path)
+    serve(config, Fake(), up_request(bundle_of(checkout)))
+    fake = Fake()
+    fake.after_up = [[exited("a1", "api", "exited", 1)]]
+
+    answer = serve(config, fake, json.dumps({"action": "start", "caller": "r-1"}).encode() + b"\n")
+
+    up = next(call for call in fake.calls if "up" in call)
+    assert up[up.index("up") :] == ["up", "--detach", "--force-recreate"]
+    logs = next(call for call in fake.calls if "logs" in call)
+    assert logs[-1] == "api"
+    assert answer[-1] == {"exit": 1, "message": "api exited with an error, restarted or is unhealthy; the stack is stopped."}
+
+
+def restarting(count: int) -> dict[str, Any]:
+    return exited("a1", "api", "running", 0, "Up 1 second") | {"Restarts": count}
+
+
+def test_a_service_its_restart_policy_brings_back_fails_the_up(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[restarting(0)], [restarting(0)], [restarting(1)]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["message"] == "api exited with an error, restarted or is unhealthy; the stack is stopped."
+
+
+def test_a_container_that_restarted_before_the_watch_is_judged_by_its_state(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[restarting(2)]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["exit"] == 0
+
+
+def test_a_stack_with_no_container_settles(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+
+    answer = serve(make_config(tmp_path), Fake(), up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+
+
+def test_a_suites_leftover_container_is_no_service_of_the_stack(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    leftover = exited("e1", "e2e", "exited", 1)
+    leftover["Labels"]["com.docker.compose.oneoff"] = "True"
+    fake.after_up = [[leftover, exited("w1", "web", "running", 0)]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["exit"] == 0
+
+
+def test_a_scaled_service_takes_its_worst_containers_verdict(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[exited("w1", "web", "exited", 1), exited("w2", "web", "running", 0, "Up 1 second (starting)")]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["message"].startswith("web exited with an error")
+
+
+def test_a_watch_podman_fails_still_stops_the_stack(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    bundle = bundle_of(checkout)
+    fake.after_up = [[exited("w1", "web", "running", 0)]]
+    real_run = fake.run
+    polls = []
+
+    def flaky_run(command: list[str]) -> str:
+        if command[:2] == ["podman", "ps"] and any(call[0] == "docker-compose" and "up" in call for call in fake.calls):
+            polls.append(command)
+            if len(polls) == 2:
+                fake.calls.append(command)
+                raise subprocess.CalledProcessError(125, command, stderr="podman is gone")
+        return real_run(command)
+
+    fake.run = flaky_run
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle))
+
+    assert answer[-1]["message"] == "the stack could not be watched: podman is gone; the stack is stopped."
+    assert ["podman", "stop", "--time", "10", "w1"] in fake.calls
+
+
+@pytest.mark.parametrize(
+    ("state", "exit_code", "status", "verdict"),
+    [
+        ("running", 0, "Up 2 seconds", "settled"),
+        ("running", 0, "Up 2 seconds (healthy)", "settled"),
+        ("exited", 0, "Exited (0) 1 second ago", "settled"),
+        ("running", 0, "Up 2 seconds (starting)", "pending"),
+        ("created", 0, "Created", "pending"),
+        ("running", 0, "Up 2 seconds (unhealthy)", "failed"),
+        ("exited", 3, "Exited (3) 1 second ago", "failed"),
+        ("stopped", 2, "Exited (2) Less than a second ago", "failed"),
+        ("stopped", 0, "Exited (0) Less than a second ago", "settled"),
+        ("dead", 0, "Dead", "failed"),
+    ],
+)
+def test_a_containers_verdict_follows_its_state_status_and_exit_code(state: str, exit_code: int, status: str, verdict: str) -> None:
+    assert executor_agent.verdict_of({"State": state, "ExitCode": exit_code, "Status": status}) == verdict
 
 
 @pytest.fixture
@@ -555,8 +793,9 @@ def test_later_actions_run_the_checked_config_not_the_tree(tmp_path: Path) -> No
 
     for request in (b'{"action": "run", "caller": "r-1", "suite": "e2e"}\n', b'{"action": "start", "caller": "r-1"}\n'):
         serve(config, fake, request)
-        assert ["-f", checked] == fake.calls[-1][fake.calls[-1].index("-f") : fake.calls[-1].index("-f") + 2]
-        assert not any(word.endswith("compose.yaml") for word in fake.calls[-1])
+        command = last_compose(fake)
+        assert ["-f", checked] == command[command.index("-f") : command.index("-f") + 2]
+        assert not any(word.endswith("compose.yaml") for word in command)
 
 
 def test_a_stack_without_its_checked_config_is_brought_up_again(tmp_path: Path) -> None:
@@ -607,10 +846,11 @@ def test_only_the_compose_profiles_turned_on_are_checked_and_started(tmp_path: P
     check = next(call for call in fake.calls if "config" in call)
     assert check[check.index("config") - 4 : check.index("config")] == ["--profile", "seed", "--profile", "docs"]
     assert "*" not in check
-    up = fake.calls[-1]
+    up = last_compose(fake)
     assert up[up.index("--profile") : up.index("--profile") + 4] == ["--profile", "seed", "--profile", "docs"]
     serve(config, fake, b'{"action": "start", "caller": "r-1"}\n')
-    assert fake.calls[-1][fake.calls[-1].index("--profile") : fake.calls[-1].index("--profile") + 2] == ["--profile", "seed"]
+    start = last_compose(fake)
+    assert start[start.index("--profile") : start.index("--profile") + 2] == ["--profile", "seed"]
 
 
 def test_a_compose_profile_turned_on_is_checked_like_any_service(tmp_path: Path) -> None:

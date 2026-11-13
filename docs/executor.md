@@ -78,6 +78,15 @@ flowchart LR
   config checked beside the stack; the stack is replaced only once both
   pass. A broken compose file or a refused mount leaves the last stack up,
   the one someone may be looking at, and says why.
+- **An up waits for its stack.** It returns once every service runs,
+  healthy where it has a healthcheck, or has ended with status 0, and has
+  stayed so a few seconds, up to ten minutes. A service that exits with
+  another status, restarts, is unhealthy or is not ready in time fails the
+  up, which answers with the tail of that service's log and leaves the
+  stack stopped and shown as failed, never as running while its page does
+  not answer. A start from the phone page waits the same way, and starts a
+  failed stack again; until it answers, the caller's own requests are
+  refused as for any request of its still running.
 - **Room is shared.** At `max_stacks` running, an up stops the stack idle
   longest, if it has been idle `evict_idle_minutes`. With nothing to stop, a
   runner's job waits up to `queue_timeout_minutes` and a person is refused

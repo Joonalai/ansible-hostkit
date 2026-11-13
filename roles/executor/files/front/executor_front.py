@@ -408,7 +408,7 @@ class Front:
         """Bring a stopped stack back, as a person: never waits for a place."""
         with locked_state(self.instance) as state:
             stack = state.stacks.get(name)
-        if stack is None or stack.get("state") not in ("stopped", "running"):
+        if stack is None or stack.get("state") not in ("stopped", "running", "failed"):
             return 409, f"{name} has no stack to start."
         caller = Caller(name=name, key_sha256="", uid=None, repos=(), waits=False)
         try:
@@ -630,7 +630,7 @@ async function act(id, what) {
 function card(s) {
   const button = s.state === "running"
     ? `<button data-id="${esc(s.caller)}" data-act="stop">Stop</button>`
-    : s.state === "stopped" ? `<button data-id="${esc(s.caller)}" data-act="start">Start</button>` : "";
+    : ["stopped", "failed"].includes(s.state) ? `<button data-id="${esc(s.caller)}" data-act="start">Start</button>` : "";
   const age = s.up_hours === null ? "" : ` · up ${esc(s.up_hours)} h ago, used ${esc(s.idle_minutes)} min ago`;
   return `<div class="stack"><div class="top">
       <div><div class="id">${esc(s.caller)}</div>
