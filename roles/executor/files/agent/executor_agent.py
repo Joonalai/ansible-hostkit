@@ -526,11 +526,26 @@ def config_refusals(config: dict[str, Any], tree: str, ports: list[int]) -> list
                 found.append(f"{kind} {key}: named {item['name']}, not the stack's own")
             if item.get("driver_opts"):
                 found.append(f"{kind} {key}: driver_opts")
+    found += stack_image_refusals(config.get("services") or {})
     for kind in ("secrets", "configs"):
         for key, item in sorted((config.get(kind) or {}).items()):
             source = (item or {}).get("file")
             if source and not inside(tree, source):
                 found.append(f"{kind} {key}: a file outside the repository, {source}")
+    return found
+
+
+def stack_image_refusals(services: dict[str, dict[str, Any]]) -> list[str]:
+    """A service that runs a stack's image it does not build: the images
+    the stacks build are named stack-..., and another caller's is not this
+    stack's to run. A name one of its own services builds under passes.
+    """
+    built = {str(service["image"]) for service in services.values() if service.get("build") and service.get("image")}
+    found = []
+    for name, service in sorted(services.items()):
+        image = str(service.get("image") or "")
+        if not service.get("build") and image not in built and image.removeprefix("localhost/").startswith("stack-"):
+            found.append(f"{name}: the image {image}, a stack's that this one does not build")
     return found
 
 
@@ -547,10 +562,10 @@ def relocate(value: object, old: str, new: str) -> object:
     return value
 
 
-def with_resets(config: dict[str, Any]) -> dict[str, Any]:
+def with_resets(config: dict[str, Any], project_name: str) -> dict[str, Any]:
     """The checked config as the stack runs it: no fixed container_name,
-    which would clash across callers, and no healthcheck start_interval,
-    which podman does not take.
+    which would clash across callers, no healthcheck start_interval, which
+    podman does not take, and the images it builds named its own.
     """
     services = {}
     for name, service in (config.get("services") or {}).items():
@@ -558,7 +573,44 @@ def with_resets(config: dict[str, Any]) -> dict[str, Any]:
         if "start_interval" in (service.get("healthcheck") or {}):
             service["healthcheck"] = {key: value for key, value in service["healthcheck"].items() if key != "start_interval"}
         services[name] = service
-    return {**config, "services": services}
+    return {**config, "services": own_images(services, project_name)}
+
+
+def own_images(services: dict[str, dict[str, Any]], project_name: str) -> dict[str, dict[str, Any]]:
+    """The services with every image they build named after the stack: the
+    callers share one image store, so a name the compose file gives could
+    replace another stack's image, or the image another stack pulls. A
+    service that runs a built image by the name the file gave it gets the
+    stack's name for it too.
+    """
+    renamed: dict[str, str] = {}
+    taken: set[str] = set()
+    named = {}
+    for name, service in sorted(services.items()):
+        if not service.get("build"):
+            named[name] = service
+            continue
+        own = image_name(project_name, name, taken)
+        if service.get("image"):
+            renamed.setdefault(str(service["image"]), own)
+        named[name] = {**service, "image": own}
+    for name, service in named.items():
+        if not service.get("build") and str(service.get("image")) in renamed:
+            named[name] = {**service, "image": renamed[str(service["image"])]}
+    return named
+
+
+def image_name(project_name: str, service: str, taken: set[str]) -> str:
+    """A name of the stack's own for the image a service builds, one an
+    image reference can hold and no other service of the stack's has.
+    """
+    base = f"{project_name}-" + (re.sub(r"[^a-z0-9]+", "-", service.lower()).strip("-") or "service")
+    name, number = base, 1
+    while name in taken:
+        number += 1
+        name = f"{base}-{number}"
+    taken.add(name)
+    return name
 
 
 # ---------------------------------------------------------------------
@@ -718,7 +770,7 @@ class Agent:
         os.rename(staged.tree, stack.tree)
         os.replace(staged.env_file, stack.env_file)
         with open(stack.checked, "w") as checked:
-            json.dump(with_resets(cast("dict[str, Any]", relocate(config, staged.tree, stack.tree))), checked)
+            json.dump(with_resets(cast("dict[str, Any]", relocate(config, staged.tree, stack.tree)), stack.project), checked)
         meta = {"repo": request["repo"], "commit": commit, "up_at": self.system.now(), **profile}
         with open(stack.meta_file, "w") as meta_file:
             json.dump(meta, meta_file)

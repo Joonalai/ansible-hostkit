@@ -46,6 +46,12 @@ consumer is [docs/executor.md](../../docs/executor.md).
   files: a container that writes the tree could rewrite them, or swap a
   bind mount's source for a link out of the tree before the next start.
   That is also why bind mounts from the tree must be read-only.
+- **The images a stack builds are its own** (`own_images`). Every caller
+  builds in the exec account's one image store, so the checked config
+  names each built image `<project>-<service>`, whatever the file says, and
+  a service running a built image by the file's name gets the stack's
+  name for it. A service may not run a `stack-` image it does not build
+  (`stack_image_refusals`): that is another caller's.
 - **The checkout runs no git config of the repository's.** The bundle is
   fetched into a fresh `git init` with `core.hooksPath=/dev/null` and
   `fetch.fsckObjects`, then checked out detached; nothing runs in the tree
