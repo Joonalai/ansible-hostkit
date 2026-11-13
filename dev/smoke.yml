@@ -66,6 +66,16 @@
                 volumes: ["./site:/srv:ro"]
                 ports: ["${BIND}:${WEB_PORT}:8000"]
                 security_opt: ["no-new-privileges:true"]
+              # A one-shot service the next waits for, as migrations are.
+              seed:
+                image: {{ dev_smoke_image }}
+                command: ["true"]
+              # Built from the tree, its files read by a user not root: the
+              # checkout's modes are what COPY puts in the image.
+              app:
+                build: {context: ., dockerfile: Containerfile.app}
+                command: ["sh", "-c", "cat /app/site/index.html && exec sleep 3600"]
+                depends_on: {seed: {condition: service_completed_successfully}}
               # Turned on by the profile, and set up the way a repository
               # whose .env is a copy of .env.example is.
               extra:
@@ -78,6 +88,11 @@
                 image: {{ dev_smoke_image }}
                 profiles: [docs]
                 volumes: ["./site:/srv"]
+        - name: Containerfile.app
+          content: |
+            FROM {{ dev_smoke_image }}
+            COPY site /app/site
+            USER 1000
         - name: compose.privileged.yaml
           content: |
             services:

@@ -50,6 +50,11 @@ consumer is [docs/executor.md](../../docs/executor.md).
   fetched into a fresh `git init` with `core.hooksPath=/dev/null` and
   `fetch.fsckObjects`, then checked out detached; nothing runs in the tree
   but compose.
+- **The checkout runs under umask 022**, the agent under 077. A
+  Dockerfile's `COPY` keeps the tree's modes, so a `0600` file in the tree
+  is one the image's non-root user cannot read; `TREE_UMASK` sets git's
+  usual ones for the checkout alone. The tree sits in the exec account's
+  home, which no other account enters.
 - **No `NoNewPrivileges` on the agent's unit.** Rootless podman starts the
   account's user namespace with the setuid `newuidmap` and `newgidmap`,
   which it refuses, and the play's check then fails with "newuidmap: write

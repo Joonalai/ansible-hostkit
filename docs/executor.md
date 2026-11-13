@@ -156,6 +156,9 @@ needs no change, only a profile that sets what it would. The services of a
 compose profile not in `compose_profiles` are left out, checked or run by
 nothing; a suite's service must be one of the stack's. A suite's container
 reaches the stack's services by their names.
+The checkout has git's usual modes whatever the agent's umask, files
+`0644` and executables `0755`, so an image's `COPY` of them stays readable
+by a service that does not run as root.
 An instance's `overrides` can add or replace a repository's profiles from
 the inventory.
 

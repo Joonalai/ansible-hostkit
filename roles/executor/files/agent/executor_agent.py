@@ -50,6 +50,7 @@ repository, are reset.
 Standard library only, on the system python3.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -57,7 +58,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from typing import IO, Any, cast
 
@@ -78,6 +79,11 @@ MAX_COMPOSE_PROFILES = 16
 # The only security_opt a service may set: one that tightens.
 SECURITY_OPTS = ("no-new-privileges", "no-new-privileges:true")
 LOG_TAIL = 200
+# The tree is checked out with git's usual modes, whatever the agent's own
+# umask: a Dockerfile's COPY takes them into the image, where a service that
+# is not root must still read its files. The tree is in the exec account's
+# home, which no other account enters.
+TREE_UMASK = 0o022
 CHUNK = 65536
 ACTIONS = ("up", "run", "logs", "down", "stop", "start", "ps", "prune")
 # What a service may not set at all: more than a container gets, the
@@ -188,6 +194,16 @@ def stream_command(command: list[str]) -> Iterator[str | int]:
         assert process.stdout is not None  # noqa: S101 -- stdout=PIPE always sets it
         yield from process.stdout
         yield process.wait()
+
+
+@contextlib.contextmanager
+def umask(mask: int) -> Generator[None]:
+    """The process's umask set to mask, and the last one back after."""
+    previous = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def project(caller: str) -> str:
@@ -387,7 +403,8 @@ def profile_flags(names: list[str]) -> list[str]:
 def write_tree_env(tree: str, text: str) -> None:
     """The stack's env as the tree's .env too, compose's default, which a
     service's `env_file: .env` reads; the repository's own goes, and a link
-    is replaced, never written through.
+    is replaced, never written through. It is 0644 whatever the agent's
+    umask, like the checkout, for an image that copies it.
     """
     path = os.path.join(tree, ".env")
     if os.path.isdir(path) and not os.path.islink(path):
@@ -395,6 +412,7 @@ def write_tree_env(tree: str, text: str) -> None:
     if os.path.lexists(path):
         os.unlink(path)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    os.fchmod(descriptor, 0o644)
     with os.fdopen(descriptor, "w") as env_file:
         env_file.write(text)
 
@@ -611,17 +629,22 @@ class Agent:
         self.remove_tree(target)
         safe = ["-c", "core.hooksPath=/dev/null", "-c", "fetch.fsckObjects=true", "-c", "advice.detachedHead=false"]
         try:
-            self.system.run(["git", "init", "--quiet", target])
-            heads = self.system.run(["git", "-C", target, "bundle", "list-heads", bundle]).split("\n")
-            refs = [line.split()[1] for line in heads if len(line.split()) == 2]  # noqa: PLR2004 -- "<commit> <ref>"
-            if not refs:
-                raise RefusedError("the bundle has no head")
-            ref = "HEAD" if "HEAD" in refs else refs[0]
-            self.system.run(["git", "-C", target, *safe, "fetch", "--quiet", "--no-tags", bundle, ref])
-            self.system.run(["git", "-C", target, *safe, "checkout", "--quiet", "--detach", "FETCH_HEAD"])
-            return self.system.run(["git", "-C", target, "rev-parse", "HEAD"]).strip()
+            with umask(TREE_UMASK):
+                return self._check_out(bundle, target, safe)
         except subprocess.CalledProcessError as error:
             raise RefusedError(f"the bundle did not check out: {(error.stderr or error.output or '').strip()}") from error
+
+    def _check_out(self, bundle: str, target: str, safe: list[str]) -> str:
+        """The git commands of check_out."""
+        self.system.run(["git", "init", "--quiet", target])
+        heads = self.system.run(["git", "-C", target, "bundle", "list-heads", bundle]).split("\n")
+        refs = [line.split()[1] for line in heads if len(line.split()) == 2]  # noqa: PLR2004 -- "<commit> <ref>"
+        if not refs:
+            raise RefusedError("the bundle has no head")
+        ref = "HEAD" if "HEAD" in refs else refs[0]
+        self.system.run(["git", "-C", target, *safe, "fetch", "--quiet", "--no-tags", bundle, ref])
+        self.system.run(["git", "-C", target, *safe, "checkout", "--quiet", "--detach", "FETCH_HEAD"])
+        return self.system.run(["git", "-C", target, "rev-parse", "HEAD"]).strip()
 
     def stage(self, request: dict[str, Any], bundle: str, staged: Stack) -> tuple[str, dict[str, Any], dict[str, Any]]:
         """Check the bundle out beside the stack and check its config there:
