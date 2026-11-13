@@ -465,6 +465,32 @@
       changed_when: true
       become: true
 
+    # The workbench's try is a caller of its own, with its env file in
+    # bench's config; the socket is the container's path, so swap it here.
+    # Only where the workbench's play ran too: CI's executor job runs the
+    # executor's alone.
+    - name: Find the workbench's account
+      ansible.builtin.getent:
+        database: passwd
+        key: bench
+        fail_key: false
+
+    - name: List the stacks as the workbench's try
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - bench
+          - --
+          - bash
+          - -c
+          - set -a && . /home/bench/.config/workbench/try/stacks.env && STACK_SOCKET={{ dev_smoke_socket }} stack list --json
+      register: dev_smoke_try_list
+      changed_when: false
+      failed_when: dev_smoke_try_list.rc != 0
+      when: ansible_facts.getent_passwd.bench is not none
+      become: true
+
 # A caller on another host, over TLS: it pins the instance's certificate,
 # brings the same repository up as remote-smoke, reads the page from its
 # side, runs the suite and takes it down. Refused: a wrong pin, which sends

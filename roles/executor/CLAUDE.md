@@ -133,7 +133,7 @@ consumer is [docs/executor.md](../../docs/executor.md).
   `keys/`, root's alone, writes the hash to `callers/` for the front, and
   the key itself into the caller's env file, which its unit reads. It
   removes its prefix's callers no longer listed, so each client role passes
-  a prefix of its own (`runner-`, `bench-`) and never removes another's.
+  a prefix of its own (`runner-`, `bench-`, `try-`) and never removes another's.
 - **State is the front's `state.json`, under a lock.** Port blocks, stacks
   and their states. A caller's own lock is taken without waiting before
   its bundle is spooled, so a second request of the same caller is refused

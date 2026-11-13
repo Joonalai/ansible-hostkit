@@ -69,6 +69,19 @@ workbench_git_email: ""
 # repository without one previews on its own dev server, below.
 workbench_repositories: []
 
+# The repositories a person may try from any session with the `try` skill,
+# a pull request or a branch of theirs, apart from every repository's own
+# preview. Per executor instance, local or in executor_remote_instances:
+#
+# workbench_try:
+#   - instance: stacks
+#     repos: [example/app, example/site]
+#
+# Each entry is one caller of that instance, try-<instance>, which does
+# not wait for a place; the skill keeps one try at a time in all. The read
+# token must reach every repository listed, which the play cannot check.
+workbench_try: []
+
 workbench_home: /home/{{ workbench_user }}
 workbench_projects_dir: "{{ workbench_home }}/projects"
 workbench_gate_user: benchgate
