@@ -43,6 +43,15 @@ Volume={{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock:/run/stack.
 {% endif %}
 EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}-stack.env
 {% endif %}
+{% set workbench_try_local = workbench_try | map(attribute='instance')
+                             | reject('in', executor_remote_instances | default([]) | map(attribute='name') | list) | list %}
+{% for instance in workbench_try_local %}
+{% if loop.first %}
+# The instances a person's try runs on, for the try skill in any
+# repository's sessions; its keys are in the read-only config.
+{% endif %}
+Volume={{ workbench_executor_run_dir }}/{{ instance }}/api.sock:/run/stack-try/{{ instance }}.sock
+{% endfor %}
 WorkingDir={{ workbench_projects_dir }}/{{ item.name }}
 # The repository's preview: its sessions serve on one port inside, and the
 # phone opens it over the host's private network; the host's sandbox keeps
@@ -59,6 +68,9 @@ ExecStartPre=/usr/bin/test -S /run/workbench-gate/{{ item.name }}.sock
 {% if item.executor | default('') and item.executor not in (executor_remote_instances | default([]) | map(attribute='name')) %}
 ExecStartPre=/usr/bin/test -S {{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock
 {% endif %}
+{% for instance in workbench_try_local %}
+ExecStartPre=/usr/bin/test -S {{ workbench_executor_run_dir }}/{{ instance }}/api.sock
+{% endfor %}
 Restart=always
 RestartSec=10
 # Quadlet runs the container in this unit's cgroup, so this bounds the

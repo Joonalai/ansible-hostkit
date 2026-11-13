@@ -138,6 +138,16 @@ runner it shares a preview range with is
   another repository's env file from the home, which is the same account
   and so the same boundary, and reaches only that repository's stack. The
   `preview` skill's executor half applies where `STACK_KEY` is set.
+- **A try is a caller of its own, never a repository's preview.**
+  `workbench_try` registers `try-<instance>` through `callers.yml` with the
+  prefix `try-`, so neither prefix prunes the other's, and its env file
+  is in `~/.config/workbench/try/`, a directory no repository's name can
+  reach. Every container mounts each local try instance's socket at
+  `/run/stack-try/<instance>.sock`, which the env file names. The `try`
+  skill runs `stack` with `env -i` and that file alone, so the
+  container's own `STACK_URL` cannot send a try to the wrong instance,
+  and refuses a fork's pull request, which would run with what the
+  instance gives the repository.
 - **A repository's `instructions:` are a section of the one CLAUDE.md.**
   Every container shares the home and its rules, so a repository's
   instructions from the inventory go in under
@@ -171,8 +181,10 @@ runner it shares a preview range with is
   make the firewall reject its whole rule file and leave the container
   with no network.
 - **What a session can still do is in the threat model**: send out what
-  it can read, and run code in CI with a repository's secrets, since its
-  branches are the repository's own. A new check in the gate should say
+  it can read, run code in CI with a repository's secrets, since its
+  branches are the repository's own, and be told what to do by a pull
+  request it tries or reviews, which only the rules and the `try` skill
+  answer. A new check in the gate should say
   which of those it narrows; none of them is closed by this role alone.
 - **A test container proves everything but GitHub and Remote Control.**
   It has no tokens and no login (`workbench_tokens_required: false`), so it

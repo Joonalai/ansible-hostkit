@@ -232,8 +232,8 @@ executor_remote_instances:
     tls_sha256: <64 hex>            # what the instance's play printed
 ```
 
-A caller's name on the callers' host is its role's, `runner-<slot>` or
-`bench-<name>`; on the instance it is `remote-` and
+A caller's name on the callers' host is its role's, `runner-<slot>`,
+`bench-<name>` or `try-<instance>`; on the instance it is `remote-` and
 anything, which the instance's play removes once it is no longer listed.
 The callers' play prints each one's entry ready to paste, named
 `remote-<host>-<caller>` after its inventory host, so two callers' hosts

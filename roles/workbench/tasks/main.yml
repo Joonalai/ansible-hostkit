@@ -579,6 +579,84 @@
     label: "{{ item.name }}"
   become: true
 
+# A person's tries, apart from every repository's own preview: a caller
+# per instance, try-<instance>, whose env file every container sees in the
+# read-only config, with the instance's socket mounted beside its own.
+- name: Assert every try names its instance once, and its repositories
+  ansible.builtin.assert:
+    that:
+      - item.instance | default('') is match('^[a-z][a-z0-9]{0,15}$')
+      - item.repos | default([]) is not string
+      - item.repos | default([]) | length > 0
+      - item.repos | default([]) | reject('match', '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') | list | length == 0
+      - workbench_try | selectattr('instance', 'defined') | selectattr('instance', 'equalto', item.instance) | list | length == 1
+    fail_msg: >-
+      {{ item }}: a try wants an executor instance's name, once in
+      workbench_try, and its repos, a list of owner/name.
+    quiet: true
+  loop: "{{ workbench_try }}"
+  loop_control:
+    label: "{{ item.instance | default(item) }}"
+
+- name: Make the directory of the tries' environments
+  ansible.builtin.file:
+    path: "{{ workbench_home }}/.config/workbench/try"
+    state: directory
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0700"
+  become: true
+
+- name: Register the tries with their executors
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.executor
+    tasks_from: callers
+  vars:
+    executor_callers_prefix: try-
+    executor_callers: >-
+      {%- set callers = [] -%}
+      {%- for entry in workbench_try -%}
+      {%- set _ = callers.append({'instance': entry.instance, 'name': 'try-' ~ entry.instance,
+                                  'uid': workbench_uid, 'repos': entry.repos, 'waits': false,
+                                  'env_file': workbench_home ~ '/.config/workbench/try/' ~ entry.instance ~ '.env',
+                                  'env_owner': workbench_user, 'env_group': workbench_user, 'env_mode': '0600',
+                                  'local_host': workbench_executor_local_host,
+                                  'socket': '/run/stack-try/' ~ entry.instance ~ '.sock'}) -%}
+      {%- endfor -%}
+      {{- callers -}}
+
+- name: Write the tries for the try skill
+  ansible.builtin.copy:
+    content: >-
+      {%- set tries = [] -%}
+      {%- for entry in workbench_try -%}
+      {%- set _ = tries.append({'instance': entry.instance, 'repos': entry.repos,
+                                'env': workbench_home ~ '/.config/workbench/try/' ~ entry.instance ~ '.env'}) -%}
+      {%- endfor -%}
+      {{- tries | to_nice_json -}}
+    dest: "{{ workbench_home }}/.config/workbench/try.json"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+  become: true
+
+- name: Find the tries' environments
+  ansible.builtin.find:
+    paths: "{{ workbench_home }}/.config/workbench/try"
+    patterns: "*.env"
+  register: workbench_try_envs
+  become: true
+
+- name: Remove the environments of the tries no longer listed
+  when: (item.path | basename | regex_replace('\.env$', '')) not in (workbench_try | map(attribute='instance') | list)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ workbench_try_envs.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+
 - name: Install each repository's container
   ansible.builtin.template:
     src: workbench.container.j2

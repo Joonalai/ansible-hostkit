@@ -149,3 +149,8 @@
           - name: lib
             repo: example/lib
             executor: far
+        workbench_try:
+          - instance: stacks
+            repos: [example/smoke, example/app]
+          - instance: far
+            repos: [example/lib]

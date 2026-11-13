@@ -133,6 +133,10 @@ The role also needs:
 
 What a session can still do: send out what it can read, and run code in CI
 with a repository's secrets, since its branches are the repository's own.
+And read what it did not write: a pull request it tries or reviews may
+hold text aimed at it, while it holds the gate that pushes its own
+repositories. The rules and the `try` skill tell it to take such text as
+data; no check enforces that.
 
 ## Variables
 
@@ -169,6 +173,25 @@ with `stack up`, as the `preview` skill says, on ports of its own. A person
 drives the sessions, so an up with no room is refused at once. The
 executor's play must come before the workbench's.
 
+A person can try a pull request, or a branch, of any repository in
+`workbench_try`, from any session, with the `try` skill: it clones the
+repository with the read token into `~/try/`, checks the PR's head out
+and brings it up on the instance, apart from every repository's own
+preview. Only a repository's own branches; a fork's pull request is not
+tried.
+
+```yaml
+workbench_try:
+  - instance: stacks                   # an executor instance, local or remote
+    repos: [example/app, example/site] # the read token must reach them
+```
+
+Each entry is a caller of its instance, `try-<instance>`, which does not
+wait for a place and holds it until `down` or the instance's
+`idle_hours`; the skill keeps one try at a time in all. Every container
+mounts each local instance's socket for it, and sees the try's key in the
+read-only config, as a session sees every repository's in the home.
+
 The most used of the optional ones:
 
 | Variable                         | Default                   | What it is                                                   |
@@ -177,6 +200,7 @@ The most used of the optional ones:
 | `workbench_gate_user`            | `benchgate`               | The account that holds the write token                       |
 | `workbench_memory_max`           | `2G`                      | Memory of everything `bench` runs                            |
 | `workbench_cpu_weight`           | none                      | Its share of the CPU against the other accounts, 1 to 10000  |
+| `workbench_try`                  | none                      | The repositories a person may try, per executor instance     |
 | `workbench_container_memory_max` | `1536M`                   | Memory of one repository's container                         |
 | `workbench_capacity`             | `3`                       | Sessions at once per repository                              |
 | `workbench_workflow_token`       | none                      | The token for pushes that touch a workflow                   |

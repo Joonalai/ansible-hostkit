@@ -18,6 +18,7 @@
 #           env_group: coder
 #           env_mode: "0640"
 #           local_host: host.containers.internal
+#           socket: /run/stack.sock     # optional, where the unit mounts api.sock
 #
 # Each caller gets a key, made on the host and kept by root, and an env
 # file with the key and what `stack` needs, for the caller's unit to hand
@@ -161,7 +162,7 @@
       STACK_URL={{ remote.url }}
       STACK_TLS_SHA256={{ remote.tls_sha256 | replace(':', '') | lower }}
       {% else %}
-      STACK_SOCKET=/run/stack.sock
+      STACK_SOCKET={{ item.0.socket | default('/run/stack.sock') }}
       STACK_LOCAL_HOST={{ item.0.local_host | default('') }}
       {% endif %}
     dest: "{{ item.0.env_file }}"
