@@ -140,6 +140,39 @@ def test_a_caller_may_bring_up_only_its_repositories(tmp_path: Path) -> None:
     assert agent.calls == []
 
 
+def test_a_refused_request_is_logged_with_its_caller_and_message(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register(tmp_path, "runner-app-1")
+    front, _, _ = make_front(tmp_path)
+    conn = io.BytesIO(json.dumps({"key": KEY, "action": "up", "repo": "example/other", "bundle_size": 3}).encode() + b"\nabc")
+
+    serve(front, conn)
+
+    assert capsys.readouterr().err == 'up for runner-app-1: exit 1: "refused: runner-app-1 may bring up example/app, not example/other"\n'
+
+
+def test_a_key_no_caller_has_is_logged_by_its_uid_never_the_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register(tmp_path, "runner-app-1")
+    front, _, _ = make_front(tmp_path)
+
+    serve(front, request("list", key="guess"), uid=2002)
+
+    logged = capsys.readouterr().err
+    assert logged == 'list for uid 2002: exit 1: "refused: the key is no caller\'s"\n'
+    assert "guess" not in logged
+
+
+def test_a_failed_up_is_logged_and_a_good_one_is_not(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register(tmp_path, "runner-app-1")
+    agent = Agent()
+    front, _, _ = make_front(tmp_path, agent)
+
+    serve(front, request("up", body=b"B"))
+    agent.up_exit = 1
+    serve(front, request("up", body=b"B"))
+
+    assert capsys.readouterr().err == 'up for runner-app-1: exit 1: ""\n'
+
+
 def test_a_request_that_is_not_json_is_refused(tmp_path: Path) -> None:
     front, _, _ = make_front(tmp_path)
 
@@ -453,16 +486,18 @@ def test_the_page_stops_and_starts_a_stack(tmp_path: Path) -> None:
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
 
 
-def test_the_page_starts_a_failed_stack_again(tmp_path: Path) -> None:
+def test_the_page_starts_a_failed_stack_again_and_logs_a_start_that_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     register(tmp_path, "runner-app-1")
     agent = Agent()
     agent.up_exit = 1
     front, _, _ = make_front(tmp_path, agent)
     serve(front, request("up", body=b"B"))
+    capsys.readouterr()
     agent.start_exit = 1
 
     assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (500, "a service did not run")
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "failed"
+    assert capsys.readouterr().err == 'page start for runner-app-1: exit 500: "a service did not run"\n'
     agent.start_exit = 0
     assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (200, "Started.")
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"

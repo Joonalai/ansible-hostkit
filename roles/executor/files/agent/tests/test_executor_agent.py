@@ -464,6 +464,18 @@ def test_the_tree_has_gits_usual_modes_whatever_the_agents_umask(tmp_path: Path)
     assert os.umask(0o077) == 0o077
 
 
+def test_a_refusal_is_logged_with_its_caller_action_and_message(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    serve(make_config(tmp_path), Fake(), up_request(b"x" * 10)[:-5])
+
+    assert capsys.readouterr().err == 'up for r-1: "the bundle ended early"\n'
+
+
+def test_a_request_out_of_shape_is_logged_without_its_fields(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    serve(make_config(tmp_path), Fake(), json.dumps({"action": "../x", "caller": "Not A Caller"}).encode() + b"\n")
+
+    assert capsys.readouterr().err.startswith('- for -: "the request wants an action of ')
+
+
 def test_past_the_disk_cap_unused_images_go_and_then_it_refuses(tmp_path: Path) -> None:
     (tmp_path / "storage").mkdir()
     checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})

@@ -230,6 +230,14 @@ systemctl list-units 'executor-stacks-*'
 sudo -iu stacks-exec podman ps
 ```
 
+A caller's request that the instance refuses or that fails, and a stop or
+start from the phone page that does, leaves a line in the journal, with
+the caller, the action and what the caller was told:
+
+```sh
+journalctl -u 'executor-stacks-front@*'
+```
+
 A person can be a caller too, with the `stack` command from
 `tasks_from: client` and a registration from `tasks_from: callers`, as
 `dev/smoke.yml` does in the dev container.
