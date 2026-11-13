@@ -24,11 +24,34 @@
 # its container. The instance keeps only the key's SHA-256. A caller of
 # the prefix that is no longer listed loses its registration and its key,
 # on every instance of the host, and the reaper takes its stack.
+#
+# An instance in executor_remote_instances is on another host: its
+# callers' keys are made and kept here all the same, and the play prints
+# each one's SHA-256 for the instance's inventory (remote_callers). The
+# key never leaves this host.
+
+- name: Name the remote instances the callers may use
+  ansible.builtin.set_fact:
+    executor_remote_names: "{{ executor_remote_instances | map(attribute='name') | list }}"
+
+- name: Assert every remote instance has a URL and a certificate to pin
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') is match('^[a-z][a-z0-9]{0,15}$')
+      - item.url | default('') is match('^tls://[A-Za-z0-9.:\\[\\]-]+:[0-9]+$')
+      - item.tls_sha256 | default('') | replace(':', '') | lower is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      A remote instance is a name, its url, tls://host:port, and tls_sha256,
+      the SHA-256 its own play printed.
+    quiet: true
+  loop: "{{ executor_remote_instances }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
 
 - name: Look for the instances the callers name
   ansible.builtin.stat:
     path: "{{ executor_config_dir }}/{{ item }}/instance.json"
-  loop: "{{ executor_callers | map(attribute='instance') | unique }}"
+  loop: "{{ executor_callers | map(attribute='instance') | unique | reject('in', executor_remote_names) | list }}"
   register: executor_callers_instances
   become: true
 
@@ -46,7 +69,7 @@
     fail_msg: >-
       A repository names the executor instance {{ item.item }}, which is not
       on this host: list it in executor_instances and run the executor role
-      before this one. A remote instance is not supported yet.
+      before this one, or, on another host, in executor_remote_instances.
     quiet: true
   loop: "{{ executor_callers_instances.results }}"
   loop_control:
@@ -64,6 +87,18 @@
   loop_control:
     label: "{{ item.name }}"
 
+# A remote instance's keys are kept apart from any local one's, by a
+# name no instance can have.
+- name: Make the key directories of the remote instances
+  ansible.builtin.file:
+    path: "{{ executor_config_dir }}/remote-instances/{{ item }}/keys"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ executor_callers | map(attribute='instance') | select('in', executor_remote_names) | unique | list }}"
+  become: true
+
 # Made once, kept: a caller's key changes only when it is removed.
 - name: Make each caller's key
   ansible.builtin.command:
@@ -75,8 +110,8 @@
         fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.write(fd, secrets.token_urlsafe(32).encode())
         os.close(fd)
-      - "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
-    creates: "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
+      - "{{ executor_config_dir }}/{{ ('remote-instances/' if item.instance in executor_remote_names else '') ~ item.instance }}/keys/{{ item.name }}"
+    creates: "{{ executor_config_dir }}/{{ ('remote-instances/' if item.instance in executor_remote_names else '') ~ item.instance }}/keys/{{ item.name }}"
   loop: "{{ executor_callers }}"
   loop_control:
     label: "{{ item.instance }}/{{ item.name }}"
@@ -85,7 +120,7 @@
 - name: Read the callers' keys
   when: not ansible_check_mode
   ansible.builtin.slurp:
-    src: "{{ executor_config_dir }}/{{ item.instance }}/keys/{{ item.name }}"
+    src: "{{ executor_config_dir }}/{{ ('remote-instances/' if item.instance in executor_remote_names else '') ~ item.instance }}/keys/{{ item.name }}"
   loop: "{{ executor_callers }}"
   loop_control:
     label: "{{ item.instance }}/{{ item.name }}"
@@ -94,7 +129,9 @@
   become: true
 
 - name: Register each caller with its instance
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - item.0.instance not in executor_remote_names
   ansible.builtin.copy:
     content: >-
       {{ {'key_sha256': item.1.content | b64decode | hash('sha256'),
@@ -118,9 +155,15 @@
   ansible.builtin.copy:
     content: |
       STACK_KEY={{ item.1.content | b64decode }}
-      STACK_SOCKET=/run/stack.sock
       STACK_REPO={{ item.0.repos | first }}
+      {% if item.0.instance in executor_remote_names %}
+      {% set remote = executor_remote_instances | selectattr('name', 'equalto', item.0.instance) | first %}
+      STACK_URL={{ remote.url }}
+      STACK_TLS_SHA256={{ remote.tls_sha256 | replace(':', '') | lower }}
+      {% else %}
+      STACK_SOCKET=/run/stack.sock
       STACK_LOCAL_HOST={{ item.0.local_host | default('') }}
+      {% endif %}
     dest: "{{ item.0.env_file }}"
     owner: "{{ item.0.env_owner | default('root') }}"
     group: "{{ item.0.env_group | default('root') }}"
@@ -130,6 +173,40 @@
     label: "{{ item.0.env_file }}"
   no_log: true
   become: true
+
+# Public, for the instance's inventory: its remote_callers entries, as
+# they are pasted there. The name is the instance's, remote- with this
+# host's and the caller's, so two callers' hosts never collide on one
+# instance; only `from` is left to add, which this host cannot know.
+- name: Find what each remote instance needs of its callers
+  when: not ansible_check_mode
+  vars:
+    executor_remote_host: "{{ inventory_hostname_short | lower | regex_replace('[^a-z0-9-]', '-') | truncate(16, true, '') }}"
+  ansible.builtin.set_fact:
+    executor_remote_registrations: >-
+      {%- set found = {} -%}
+      {%- for caller, key in executor_callers | zip(executor_callers_keys.results | default([])) -%}
+      {%-   if caller.instance in executor_remote_names -%}
+      {%-     set _ = found.setdefault(caller.instance, []).append({
+                'name': ('remote-' ~ executor_remote_host ~ '-' ~ caller.name)[:63],
+                'key_sha256': key.content | b64decode | hash('sha256'),
+                'repos': caller.repos,
+                'waits': caller.waits | default(false) | bool}) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{- found -}}
+  no_log: true
+
+- name: Say what each remote instance's remote_callers want
+  when:
+    - not ansible_check_mode
+    - executor_remote_registrations | length > 0
+  ansible.builtin.debug:
+    msg:
+      paste: >-
+        Add each instance's entries to its remote_callers on its host, each
+        with `from`, the addresses this host connects from.
+      remote_callers: "{{ executor_remote_registrations }}"
 
 # A host with no executor has nothing to prune, and no directory to look in.
 - name: Look for the instances' configuration

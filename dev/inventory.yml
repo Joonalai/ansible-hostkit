@@ -7,6 +7,14 @@ all:
       ansible_connection: containers.podman.podman
       ansible_host: hostkit-dev
       ansible_python_interpreter: /usr/bin/python3
+  children:
+    # The remote caller of dev/smoke.yml, which site.yml leaves alone.
+    callers:
+      hosts:
+        hostkit-caller:
+          ansible_connection: containers.podman.podman
+          ansible_host: hostkit-caller
+          ansible_python_interpreter: /usr/bin/python3
   vars:
     is_container_environment: true
     # Stands in for the host's own hardening (site.yml): it fences nothing,
@@ -27,3 +35,7 @@ all:
     # The executor's secret for the smoke stack, a made-up value the smoke
     # test looks for where it must not be.
     dev_smoke_secret: smoke-secret-for-the-dev-container
+    # The remote caller's key and another's, made up: the instance holds
+    # their hashes, the caller container sends them.
+    dev_remote_key: remote-key-for-the-dev-container
+    dev_remote_other_key: other-remote-key-for-the-dev-container

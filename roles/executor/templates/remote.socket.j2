@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The TLS port of the executor instance {{ executor_instance.name }}, for its remote callers
+
+[Socket]
+# Every address: the host's firewall decides who reaches it, and each
+# remote caller's key is taken only from the networks it is registered
+# with.
+ListenStream={{ executor_instance.ports_start }}
+Accept=yes
+MaxConnections=16
+MaxConnectionsPerSource=4
+
+[Install]
+WantedBy=sockets.target

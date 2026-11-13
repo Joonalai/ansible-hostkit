@@ -9,7 +9,7 @@
 # else shows: not the up's output, its logs, the journal or its image.
 
 - name: Bring a stack up and down on the executor
-  hosts: all
+  hosts: hostkit-dev
   vars:
     dev_smoke_repo: /root/smoke
     dev_smoke_env: /root/smoke.env
@@ -426,3 +426,113 @@
         executable: /bin/bash
       changed_when: true
       become: true
+
+# A caller on another host, over TLS: it pins the instance's certificate,
+# brings the same repository up as remote-smoke, reads the page from its
+# side, runs the suite and takes it down. Refused: a wrong pin, which sends
+# nothing; a key registered from another address; and a request that
+# stalls, which the front cuts off.
+- name: Bring a stack up and down from a remote caller
+  hosts: hostkit-caller
+  vars:
+    dev_remote_dir: /root/smoke
+    dev_remote_env: >-
+      STACK_URL=tls://hostkit-dev:9300 STACK_TLS_SHA256={{ dev_remote_sha256 }}
+      STACK_REPO=example/smoke STACK_KEY={{ dev_remote_key }}
+    dev_remote_sha256: >-
+      {{ dev_remote_fingerprint.stdout.split('=')[-1] | replace(':', '') | lower }}
+  pre_tasks:
+    - name: Read the instance's certificate
+      delegate_to: hostkit-dev
+      ansible.builtin.command:
+        argv: [openssl, x509, -noout, -fingerprint, -sha256, -in, /etc/hostkit-executor/stacks/tls.crt]
+      register: dev_remote_fingerprint
+      changed_when: false
+      become: true
+  tasks:
+    - name: Install git, which stack bundles with
+      ansible.builtin.apt:
+        name: git
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Copy the stack client and the repository from the instance's host
+      ansible.builtin.shell:
+        cmd: |
+          set -eu -o pipefail
+          podman exec hostkit-caller rm -r -f -- /root/smoke
+          podman exec hostkit-dev tar -C /root -c smoke | podman exec -i hostkit-caller tar -C /root -x
+          install='cat > /usr/local/bin/stack && chmod 0755 /usr/local/bin/stack'
+          podman exec hostkit-dev cat /usr/local/bin/stack | podman exec -i hostkit-caller sh -c "$install"
+        executable: /bin/bash
+      delegate_to: localhost
+      changed_when: true
+
+    - name: Bring the stack up from the remote caller
+      ansible.builtin.shell:
+        cmd: env {{ dev_remote_env }} stack up --json
+        chdir: "{{ dev_remote_dir }}"
+        executable: /bin/bash
+      register: dev_remote_up
+      changed_when: true
+      failed_when: dev_remote_up.rc != 0
+
+    - name: Ask the page from the remote caller's side
+      ansible.builtin.uri:
+        url: "http://hostkit-dev:{{ ((dev_remote_up.stdout | from_json).page | urlsplit('port')) }}/"
+        return_content: true
+      register: dev_remote_page
+      retries: 10
+      delay: 2
+      until: dev_remote_page.status == 200
+      failed_when: "'hostkit smoke' not in dev_remote_page.content"
+
+    - name: Run the suite and take the stack down from the remote caller
+      ansible.builtin.shell:
+        cmd: env {{ dev_remote_env }} stack {{ item }}
+        chdir: "{{ dev_remote_dir }}"
+        executable: /bin/bash
+      loop: [run check, down]
+      register: dev_remote_calls
+      changed_when: item == 'down'
+      failed_when: dev_remote_calls.rc != 0
+
+    - name: Fail to reach the instance with another certificate pinned
+      ansible.builtin.shell:
+        cmd: env {{ dev_remote_env | replace(dev_remote_sha256, '0' * 64) }} stack list
+        executable: /bin/bash
+      register: dev_remote_wrong_pin
+      changed_when: false
+      failed_when: dev_remote_wrong_pin.rc == 0 or 'nothing was sent' not in dev_remote_wrong_pin.stderr
+
+    - name: Fail to use a key registered from another address
+      ansible.builtin.shell:
+        cmd: env {{ dev_remote_env | replace(dev_remote_key, dev_remote_other_key) }} stack list
+        executable: /bin/bash
+      register: dev_remote_elsewhere
+      changed_when: false
+      failed_when: dev_remote_elsewhere.rc == 0 or '192.0.2.20 may not use this key' not in dev_remote_elsewhere.stderr
+
+    # The front waits a minute for each read, then cuts the connection.
+    - name: Stall a request, which the front cuts off
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, socket, ssl, sys, time
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            header = {"key": sys.argv[1], "action": "up", "repo": "example/smoke", "bundle_size": 1000}
+            with context.wrap_socket(socket.create_connection(("hostkit-dev", 9300))) as conn:
+                conn.sendall(json.dumps(header).encode() + b"\n")
+                conn.settimeout(90)
+                started = time.monotonic()
+                answer = conn.recv(65536)
+                print(round(time.monotonic() - started), answer.decode(errors="replace"))
+          - "{{ dev_remote_key }}"
+      register: dev_remote_stalled
+      changed_when: false
+      failed_when: dev_remote_stalled.rc != 0 or 'timed out' not in dev_remote_stalled.stdout

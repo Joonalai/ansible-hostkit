@@ -31,6 +31,13 @@
 #           profiles:
 #             seed:
 #               compose: [compose.yaml, compose.seed.yaml]
+#       remote: true                # optional, callers on other hosts, on ports_start
+#       remote_callers:             # registered by the hash their own host printed
+#         - name: remote-app-1      # starts remote-
+#           key_sha256: <64 hex>
+#           repos: [example/app]
+#           waits: true
+#           from: [192.0.2.0/24]    # the addresses it connects from
 #       secrets:                    # optional, values a profile's {secret:<name>} asks for
 #         values:
 #           model_key: "{{ vault_stacks_model_key }}"
@@ -83,10 +90,31 @@ executor_instance_defaults:
   secrets:
     values: {}
     repositories: {}
+  # Callers on other hosts, over TLS on ports_start. Off, nothing listens
+  # there. The host's firewall decides who reaches the port; each caller's
+  # `from` is the second check. See docs/executor.md, "A remote instance".
+  remote: false
+  remote_callers: []
+  # The TLS port's certificate and key, paths on the host the front's
+  # account can read; empty, the play makes a self-signed pair of ten
+  # years and prints its SHA-256 for the callers to pin.
+  tls_cert: ""
+  tls_key: ""
+
+# The remote instances this host's callers use, for the client roles
+# (callers.yml), each with its URL and its certificate's SHA-256, which the
+# instance's play printed:
+#
+#   executor_remote_instances:
+#     - name: stacks
+#       url: tls://stacks.example.ts.net:9200
+#       tls_sha256: <64 hex>
+executor_remote_instances: []
 
 # Host packages beyond podman, which rootless_account installs with the
-# account: git for the bundles, docker-compose for the stacks.
-executor_packages: [git, python3, docker-compose]
+# account: git for the bundles, docker-compose for the stacks, openssl for
+# a remote instance's certificate.
+executor_packages: [git, python3, docker-compose, openssl]
 
 executor_front_bin: /usr/local/libexec/executor-front
 executor_agent_bin: /usr/local/libexec/executor-agent

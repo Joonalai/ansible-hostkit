@@ -28,6 +28,28 @@ services:
       # The accounts' homes, where their images and layers are, kept until
       # `make dev-clean` so that a fresh container need not rebuild them.
       - hostkit-dev-home:/home
+    networks:
+      dev:
+        ipv4_address: 192.0.2.10
+
+  # Another host, for the executor's remote callers (dev/smoke.yml): the
+  # same image without systemd, and only the `stack` client in it.
+  caller:
+    image: localhost/hostkit-dev:latest
+    container_name: hostkit-caller
+    hostname: hostkit-caller
+    depends_on: [host]
+    entrypoint: ["sleep", "infinity"]
+    networks:
+      dev:
+        ipv4_address: 192.0.2.20
+
+# Documentation addresses, so the remote callers' `from` can name them.
+networks:
+  dev:
+    ipam:
+      config:
+        - subnet: 192.0.2.0/24
 
 volumes:
   hostkit-dev-home:

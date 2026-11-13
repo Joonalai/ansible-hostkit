@@ -8,6 +8,7 @@ its bundle, unread, to the agent, the exec account's side, which builds and
 runs the stacks. Four ways in, the same script:
 
     executor-front serve <instance.json>   one connection on the API socket
+    executor-front serve-tls <instance.json>   one connection on the TLS port, a remote caller's
     executor-front page <instance.json>    the phone page, on its port
     executor-front reap <instance.json>    the timer: stop idle stacks, remove old ones
     executor-front check <instance.json>   the play's: can the front reach the agent
@@ -25,7 +26,9 @@ and gets lines of JSON back: {"out": "..."} as the work goes, then one
 {"exit": <status>, ...}. The caller is the key's, never the request's: a
 key is checked against the caller files the play writes, each with the
 key's SHA-256, the uid that may present it, and the repositories it may
-bring up. A caller has one stack, on a block of the instance's ports that
+bring up. A remote caller's file names the networks it connects from
+instead of a uid, and its key is taken only on the TLS port, from them; a
+local caller's only on the socket. A caller has one stack, on a block of the instance's ports that
 is its own for as long as it is a caller.
 
 At the limit, max_stacks running, an up evicts the running stack used
@@ -43,10 +46,12 @@ import contextlib
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 import struct
 import sys
 import threading
@@ -70,6 +75,9 @@ ACTIONS = ("up", "run", "logs", "down", "list")
 PAGE_PATH_PARTS = 3
 # Longer than any up runs, the front's unit's RuntimeMaxSec.
 STARTING_MAX_S = 2 * 3600
+# How long a remote caller may leave a read waiting: the request's line,
+# and each part of its bundle.
+REMOTE_TIMEOUT_S = 60
 
 # What the agent answers, one event at a time; the last has "exit".
 Events = Iterator[dict[str, Any]]
@@ -95,6 +103,9 @@ class Caller:
     uid: int | None
     repos: tuple[str, ...]
     waits: bool
+    # A remote caller's networks, which its key is taken from on the TLS
+    # port alone; none for a local caller.
+    sources: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
 
 
 @dataclass
@@ -153,19 +164,51 @@ class Instance:
                     uid=None if raw.get("uid") in (None, "") else int(raw["uid"]),
                     repos=tuple(raw.get("repos") or ()),
                     waits=bool(raw.get("waits")),
+                    sources=sources_of(raw),
                 )
             except (OSError, ValueError, KeyError, TypeError) as error:
                 print(f"Skipping the caller file {entry}: {error}", file=sys.stderr)
         return found
 
 
-def authenticate(instance: Instance, key: object, uid: int | None) -> Caller:
-    """The caller whose key this is, presented by a uid it allows."""
+def sources_of(raw: dict[str, Any]) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """A remote caller's networks; a file that has `from` but names none is
+    refused, never taken for a local caller's that any uid may use.
+    """
+    if "from" not in raw:
+        return ()
+    sources = tuple(ipaddress.ip_network(str(source), strict=False) for source in raw["from"] or ())
+    if not sources:
+        raise ValueError("a remote caller's `from` names no network")
+    return sources
+
+
+def peer_address(address: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """A peer's address, an IPv4 one as itself when it came mapped into IPv6."""
+    found = ipaddress.ip_address(address.partition("%")[0])
+    if isinstance(found, ipaddress.IPv6Address) and found.ipv4_mapped is not None:
+        return found.ipv4_mapped
+    return found
+
+
+def authenticate(instance: Instance, key: object, uid: int | None, address: str | None = None) -> Caller:
+    """The caller whose key this is, presented the way it may be: a local
+    caller's on the socket, by a uid it allows; a remote caller's on the
+    TLS port, from address, in one of its networks.
+    """
     if not isinstance(key, str) or not key:
         raise RefusedError("refused: no key")
     digest = hashlib.sha256(key.encode()).hexdigest()
     for caller in instance.callers().values():
         if hmac.compare_digest(digest, caller.key_sha256):
+            if caller.sources:
+                if address is None:
+                    raise RefusedError("refused: a remote caller's key is for the instance's TLS port")
+                if not any(peer_address(address) in network for network in caller.sources):
+                    raise RefusedError(f"refused: {address} may not use this key")
+                return caller
+            if address is not None:
+                raise RefusedError("refused: a local caller's key is for the instance's socket")
             if caller.uid is not None and uid != caller.uid:
                 raise RefusedError(f"refused: uid {uid} may not use this key")
             return caller
@@ -553,30 +596,65 @@ def spool_bundle(instance: Instance, conn: IO[bytes], size: object) -> str:
     spool = os.path.join(instance["state_dir"], "spool")
     os.makedirs(spool, mode=0o700, exist_ok=True)
     path = os.path.join(spool, f"{os.getpid()}.bundle")
-    remaining = size
-    with open(path, "wb") as bundle:
-        while remaining:
-            chunk = conn.read(min(CHUNK, remaining))
-            if not chunk:
-                os.unlink(path)
-                raise RefusedError("refused: the bundle ended early")
-            bundle.write(chunk)
-            remaining -= len(chunk)
+    try:
+        with open(path, "wb") as bundle:
+            copy_exactly(conn, bundle, size)
+    except BaseException:
+        # Ended early, or a remote caller's read timed out: nothing is left.
+        os.unlink(path)
+        raise
     return path
 
 
-def answer(out: IO[bytes], event: dict[str, Any]) -> None:
-    """One line of the answer, flushed so the caller sees it as it comes."""
-    with contextlib.suppress(BrokenPipeError):
+def copy_exactly(conn: IO[bytes], bundle: IO[bytes], size: int) -> None:
+    """Copy exactly size bytes from conn into bundle, refused when conn ends first."""
+    remaining = size
+    while remaining:
+        chunk = conn.read(min(CHUNK, remaining))
+        if not chunk:
+            raise RefusedError("refused: the bundle ended early")
+        bundle.write(chunk)
+        remaining -= len(chunk)
+
+
+def answer(out: IO[bytes], event: dict[str, Any]) -> bool:
+    """One line of the answer, flushed so the caller sees it as it comes;
+    False when the caller is gone: a closed pipe, a TLS connection reset or
+    a remote caller that stopped reading.
+    """
+    try:
         out.write(json.dumps(event).encode() + b"\n")
         out.flush()
+    except OSError:
+        return False
+    return True
 
 
-def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None) -> int:
-    """Read one request, carry it out and answer it; returns its status."""
+class Reply:
+    """The answer's lines, until the caller is gone: after a write that
+    fails nothing more is written, and the request goes on, so the agent
+    is never left mid-up and a remote caller that stopped reading costs no
+    timeout per line.
+    """
+
+    def __init__(self, out: IO[bytes]) -> None:
+        """Answer on out."""
+        self.out = out
+        self.gone = False
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        """One line of the answer, if the caller is still there."""
+        self.gone = self.gone or not answer(self.out, event)
+
+
+def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, address: str | None = None) -> int:
+    """Read one request, carry it out and answer it; returns its status.
+    uid is a local peer's, address a remote one's.
+    """
+    reply = Reply(out)
 
     def say(text: str) -> None:
-        answer(out, {"out": text})
+        reply({"out": text})
 
     bundle = None
     result: dict[str, Any]
@@ -585,7 +663,7 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None) -> int
     try:
         request = read_header(conn)
         action = request.get("action")
-        caller = authenticate(front.instance, request.get("key"), uid)
+        caller = authenticate(front.instance, request.get("key"), uid, address)
         if action not in ACTIONS:
             result = {"exit": 1, "message": f"refused: the action is one of {', '.join(ACTIONS)}"}
         elif action == "list":
@@ -609,20 +687,53 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None) -> int
     finally:
         if bundle is not None and os.path.exists(bundle):
             os.unlink(bundle)
-    answer(out, result)
-    log_failure(caller, action, uid, result)
+    reply(result)
+    log_failure(caller, action, address or f"uid {uid}", result)
     return int(result["exit"])
 
 
-def log_failure(caller: Caller | None, action: object, uid: int | None, result: dict[str, Any]) -> None:
+def tls_context(instance: Instance) -> ssl.SSLContext:
+    """The TLS port's side: the instance's certificate, TLS 1.2 at least."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(instance["tls_cert"], instance["tls_key"])
+    return context
+
+
+def serve_tls(front: Front, raw: socket.socket, context: ssl.SSLContext, address: str) -> int:
+    """One connection on the TLS port, from address: the handshake and
+    every read bounded by REMOTE_TIMEOUT_S, then served as the socket's.
+    """
+    raw.settimeout(REMOTE_TIMEOUT_S)
+    try:
+        conn = context.wrap_socket(raw, server_side=True)
+    except (ssl.SSLError, OSError) as error:
+        log_line("-", address, 1, f"no TLS: {error}")
+        return 1
+    with conn:
+        with conn.makefile("rb") as reader:
+            writer = conn.makefile("wb")
+            try:
+                status = serve(front, reader, writer, None, address)
+            finally:
+                # What a caller that is gone left unflushed.
+                with contextlib.suppress(OSError):
+                    writer.close()
+        # close_notify, so the caller reads the answer to its end.
+        with contextlib.suppress(OSError):
+            conn.unwrap()
+    return status
+
+
+def log_failure(caller: Caller | None, action: object, peer: str, result: dict[str, Any]) -> None:
     """One line to the journal for a request refused or failed: its caller,
-    or the uid that presented no caller's key, its action, its status and
+    or the uid or address that presented no caller's key, its action, its status and
     what the caller was told, which is all it holds. Nothing for one that
     did what it was asked.
     """
     if result["exit"] == 0:
         return
-    who = caller.name if caller is not None else f"uid {uid}"
+    who = caller.name if caller is not None else peer
     log_line(action if isinstance(action, str) and action in ACTIONS else "-", who, result["exit"], result.get("message", ""))
 
 
@@ -785,8 +896,8 @@ def load_instance(path: str) -> Instance:
 
 def main(argv: list[str]) -> int:
     """Run one of the front's ways in; returns the exit status."""
-    usage = "usage: executor-front serve|page|reap|check <instance.json>"
-    if len(argv) != 2 or argv[0] not in ("serve", "page", "reap", "check"):  # noqa: PLR2004 -- the way in and the config
+    usage = "usage: executor-front serve|serve-tls|page|reap|check <instance.json>"
+    if len(argv) != 2 or argv[0] not in ("serve", "serve-tls", "page", "reap", "check"):  # noqa: PLR2004 -- the way in and the config
         print(usage, file=sys.stderr)
         return 2
     os.umask(0o077)
@@ -796,6 +907,10 @@ def main(argv: list[str]) -> int:
         with socket.fromfd(sys.stdin.fileno(), socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             uid = peer_uid(conn)
         return serve(front, sys.stdin.buffer, sys.stdout.buffer, uid)
+    if argv[0] == "serve-tls":
+        # The family and the peer from the socket systemd accepted.
+        with socket.socket(fileno=os.dup(sys.stdin.fileno())) as raw:
+            return serve_tls(front, raw, tls_context(instance), str(raw.getpeername()[0]))
     if argv[0] == "reap":
         for line in front.reap():
             print(line)

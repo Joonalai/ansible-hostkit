@@ -137,14 +137,79 @@ And for the instance's own ports:
   network, and the page from the callers: a job that reaches it can stop
   another caller's stack. The page answers only when it is asked for by
   `host` and its port, the URL the callers print.
-- **`ports_start` is reserved** for a remote instance's API, which this
-  version does not have: nothing listens there.
+- **`ports_start` is the TLS port** of a remote instance (`remote: true`),
+  and nothing listens there otherwise. Let only the callers' hosts reach
+  it, and their sandboxed accounts. The callers' blocks are theirs to
+  reach as well, for the URLs `stack` prints. The phone page,
+  `ports_start + 1`, stays off the callers' hosts as it stays off a local
+  job: it can stop any caller's stack.
 
 The role also needs:
 
 - **A subordinate range of its own**, which no other account's overlaps.
 - **The callers' roles after it**: a runner's or a workbench's play
   registers its callers with an instance this role has already set up.
+
+## A remote instance
+
+Callers on another host reach an instance over TLS on `ports_start`, with
+the same requests as on the socket. Nothing secret passes between the two
+hosts' inventories, which may be different people's:
+
+- **The instance's certificate is its own.** With `remote: true` and no
+  `tls_cert`, the play makes a self-signed key and certificate of ten
+  years on the instance's host, the key readable by the front's account
+  alone, and prints the certificate's SHA-256. The callers pin that hash,
+  so its name and its age do not matter. To replace it, remove
+  `tls.crt` and `tls.key` from `/etc/hostkit-executor/<name>/`, run the
+  play, and copy the new hash to every callers' host; until then they
+  refuse to connect. `tls_cert` and `tls_key` take your own pair instead,
+  paths on the host the front's account can read.
+- **A caller's key stays on the callers' host.** That host's play makes
+  it, as it does for a local instance, and prints the caller's name and
+  the key's SHA-256. The instance registers the caller by that hash.
+- **The key is taken only from where the caller is.** A remote caller's
+  `from` lists the addresses or networks it connects from, and its key
+  is refused from anywhere else, and on the local socket. A local
+  caller's key is refused on the TLS port. The host's firewall, letting
+  only the callers' hosts reach `ports_start`, is the boundary; `from` is
+  the second check.
+- **A stalled request is cut off.** Each read of a request and of its
+  bundle waits a minute at most, and one host holds at most four
+  connections at once.
+
+So connecting the two takes four public values, copied by hand:
+
+```yaml
+# The instance's host.
+executor_instances:
+  - name: stacks
+    # ...
+    remote: true
+    remote_callers:                 # what the callers' play printed
+      - name: remote-ci-runner-app-1
+        key_sha256: <64 hex>
+        repos: [example/app]
+        waits: true
+        from: [192.0.2.20]          # the one thing to add by hand
+
+# The callers' host: a runner's or a workbench's repository names the
+# instance with `executor: stacks` as it would a local one.
+executor_remote_instances:
+  - name: stacks
+    url: tls://stacks.example.ts.net:9200
+    tls_sha256: <64 hex>            # what the instance's play printed
+```
+
+A caller's name on the callers' host is its role's, `runner-<slot>` or
+`bench-<name>`; on the instance it is `remote-` and
+anything, which the instance's play removes once it is no longer listed.
+The callers' play prints each one's entry ready to paste, named
+`remote-<host>-<caller>` after its inventory host, so two callers' hosts
+never collide on one instance. The `stack` client
+reads `STACK_URL` and `STACK_TLS_SHA256`, or `STACK_TLS_CA` for a
+certificate a CA signed, in place of `STACK_SOCKET`, and checks the
+certificate before it sends a byte.
 
 ## Pausing
 
@@ -272,14 +337,14 @@ can do so that a change rebuilds only what it changed:
 
 Required, per instance, with no usable default:
 
-| Key                 | What it is                                                  |
-| ------------------- | ----------------------------------------------------------- |
-| `name`              | Letters and digits, at most 16: the accounts and the units  |
-| `exec_uid`          | `<name>-exec`'s uid, which the sandbox names                |
-| `exec_subuid_start` | The start of `<name>-exec`'s subordinate ID range           |
-| `sandbox_units`     | The host's units that sandbox `<name>-exec` and its range   |
-| `ports_start`       | Reserved for a remote API, unused yet; the page is the next |
-| `ports_end`         | The last port of the callers' blocks                        |
+| Key                 | What it is                                                 |
+| ------------------- | ---------------------------------------------------------- |
+| `name`              | Letters and digits, at most 16: the accounts and the units |
+| `exec_uid`          | `<name>-exec`'s uid, which the sandbox names               |
+| `exec_subuid_start` | The start of `<name>-exec`'s subordinate ID range          |
+| `sandbox_units`     | The host's units that sandbox `<name>-exec` and its range  |
+| `ports_start`       | A remote instance's TLS port; the page is the next         |
+| `ports_end`         | The last port of the callers' blocks                       |
 
 The most used of the optional ones, per instance:
 
@@ -292,6 +357,8 @@ The most used of the optional ones, per instance:
 | `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded                                        |
 | `cpu_quota`             | none            | CPU time of every stack and build at once                                    |
 | `cpu_weight`            | none            | Their share against the host's other accounts; `20` lets a runner's jobs win |
+| `remote`                | `false`         | The TLS port on `ports_start`, for callers on other hosts                    |
+| `remote_callers`        | none            | Callers on other hosts, by their key's hash and their addresses              |
 | `disk_max_gb`           | `20`            | Images and trees, past which an up refuses                                   |
 | `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped                                       |
 | `queue_timeout_minutes` | `20`            | How long a runner's job waits for room                                       |

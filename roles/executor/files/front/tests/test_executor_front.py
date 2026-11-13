@@ -1,9 +1,14 @@
 import hashlib
 import io
 import json
+import shutil
+import socket
+import ssl
+import subprocess
+import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import executor_front
 import pytest
@@ -278,6 +283,31 @@ def test_secrets_that_do_not_read_refuse_the_up_without_their_contents(tmp_path:
     assert answer == [{"exit": 1, "message": "the instance's secrets do not read: tell its host"}]
     assert agent.calls == []
     assert not (tmp_path / "state" / "state.json").exists()
+
+
+class Gone(io.BytesIO):
+    """A connection whose caller went away: a TLS one reset, every write fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes = 0
+
+    @override
+    def write(self, data: object) -> int:
+        self.writes += 1
+        raise ConnectionResetError("reset by peer")
+
+
+def test_an_up_whose_caller_is_gone_still_reads_the_agent_to_its_end(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    out = Gone()
+
+    assert executor_front.serve(front, request("up", body=b"BUNDLE"), out, 2001) == 0
+
+    assert agent.actions() == [("up", "runner-app-1")]
+    assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
+    assert out.writes == 1
 
 
 def test_a_callers_ports_stay_its_own_across_ups_and_downs(tmp_path: Path) -> None:
@@ -621,3 +651,167 @@ def test_a_page_request_by_another_name_gets_nothing(tmp_path: Path) -> None:
     assert executor_front.page_request(front, "POST", stop, {"host": "evil.example.com:9301", "x-executor": "1"})[0] == 421
     assert executor_front.page_request(front, "GET", "/", {"host": "stacks.example.ts.net:9301"})[0] == 200
     assert executor_front.page_request(front, "POST", stop, {"host": "stacks.example.ts.net:9301"})[0] == 403
+
+
+# ---------------------------------------------------------------------
+# A remote caller, on the TLS port
+# ---------------------------------------------------------------------
+
+REMOTE_KEY = "a-key-of-the-remote-host"
+
+
+def register_remote(tmp_path: Path, name: str = "remote-app", sources: list[str] | None = None) -> None:
+    callers = tmp_path / "callers"
+    callers.mkdir(exist_ok=True)
+    caller = {
+        "key_sha256": hashlib.sha256(REMOTE_KEY.encode()).hexdigest(),
+        "repos": ["example/app"],
+        "waits": True,
+        "from": sources if sources is not None else ["192.0.2.0/24", "2001:db8::/32"],
+    }
+    (callers / f"{name}.json").write_text(json.dumps(caller))
+
+
+@pytest.mark.parametrize("address", ["192.0.2.7", "::ffff:192.0.2.7", "2001:db8::5"])
+def test_a_remote_caller_is_taken_from_its_networks(tmp_path: Path, address: str) -> None:
+    register_remote(tmp_path)
+    front, _, _ = make_front(tmp_path)
+
+    assert executor_front.authenticate(front.instance, REMOTE_KEY, None, address).name == "remote-app"
+
+
+def test_a_remote_caller_from_elsewhere_is_refused(tmp_path: Path) -> None:
+    register_remote(tmp_path)
+    front, _, _ = make_front(tmp_path)
+
+    with pytest.raises(executor_front.RefusedError, match=r"198\.51\.100\.9 may not use this key"):
+        executor_front.authenticate(front.instance, REMOTE_KEY, None, "198.51.100.9")
+
+
+def test_a_remote_callers_key_is_refused_on_the_socket(tmp_path: Path) -> None:
+    register_remote(tmp_path)
+    front, agent, _ = make_front(tmp_path)
+
+    answer = serve(front, request("list", key=REMOTE_KEY), uid=2001)
+
+    assert answer == [{"exit": 1, "message": "refused: a remote caller's key is for the instance's TLS port"}]
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("uid", [2001, None])
+def test_a_local_callers_key_is_refused_on_the_tls_port(tmp_path: Path, uid: int | None) -> None:
+    register(tmp_path, "runner-app-1", uid=uid)
+    front, _, _ = make_front(tmp_path)
+
+    with pytest.raises(executor_front.RefusedError, match="a local caller's key is for the instance's socket"):
+        executor_front.authenticate(front.instance, KEY, None, "192.0.2.7")
+
+
+def test_a_remote_caller_with_a_network_that_is_none_is_not_a_caller(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register_remote(tmp_path, sources=["192.0.2.0/24", "not a network"])
+    front, _, _ = make_front(tmp_path)
+
+    assert "remote-app" not in front.instance.callers()
+    assert "Skipping the caller file remote-app.json" in capsys.readouterr().err
+
+
+def test_a_remote_caller_with_no_network_is_not_a_local_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register_remote(tmp_path, sources=[])
+    front, _, _ = make_front(tmp_path)
+
+    assert "remote-app" not in front.instance.callers()
+    assert "names no network" in capsys.readouterr().err
+    with pytest.raises(executor_front.RefusedError, match="the key is no caller's"):
+        executor_front.authenticate(front.instance, REMOTE_KEY, 2001)
+
+
+@pytest.fixture
+def tls_pair(tmp_path: Path) -> tuple[ssl.SSLContext, ssl.SSLContext]:
+    """The server's context with a certificate made here, and a client's that pins nothing."""
+    if shutil.which("openssl") is None:
+        pytest.skip("no openssl to make a certificate with")
+    cert, key = tmp_path / "tls.crt", tmp_path / "tls.key"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
+         "-subj", "/CN=stacks.example.ts.net", "-keyout", str(key), "-out", str(cert)],
+        check=True,
+        capture_output=True,
+    )
+    front, _, _ = make_front(tmp_path, tls_cert=str(cert), tls_key=str(key))
+    client = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client.check_hostname = False
+    client.verify_mode = ssl.CERT_NONE
+    return executor_front.tls_context(front.instance), client
+
+
+def serve_over_tls(
+    front: executor_front.Front,
+    server: ssl.SSLContext,
+    client: ssl.SSLContext,
+    address: str,
+    send: bytes,
+) -> tuple[int, list[dict[str, Any]]]:
+    ours, theirs = socket.socketpair()
+    status: list[int] = []
+    thread = threading.Thread(target=lambda: status.append(executor_front.serve_tls(front, ours, server, address)))
+    thread.start()
+    with client.wrap_socket(theirs) as conn:
+        conn.sendall(send)
+        received = b""
+        while chunk := conn.recv(65536):
+            received += chunk
+    thread.join(10)
+    return status[0], [json.loads(line) for line in received.splitlines()]
+
+
+def test_a_remote_up_over_tls_reaches_the_agent(tmp_path: Path, tls_pair: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    register_remote(tmp_path)
+    front, agent, _ = make_front(tmp_path)
+    header = {"key": REMOTE_KEY, "action": "up", "repo": "example/app", "bundle_size": 6}
+
+    status, answer = serve_over_tls(front, *tls_pair, "192.0.2.7", json.dumps(header).encode() + b"\nBUNDLE")
+
+    assert status == 0
+    assert answer[-1]["exit"] == 0
+    assert agent.calls[0]["caller"] == "remote-app"
+    assert agent.bundles == [b"BUNDLE"]
+
+
+def test_a_remote_request_that_stalls_times_out_and_leaves_no_spool(
+    tmp_path: Path,
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    register_remote(tmp_path)
+    front, agent, _ = make_front(tmp_path)
+    monkeypatch.setattr(executor_front, "REMOTE_TIMEOUT_S", 0.5)
+    header = {"key": REMOTE_KEY, "action": "up", "repo": "example/app", "bundle_size": 1000}
+    ours, theirs = socket.socketpair()
+    status: list[int] = []
+    thread = threading.Thread(target=lambda: status.append(executor_front.serve_tls(front, ours, tls_pair[0], "192.0.2.7")))
+    thread.start()
+    with tls_pair[1].wrap_socket(theirs) as conn:
+        conn.sendall(json.dumps(header).encode() + b"\nBUN")
+        thread.join(10)
+
+    assert status == [1]
+    assert agent.calls == []
+    assert list((tmp_path / "state" / "spool").iterdir()) == []
+    assert "up for remote-app: exit 1" in capsys.readouterr().err
+
+
+def test_a_peer_that_speaks_no_tls_is_logged_and_dropped(
+    tmp_path: Path,
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    front, agent, _ = make_front(tmp_path)
+    ours, theirs = socket.socketpair()
+    with theirs:
+        theirs.sendall(b'{"key": "plain"}\n')
+        theirs.shutdown(socket.SHUT_WR)
+        assert executor_front.serve_tls(front, ours, tls_pair[0], "198.51.100.9") == 1
+
+    assert agent.calls == []
+    assert '- for 198.51.100.9: exit 1: "no TLS' in capsys.readouterr().err

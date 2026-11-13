@@ -17,6 +17,16 @@ consumer is [docs/executor.md](../../docs/executor.md).
   project or a path: the agent derives the compose project, the tree and
   the ports from the caller the front resolved. A new action follows that
   rule, with its tests, never a pass-through of a field.
+- **A remote caller is its key and its addresses, nothing else.** The
+  TLS port (`remote.socket`, `serve-tls`) runs the same front, with no
+  uid: `authenticate` takes a caller with `from` only from its networks
+  over TLS, and one without only on the socket, so a local key that leaks
+  to another host is useless there and the other way round. The front
+  wraps the connection itself and bounds each read by
+  `REMOTE_TIMEOUT_S`; a bundle cut off leaves no spool. The certificate
+  is pinned by the callers, so `stack` checks its hash before it sends the
+  key, and never connects with neither a pin nor a CA. Its key is
+  `root:<name>-executor`, the front's to read and no one else's.
 - **The agent's socket is the front's alone.** It is `0666` inside a
   directory `0750` `<name>-exec:<name>-executor`, which tmpfiles makes; a
   caller's socket is the front's, `api.sock`. Never mount the agent's into

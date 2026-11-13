@@ -45,6 +45,31 @@
 
 # The values never in a message: the facts name only what is wrong with
 # them, and the assert prints those names.
+# A remote caller has no uid: its key and the networks it connects from
+# are all that stand for it, so each is checked here.
+- name: Assert every instance's remote callers are complete
+  ansible.builtin.assert:
+    that:
+      - item.remote | bool or item.remote_callers | length == 0
+      - item.remote_callers is not string
+      - item.remote_callers | rejectattr('name', 'match', '^remote-[a-z0-9][a-z0-9-]{0,55}$') | list | length == 0
+      - item.remote_callers | rejectattr('key_sha256', 'match', '^[0-9a-f]{64}$') | list | length == 0
+      - item.remote_callers | selectattr('repos', 'string') | list | length == 0
+      - item.remote_callers | rejectattr('from', 'defined') | list | length == 0
+      - item.remote_callers | selectattr('from', 'string') | list | length == 0
+      - item.remote_callers | rejectattr('from') | list | length == 0
+      - item.remote_callers | map(attribute='name') | unique | length == item.remote_callers | length
+      - (item.tls_cert | length > 0) == (item.tls_key | length > 0)
+    fail_msg: >-
+      {{ item.name }}: remote_callers want remote: true, and each a name
+      starting remote-, the key_sha256 its host printed, a list of repos and
+      a list `from` of the addresses or networks it connects from. tls_cert
+      and tls_key go together.
+    quiet: true
+  loop: "{{ executor_merged }}"
+  loop_control:
+    label: "{{ item.name | default('-') }}"
+
 - name: Find what is wrong with each instance's secrets
   ansible.builtin.set_fact:
     executor_secrets_problems: >-
