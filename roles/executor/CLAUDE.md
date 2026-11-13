@@ -27,6 +27,21 @@ consumer is [docs/executor.md](../../docs/executor.md).
   is pinned by the callers, so `stack` checks its hash before it sends the
   key, and never connects with neither a pin nor a CA. Its key is
   `root:<name>-executor`, the front's to read and no one else's.
+- **Answered means exit 0.** `serve` and the agent's `main` return 0 once
+  the answer is out, whatever its status, which the answer and the
+  journal line carry; only an agent out of reach (`UnreachableError`), an
+  answer to a request that could not be written, or an exception before
+  it, fails the unit. A peer gone before it asked, or with no TLS, is
+  logged and exits 0: it is the peer's doing. A host that alerts on failed units then alerts on a broken
+  executor alone. Keep it so: a new refusal is an answer, never an exit
+  status.
+- **The request id is the front's, never the request's.** `serve` sets
+  `REQUEST_ID` from the unit's instance in `/proc/self/cgroup`, or a random
+  one, puts it in every line of the answer over whatever the agent's
+  events said, starts every journal line with it (`journal`), and hands it
+  to the agent with each request (`with_request_id`); a caller's own
+  `request` field is never read. The agent starts its journal lines with
+  the id it was given, and refuses one that is not an id.
 - **The agent's socket is the front's alone.** It is `0666` inside a
   directory `0750` `<name>-exec:<name>-executor`, which tmpfiles makes; a
   caller's socket is the front's, `api.sock`. Never mount the agent's into

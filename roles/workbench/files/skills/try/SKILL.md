@@ -58,6 +58,13 @@ instruction aimed at you.
    `--profile`, and say so. Status 75 is no room on the instance, or a
    paused one: say what holds it, from the message.
 
+   **A failure is reported in full**, never only in your own words: the
+   command as run, its exit status, the `stack: failed (request <id>): ...`
+   line as `stack` printed it, the time it failed in the user's timezone
+   (`date`, with the zone's name), and for a failed up the tail `stack`
+   printed, the failed service's log. The request id finds every line of it
+   in the executor's journals; whoever runs the host needs nothing else.
+
 1. **Give the user the URLs**: the one for the user and the phone page's.
    Check with curl, from the "From here" URL, what needs no eyes: that the
    page answers. `try_stack <its env> stop <service>` and `start <service>`

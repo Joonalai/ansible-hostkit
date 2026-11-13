@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import re
 import shutil
 import socket
 import ssl
@@ -26,8 +27,12 @@ class Agent:
         self.up_exit = 0
         self.up_kept = False
         self.start_exit = 0
+        self.request_ids: list[str] = []
 
     def __call__(self, request: dict[str, Any], bundle: str | None) -> Iterator[dict[str, Any]]:
+        request = dict(request)
+        if "request" in request:
+            self.request_ids.append(request.pop("request"))
         self.calls.append(request)
         if bundle is not None:
             self.bundles.append(Path(bundle).read_bytes())
@@ -57,6 +62,13 @@ class Clock:
 
     def sleep(self, seconds: float) -> None:
         self.t += seconds
+
+
+@pytest.fixture(autouse=True)
+def request_id() -> Iterator[str]:
+    token = executor_front.REQUEST_ID.set("test-1")
+    yield "test-1"
+    executor_front.REQUEST_ID.reset(token)
 
 
 def register(tmp_path: Path, name: str, key: str = KEY, uid: int | None = 2001, waits: bool = True) -> None:
@@ -101,8 +113,10 @@ def request(action: str, key: str = KEY, body: bytes = b"", **fields: object) ->
 
 def serve(front: executor_front.Front, conn: io.BytesIO, uid: int | None = 2001) -> list[dict[str, Any]]:
     out = io.BytesIO()
-    executor_front.serve(front, conn, out, uid)
-    return [json.loads(line) for line in out.getvalue().splitlines()]
+    assert executor_front.serve(front, conn, out, uid) == 0
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert len({event.pop("request") for event in events}) == 1
+    return events
 
 
 def state(tmp_path: Path) -> dict[str, Any]:
@@ -152,7 +166,8 @@ def test_a_refused_request_is_logged_with_its_caller_and_message(tmp_path: Path,
 
     serve(front, conn)
 
-    assert capsys.readouterr().err == 'up for runner-app-1: exit 1: "refused: runner-app-1 may bring up example/app, not example/other"\n'
+    logged = 'request test-1: up for runner-app-1: exit 1: "refused: runner-app-1 may bring up example/app, not example/other"\n'
+    assert capsys.readouterr().err == logged
 
 
 def test_a_key_no_caller_has_is_logged_by_its_uid_never_the_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -162,7 +177,7 @@ def test_a_key_no_caller_has_is_logged_by_its_uid_never_the_key(tmp_path: Path, 
     serve(front, request("list", key="guess"), uid=2002)
 
     logged = capsys.readouterr().err
-    assert logged == 'list for uid 2002: exit 1: "refused: the key is no caller\'s"\n'
+    assert logged == 'request test-1: list for uid 2002: exit 1: "refused: the key is no caller\'s"\n'
     assert "guess" not in logged
 
 
@@ -175,7 +190,7 @@ def test_a_failed_up_is_logged_and_a_good_one_is_not(tmp_path: Path, capsys: pyt
     agent.up_exit = 1
     serve(front, request("up", body=b"B"))
 
-    assert capsys.readouterr().err == 'up for runner-app-1: exit 1: ""\n'
+    assert capsys.readouterr().err == 'request test-1: up for runner-app-1: exit 1: ""\n'
 
 
 def test_a_request_that_is_not_json_is_refused(tmp_path: Path) -> None:
@@ -303,7 +318,7 @@ def test_an_up_whose_caller_is_gone_still_reads_the_agent_to_its_end(tmp_path: P
     front, agent, _ = make_front(tmp_path)
     out = Gone()
 
-    assert executor_front.serve(front, request("up", body=b"BUNDLE"), out, 2001) == 0
+    assert executor_front.serve(front, request("up", body=b"BUNDLE"), out, 2001) == 1
 
     assert agent.actions() == [("up", "runner-app-1")]
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
@@ -748,7 +763,7 @@ def test_the_page_starts_a_failed_stack_again_and_logs_a_start_that_fails(tmp_pa
 
     assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (500, "a service did not run")
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "failed"
-    assert capsys.readouterr().err == 'page start for runner-app-1: exit 500: "a service did not run"\n'
+    assert capsys.readouterr().err.endswith('page start for runner-app-1: exit 500: "a service did not run"\n')
     agent.start_exit = 0
     assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (200, "Started.")
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
@@ -964,7 +979,7 @@ def test_a_remote_request_that_stalls_times_out_and_leaves_no_spool(
         conn.sendall(json.dumps(header).encode() + b"\nBUN")
         thread.join(10)
 
-    assert status == [1]
+    assert status == [0]
     assert agent.calls == []
     assert list((tmp_path / "state" / "spool").iterdir()) == []
     assert "up for remote-app: exit 1" in capsys.readouterr().err
@@ -980,7 +995,93 @@ def test_a_peer_that_speaks_no_tls_is_logged_and_dropped(
     with theirs:
         theirs.sendall(b'{"key": "plain"}\n')
         theirs.shutdown(socket.SHUT_WR)
-        assert executor_front.serve_tls(front, ours, tls_pair[0], "198.51.100.9") == 1
+        assert executor_front.serve_tls(front, ours, tls_pair[0], "198.51.100.9") == 0
 
     assert agent.calls == []
     assert '- for 198.51.100.9: exit 1: "no TLS' in capsys.readouterr().err
+
+
+def serve_raw(front: executor_front.Front, conn: io.BytesIO, uid: int | None = 2001) -> tuple[int, list[dict[str, Any]]]:
+    out = io.BytesIO()
+    status = executor_front.serve(front, conn, out, uid)
+    return status, [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_an_answered_refusal_exits_0_with_its_status_in_the_answer(tmp_path: Path, paused: bool) -> None:
+    register(tmp_path, "runner-app-1")
+    front, _, _ = make_front(tmp_path)
+    if paused:
+        (tmp_path / "paused").write_text("")
+
+    status, answer = serve_raw(front, request("run", suite="e2e") if paused else request("list", key="nobody's"))
+
+    assert status == 0
+    assert answer[-1]["exit"] == (executor_front.NO_ROOM if paused else 1)
+
+
+def test_an_agent_out_of_reach_fails_the_front(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+
+    def unreachable(request: dict[str, Any], bundle: str | None) -> Iterator[dict[str, Any]]:
+        raise executor_front.UnreachableError("no agent")
+
+    front, _, _ = make_front(tmp_path, agent=unreachable)  # ty: ignore[invalid-argument-type] -- a function stands in for the fake
+    status, answer = serve_raw(front, request("up", body=b"B"))
+
+    assert status == 1
+    assert answer[-1]["exit"] == 1
+    assert "no agent" in answer[-1]["message"]
+
+
+def test_an_error_before_the_answer_fails_the_front(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+
+    def broken(request: dict[str, Any], bundle: str | None) -> Iterator[dict[str, Any]]:
+        raise RuntimeError("a bug")
+
+    front, _, _ = make_front(tmp_path, agent=broken)  # ty: ignore[invalid-argument-type] -- a function stands in for the fake
+
+    with pytest.raises(RuntimeError):
+        executor_front.serve(front, request("up", body=b"B"), io.BytesIO(), 2001)
+
+
+def test_every_line_of_an_answer_and_the_journal_carry_the_fronts_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    agent.up_exit = 2
+    token = executor_front.REQUEST_ID.set("")
+
+    try:
+        _, answer = serve_raw(front, request("up", body=b"B", request="the-callers-own"))
+    finally:
+        executor_front.REQUEST_ID.reset(token)
+
+    ids = {event["request"] for event in answer}
+    (request_id,) = ids
+    assert request_id != "the-callers-own"
+    assert agent.request_ids == [request_id]
+    assert capsys.readouterr().err.startswith(f"request {request_id}: up for runner-app-1: exit 2")
+
+
+@pytest.mark.parametrize(
+    ("cgroup", "expected"),
+    [
+        ("0::/system.slice/system-stacks\\x2dexecutor\\x2dfront.slice/hostkit-executor-stacks-front@5-1234-2001.service\n", "5-1234-2001"),
+        ("0::/user.slice/user-1000.slice/session-3.scope\n", None),
+    ],
+)
+def test_the_request_id_is_the_units_instance_or_a_random_one(tmp_path: Path, cgroup: str, expected: str | None) -> None:
+    path = tmp_path / "cgroup"
+    path.write_text(cgroup)
+
+    found = executor_front.new_request_id(str(path))
+
+    assert found == expected if expected is not None else re.fullmatch(r"[0-9a-f]{12}", found)
+
+
+def test_a_caller_gone_before_it_asked_leaves_no_failed_unit(tmp_path: Path) -> None:
+    front, agent, _ = make_front(tmp_path)
+
+    assert executor_front.serve(front, io.BytesIO(b""), Gone(), 2001) == 0
+    assert agent.calls == []

@@ -442,6 +442,27 @@ the caller, the action and what the caller was told:
 journalctl -u 'executor-stacks-front@*'
 ```
 
+**A request has an id**, the front's, never the caller's: the unit's
+instance, `<n>-<pid>-<uid>`, or a short random one. It is in every line of
+the answer, and `stack` prints it with any failure,
+`stack: failed (request 5-1234-2001): ...`. The same id starts the
+front's journal lines for that request and the agent's, in the exec
+account's user journal, so one search finds both sides:
+
+```sh
+journalctl --grep 5-1234-2001                    # the front's, as root
+journalctl _UID=<exec_uid> --grep 5-1234-2001    # the agent's
+```
+
+**A failed front unit means a broken executor.** The front exits 0 once
+it has answered, whatever the request's status, so a refused compose
+file, a broken branch, no room (75) and a paused instance leave no failed
+unit: they are in the answer and the journal line. A front or agent unit
+fails only when it could not answer: the agent out of reach, an answer it
+could not write or an error before it. A peer that leaves before it asks
+anything, a caller whose pin did not match or one on the TLS port that
+speaks no TLS, is logged and leaves no failed unit either.
+
 A person can be a caller too, with the `stack` command from
 `tasks_from: client` and a registration from `tasks_from: callers`, as
 `dev/smoke.yml` does in the dev container.

@@ -13,6 +13,7 @@
   vars:
     dev_smoke_repo: /root/smoke
     dev_smoke_env: /root/smoke.env
+    dev_smoke_person_env: /root/person.env
     dev_smoke_socket: /run/hostkit-executor/stacks/api.sock
     # Alpine rather than busybox: busybox's /home is nobody's, 65534, past
     # the dev container's ID range (inventory.yml).
@@ -40,6 +41,13 @@
             env_file: "{{ dev_smoke_env }}"
             env_mode: "0600"
             local_host: 127.0.0.1
+          - instance: stacks
+            name: dev-person
+            uid: 0
+            repos: [example/smoke]
+            waits: false
+            env_file: "{{ dev_smoke_person_env }}"
+            env_mode: "0600"
 
     - name: Make the repository's directory
       ansible.builtin.file:
@@ -359,6 +367,69 @@
       until: dev_smoke_page_again.status == 200
       failed_when: "'hostkit smoke' not in dev_smoke_page_again.content"
 
+    # A refusal is an answer: it leaves no failed unit, and the id stack
+    # prints finds the request's lines in the front's and the agent's
+    # journals.
+    - name: Fail to bring up a privileged stack, for its request id
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --profile privileged
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_refused_id
+      changed_when: false
+      failed_when: >-
+        dev_smoke_refused_id.rc == 0
+        or (dev_smoke_refused_id.stderr | regex_search('stack: failed \\(request [^)]+\\): ')) is none
+      become: true
+
+    # The instance keeps two of its three places for callers that wait, so
+    # a second person, a caller that does not wait either, finds no room
+    # beside dev-smoke.
+    - name: Fail to bring up a second person's stack, with no room
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_person_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_no_room
+      changed_when: false
+      failed_when: >-
+        dev_smoke_no_room.rc != 75
+        or "places for people's stacks are taken" not in dev_smoke_no_room.stderr
+      become: true
+
+    - name: Find no failed unit of the executor's, the system's or the agent's
+      ansible.builtin.shell:  # noqa: command-instead-of-module -- no module lists the failed units
+        cmd: >-
+          systemctl list-units --failed --no-legend --plain 'executor-*';
+          runuser -u stacks-exec -- env XDG_RUNTIME_DIR=/run/user/{{ dev_smoke_exec_uid.stdout }}
+          systemctl --user list-units --failed --no-legend --plain 'executor-*'
+        executable: /bin/bash
+      register: dev_smoke_failed_units
+      changed_when: false
+      failed_when: dev_smoke_failed_units.rc != 0 or dev_smoke_failed_units.stdout | trim | length > 0
+      become: true
+
+    - name: Find the refused up's lines by its id, the front's and the agent's
+      vars:
+        dev_smoke_id: "{{ dev_smoke_refused_id.stderr | regex_search('request ([^)]+)\\)', '\\1') | first }}"
+      ansible.builtin.shell:
+        cmd: >-
+          journalctl --no-pager -o cat -u 'executor-stacks-front@*' --grep '{{ dev_smoke_id }}';
+          echo ---;
+          journalctl --no-pager -o cat _UID={{ dev_smoke_exec_uid.stdout }} --grep '{{ dev_smoke_id }}'
+        executable: /bin/bash
+      register: dev_smoke_journal_id
+      retries: 5
+      delay: 2
+      until: >-
+        (dev_smoke_journal_id.stdout.split('---')[0] is search('request ' ~ dev_smoke_id ~ ': up for dev-smoke'))
+        and (dev_smoke_journal_id.stdout.split('---')[1] is search('request ' ~ dev_smoke_id ~ ': up for dev-smoke'))
+      changed_when: false
+      failed_when: >-
+        not ((dev_smoke_journal_id.stdout.split('---')[0] is search('request ' ~ dev_smoke_id ~ ': up for dev-smoke'))
+        and (dev_smoke_journal_id.stdout.split('---')[1] is search('request ' ~ dev_smoke_id ~ ': up for dev-smoke')))
+      become: true
+
     - name: Run the suite, list the stacks and show the logs
       ansible.builtin.shell:
         cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack {{ item }}
@@ -600,3 +671,21 @@
       register: dev_remote_stalled
       changed_when: false
       failed_when: dev_remote_stalled.rc != 0 or 'timed out' not in dev_remote_stalled.stdout
+
+# After every request above, the remote ones' refusals included: an
+# answered request leaves no failed unit, so none is left at all.
+- name: Find no failed unit of the executor's
+  hosts: hostkit-dev
+  gather_facts: false
+  tasks:
+    - name: Find no failed front, page or agent unit
+      ansible.builtin.shell:  # noqa: command-instead-of-module -- no module lists the failed units
+        cmd: >-
+          systemctl list-units --failed --no-legend --plain 'executor-*';
+          runuser -u stacks-exec -- env XDG_RUNTIME_DIR=/run/user/$(id -u stacks-exec)
+          systemctl --user list-units --failed --no-legend --plain 'executor-*'
+        executable: /bin/bash
+      register: dev_smoke_failed_at_end
+      changed_when: false
+      failed_when: dev_smoke_failed_at_end.rc != 0 or dev_smoke_failed_at_end.stdout | trim | length > 0
+      become: true

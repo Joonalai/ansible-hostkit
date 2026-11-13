@@ -80,6 +80,13 @@ applies.
    room on the executor, or a paused one: go on without the preview, and
    say so in the PR.
 
+   **A failure is reported in full**, never only in your own words: the
+   command as run, its exit status, the `stack: failed (request <id>): ...`
+   line as `stack` printed it, the time it failed in the user's timezone
+   (`date`, with the zone's name), and for a failed up the tail `stack`
+   printed, the failed service's log. The request id finds every line of it
+   in the executor's journals; the PR's note of it carries the same.
+
    The volumes are the last stack's only when it was of this commit or
    one before it on its branch. After another branch, a rebase, a fold
    that rewrote the branch, or the first up, they start empty, and the
