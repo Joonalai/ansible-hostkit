@@ -28,6 +28,7 @@
     rootless_account_memory_max: "{{ executor_instance.memory_max }}"
     rootless_account_memory_swap_max: "{{ executor_instance.memory_swap_max }}"
     rootless_account_cpu_quota: "{{ executor_instance.cpu_quota }}"
+    rootless_account_cpu_weight: "{{ executor_instance.cpu_weight }}"
     rootless_account_sandbox_units: "{{ executor_instance.sandbox_units }}"
 
 - name: Keep the exec account's environment of {{ executor_instance.name }}

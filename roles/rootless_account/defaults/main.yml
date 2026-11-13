@@ -44,6 +44,12 @@ rootless_account_memory_swap_max: ""
 # The CPU time of everything the account runs, as systemd's CPUQuota
 # ("200%" is two cores). Empty for no limit.
 rootless_account_cpu_quota: ""
+# The account's share of the CPU when it competes with the host's other
+# accounts, as systemd's CPUWeight on its user-<uid>.slice (1 to 10000,
+# 100 when empty). Unlike the quota, it costs nothing while the host is
+# idle. It weighs the account against the other accounts' slices only:
+# the host's system services are in system.slice, beside user.slice.
+rootless_account_cpu_weight: ""
 
 # The units that hold this account off what it must not reach, which the
 # host's own hardening provides: this collection never changes the

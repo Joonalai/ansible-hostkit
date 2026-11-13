@@ -41,6 +41,7 @@ flowchart TD
 flowchart LR
     subgraph Host
         subgraph Sys["systemd, the system's"]
+            US["user-UID.slice<br/>CPUWeight"]
             UM["user@UID.service<br/>MemoryMax, MemorySwapMax, CPUQuota"]
             SB[Sandbox units<br/>the host's own]
         end
@@ -51,6 +52,7 @@ flowchart LR
         end
         IDS[Subordinate IDs<br/>start to start + count]
     end
+    US --> UM
     UM --> MG
     UM -->|Requires| SB
     MG --> C1
@@ -88,9 +90,21 @@ Optional:
 | `rootless_account_memory_max`      | none                               | Memory of everything the account runs                        |
 | `rootless_account_memory_swap_max` | none                               | How much of that may sit in swap                             |
 | `rootless_account_cpu_quota`       | none                               | CPU time of everything the account runs, `200%` is two cores |
+| `rootless_account_cpu_weight`      | none                               | Its share of the CPU against the other accounts, 1 to 10000  |
 | `rootless_account_sandbox_units`   | `[]`                               | The host's units the account's manager requires              |
 | `rootless_account_profile_marker`  | `rootless_account`                 | The marker of the block written to the account's `.profile`  |
 | `rootless_account_rebuild_bin`     | `/usr/local/libexec/rebuild-image` | Where the image rebuild script is installed                  |
+
+The quota and the weight do different things. The quota is a ceiling: it
+holds even when the host is idle, and a build waits for no one. The
+weight counts only when accounts compete: an account weighted 20 gets a
+fifth of what one at systemd's 100 gets, and all of the CPU when the
+other is idle. To keep a host's CI fast while the stacks build, give the
+stacks a low weight and a generous quota. The weight is on the account's
+`user-<uid>.slice`, so it weighs the account against the host's other
+accounts. The host's system services are in `system.slice`, beside
+`user.slice`, and no account's weight moves them; that is the host's own
+setting.
 
 Two flags are read from the play: `install_dependencies`, `false` to skip
 the `apt` task, and `is_container_environment`, `true` in a test container,

@@ -253,6 +253,7 @@
     rootless_account_profile_marker: github_runner
     rootless_account_memory_max: "{{ github_runner_account_memory_max }}"
     rootless_account_memory_swap_max: "{{ github_runner_account_memory_swap_max }}"
+    rootless_account_cpu_weight: "{{ github_runner_account_cpu_weight }}"
     rootless_account_sandbox_units: "{{ github_runner_sandbox_units }}"
 
 - name: Keep the coder user's environment

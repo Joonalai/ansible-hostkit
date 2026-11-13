@@ -82,6 +82,9 @@ workbench_gate_bin: /usr/local/libexec/workbench-gate
 # they need: a suite that eats the rest should fail on its own rather than
 # take the host's other services with it.
 workbench_memory_max: 2G
+# The account's share of the CPU against the host's other accounts, 1 to
+# 10000, 100 when empty (rootless_account_cpu_weight).
+workbench_cpu_weight: ""
 workbench_container_memory_max: 1536M
 
 # The image every repository's container runs, built on the box by bench.

@@ -56,6 +56,9 @@ executor_instance_defaults:
   # Leave it bounded: unbounded, a full account pages instead of failing.
   memory_swap_max: 512M
   cpu_quota: ""
+  # The stacks' share of the CPU against the host's other accounts, 1 to
+  # 10000, 100 when empty: something like 20 lets a runner's jobs win.
+  cpu_weight: ""
   # The exec account's container storage and the stacks' trees. Past it, an
   # up first removes the images no container uses, then refuses.
   disk_max_gb: 20

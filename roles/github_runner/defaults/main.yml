@@ -226,6 +226,9 @@ github_runner_account_memory_max: 5G
 # as lost. Bounded, the kernel kills the largest job process at once and
 # the rest go on.
 github_runner_account_memory_swap_max: 512M
+# The account's share of the CPU against the host's other accounts, 1 to
+# 10000, 100 when empty (rootless_account_cpu_weight).
+github_runner_account_cpu_weight: ""
 
 # Whether to start the runners. A test container has no App and never
 # will, so it installs everything and starts nothing.
