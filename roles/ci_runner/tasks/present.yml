@@ -84,6 +84,7 @@
     rootless_account_memory_max: "{{ ci_runner_memory_max }}"
     rootless_account_memory_swap_max: "{{ ci_runner_memory_swap_max }}"
     rootless_account_cpu_quota: "{{ ci_runner_cpu_quota }}"
+    rootless_account_cpu_weight: "{{ ci_runner_cpu_weight }}"
     # The account's manager requires the host's sandbox unit: rootless_account
     # writes the tie and makes systemd read it before the account runs
     # anything.

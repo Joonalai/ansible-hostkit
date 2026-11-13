@@ -27,6 +27,9 @@ ci_runner_subuid_count: 65536
 ci_runner_memory_max: ""
 ci_runner_memory_swap_max: ""
 ci_runner_cpu_quota: ""
+# Its share of the CPU against the host's other accounts, 1 to 10000, 100
+# when empty (rootless_account_cpu_weight).
+ci_runner_cpu_weight: ""
 
 # The sandbox is the host's own (docs/ci_runner.md, "What the host must provide"). The
 # unit that holds the account off the host's services and networks, by its

@@ -57,6 +57,7 @@
             ports_end: 9339
             host: hostkit-dev.example.ts.net
             memory_max: 2G
+            cpu_weight: 20
             disk_max_gb: 5
             # smoke_other is another repository's: the smoke stack asks for
             # it and gets it empty.

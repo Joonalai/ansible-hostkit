@@ -283,20 +283,22 @@ Required, per instance, with no usable default:
 
 The most used of the optional ones, per instance:
 
-| Key                     | Default         | What it is                                   |
-| ----------------------- | --------------- | -------------------------------------------- |
-| `host`                  | the host's FQDN | Where the user opens a stack                 |
-| `ports_per_caller`      | `3`             | Ports in a caller's block                    |
-| `max_stacks`            | `3`             | Stacks running at once                       |
-| `memory_max`            | `4G`            | Memory of every stack and build at once      |
-| `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded        |
-| `disk_max_gb`           | `20`            | Images and trees, past which an up refuses   |
-| `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped       |
-| `queue_timeout_minutes` | `20`            | How long a runner's job waits for room       |
-| `idle_hours`            | `12`            | Unused this long, a stack is stopped         |
-| `max_age_hours`         | `72`            | Up this long, a stack is removed             |
-| `overrides`             | none            | Profiles per repository, from the inventory  |
-| `secrets`               | none            | Values the stacks of chosen repositories get |
+| Key                     | Default         | What it is                                                                   |
+| ----------------------- | --------------- | ---------------------------------------------------------------------------- |
+| `host`                  | the host's FQDN | Where the user opens a stack                                                 |
+| `ports_per_caller`      | `3`             | Ports in a caller's block                                                    |
+| `max_stacks`            | `3`             | Stacks running at once                                                       |
+| `memory_max`            | `4G`            | Memory of every stack and build at once                                      |
+| `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded                                        |
+| `cpu_quota`             | none            | CPU time of every stack and build at once                                    |
+| `cpu_weight`            | none            | Their share against the host's other accounts; `20` lets a runner's jobs win |
+| `disk_max_gb`           | `20`            | Images and trees, past which an up refuses                                   |
+| `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped                                       |
+| `queue_timeout_minutes` | `20`            | How long a runner's job waits for room                                       |
+| `idle_hours`            | `12`            | Unused this long, a stack is stopped                                         |
+| `max_age_hours`         | `72`            | Up this long, a stack is removed                                             |
+| `overrides`             | none            | Profiles per repository, from the inventory                                  |
+| `secrets`               | none            | Values the stacks of chosen repositories get                                 |
 
 Every variable is described in
 [`roles/executor/defaults/main.yml`](../roles/executor/defaults/main.yml).

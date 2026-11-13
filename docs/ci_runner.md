@@ -157,6 +157,7 @@ Optional:
 | `ci_runner_memory_max`       | none                     | Memory of everything the account runs, such as `8G`                           |
 | `ci_runner_memory_swap_max`  | none                     | How much of that may sit in swap                                              |
 | `ci_runner_cpu_quota`        | none                     | CPU time of everything the account runs, such as `400%`                       |
+| `ci_runner_cpu_weight`       | none                     | Its share of the CPU against the other accounts, 1 to 10000                   |
 | `ci_runner_label`            | the name                 | The label the jobs ask for, with `-pr` added for pull requests                |
 | `ci_runner_variable`         | `CI_RUNNER`              | The repository variable that sends a workflow's jobs to the host              |
 | `ci_runner_slots`            | `2`                      | How many jobs run at once, 1 to 8                                             |

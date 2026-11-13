@@ -7,6 +7,12 @@
     fail_msg: rootless_account wants rootless_account_user and rootless_account_subuid_start.
     quiet: true
 
+- name: Assert the account's CPU weight is one
+  ansible.builtin.assert:
+    that: rootless_account_cpu_weight | string is match('^([1-9][0-9]{0,3}|10000)?$')
+    fail_msg: rootless_account_cpu_weight is 1 to 10000, or empty for systemd's 100.
+    quiet: true
+
 # The sandbox is the host's: this role only checks that its units are
 # there and up, before it makes the account or runs anything as it, so a
 # typo, a host without them or one whose sandbox is down fails here rather
@@ -219,6 +225,36 @@
       CPUQuota={{ rootless_account_cpu_quota }}
     dest: "/etc/systemd/system/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d/cpu.conf"
     mode: "0644"
+  notify: Reload systemd for rootless_account
+  become: true
+
+# On the account's slice, not its manager: the manager's siblings are only
+# its own sessions, while the slice's are the other accounts'.
+- name: Create the drop-in directory for {{ rootless_account_user }}'s slice
+  when: rootless_account_cpu_weight | string | length > 0
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.slice.d"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Weigh the CPU of everything {{ rootless_account_user }} runs
+  when: rootless_account_cpu_weight | string | length > 0
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. Every process {{ rootless_account_user }} runs, against the other accounts'.
+      [Slice]
+      CPUWeight={{ rootless_account_cpu_weight }}
+    dest: "/etc/systemd/system/user-{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.slice.d/cpu-weight.conf"
+    mode: "0644"
+  notify: Reload systemd for rootless_account
+  become: true
+
+- name: Leave {{ rootless_account_user }}'s CPU weight at systemd's
+  when: rootless_account_cpu_weight | string | length == 0
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.slice.d/cpu-weight.conf"
+    state: absent
   notify: Reload systemd for rootless_account
   become: true
 

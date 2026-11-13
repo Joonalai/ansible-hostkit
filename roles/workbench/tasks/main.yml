@@ -298,6 +298,7 @@
     rootless_account_subuid_count: "{{ workbench_subuid_count }}"
     rootless_account_create: false
     rootless_account_memory_max: "{{ workbench_memory_max }}"
+    rootless_account_cpu_weight: "{{ workbench_cpu_weight }}"
     rootless_account_sandbox_units: "{{ workbench_sandbox_units }}"
 
 - name: Create the account's own directories

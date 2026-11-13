@@ -183,6 +183,7 @@ The most used of the optional ones:
 | `github_runner_cpu_quota`               | `200%`         | CPU time of one job                                                     |
 | `github_runner_account_memory_max`      | `5G`           | Memory of everything `coder` runs, test services included               |
 | `github_runner_account_memory_swap_max` | `512M`         | Swap on top of that. Leave it bounded                                   |
+| `github_runner_account_cpu_weight`      | none           | `coder`'s share of the CPU against the other accounts, 1 to 10000       |
 | `github_runner_preview_ports_start`     | `9100`         | The first port the jobs' test services may publish                      |
 | `github_runner_preview_ports_end`       | `9199`         | The last                                                                |
 | `github_runner_strays_max_age_hours`    | `12`           | A container a job left outside any compose project goes after this long |

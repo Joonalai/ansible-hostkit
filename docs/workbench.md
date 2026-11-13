@@ -176,6 +176,7 @@ The most used of the optional ones:
 | `workbench_user`                 | `bench`                   | The account the containers run as                            |
 | `workbench_gate_user`            | `benchgate`               | The account that holds the write token                       |
 | `workbench_memory_max`           | `2G`                      | Memory of everything `bench` runs                            |
+| `workbench_cpu_weight`           | none                      | Its share of the CPU against the other accounts, 1 to 10000  |
 | `workbench_container_memory_max` | `1536M`                   | Memory of one repository's container                         |
 | `workbench_capacity`             | `3`                       | Sessions at once per repository                              |
 | `workbench_workflow_token`       | none                      | The token for pushes that touch a workflow                   |
