@@ -73,6 +73,7 @@ SERVICE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 ENV_KEY = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REPO = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
+COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host)\}")
 MAX_HEADER = 65536
 MAX_PORTS = 16
@@ -750,7 +751,8 @@ class Agent:
     def up(self, request: dict[str, Any], bundle: str) -> int:
         """Build the bundle's commit and start it as the caller's stack,
         replacing its last only once the new one has passed its checks: a
-        refused up leaves the last one running, and says kept.
+        refused up leaves the last one running, and says kept. The last
+        one's volumes stay only when this commit follows its commit.
         """
         stack = Stack(self.config, request["caller"])
         staged = Stack(self.config, request["caller"], staged=True)
@@ -761,8 +763,12 @@ class Agent:
             if os.path.exists(staged.env_file):
                 os.unlink(staged.env_file)
             return self.out.done(1, message=f"{error}\nThe last stack is as it was.", kept=True)
-        # The last stack goes, its volumes kept: the next one finds its data.
         self.remove_containers(stack)
+        volumes = self.replace_volumes(stack, request["repo"], commit, staged.tree)
+        if volumes is None:
+            self.remove_tree(staged.tree)
+            os.unlink(staged.env_file)
+            return self.out.done(1, message="the last stack's volumes could not be removed: down, then up again")
         self.remove_tree(stack.tree)
         for stale in (stack.checked, stack.meta_file):
             if os.path.exists(stale):
@@ -772,12 +778,49 @@ class Agent:
         with open(stack.checked, "w") as checked:
             json.dump(with_resets(cast("dict[str, Any]", relocate(config, staged.tree, stack.tree)), stack.project), checked)
         meta = {"repo": request["repo"], "commit": commit, "up_at": self.system.now(), **profile}
-        with open(stack.meta_file, "w") as meta_file:
+        with open(f"{stack.meta_file}.new", "w") as meta_file:
             json.dump(meta, meta_file)
+        os.replace(f"{stack.meta_file}.new", stack.meta_file)
         failure = self.bring_up(stack, ["--build", "--force-recreate", "--remove-orphans"])
         if failure is not None:
-            return self.out.done(1, message=failure, commit=commit)
-        return self.out.done(0, commit=commit, profile=profile["profile"], page=profile["page"])
+            return self.out.done(1, message=failure, commit=commit, volumes=volumes)
+        return self.out.done(0, commit=commit, profile=profile["profile"], page=profile["page"], volumes=volumes)
+
+    def replace_volumes(self, stack: Stack, repo: str, commit: str, tree: str) -> str | None:
+        """After the last stack's containers: its volumes kept when this
+        commit continues it, "kept"; else removed, "new"; None when some
+        could not be, which the new stack must not start on.
+        """
+        try:
+            last = stack.meta()
+        except ValueError:
+            last = None
+        followed = self.followed_commit(last if isinstance(last, dict) else None, repo, commit, tree)
+        if followed is not None:
+            self.out.line(f"The volumes are kept: the last stack was of {followed[:12]}, this commit or one before it.")
+            return "kept"
+        if self.remove_volumes(stack):
+            return None
+        self.out.line("The volumes start empty: the last stack, if any, was of another branch.")
+        return "new"
+
+    def followed_commit(self, last: dict[str, Any] | None, repo: str, commit: str, tree: str) -> str | None:
+        """The last stack's commit when the new one continues it, and may
+        keep its volumes: the same repository, and that commit this one or
+        an ancestor of it in the new tree; else None. Another branch's data
+        was made and migrated by code this commit does not have, and a
+        commit the bundle does not carry counts as another branch's.
+        """
+        if last is None or last.get("repo") != repo:
+            return None
+        followed = str(last.get("commit", ""))
+        if not COMMIT.fullmatch(followed):
+            return None
+        try:
+            self.system.run(["git", "-C", tree, "merge-base", "--is-ancestor", followed, commit])
+        except subprocess.CalledProcessError:
+            return None
+        return followed
 
     def bring_up(self, stack: Stack, flags: list[str]) -> str | None:
         """docker-compose up, detached, then the services watched until they
@@ -897,10 +940,22 @@ class Agent:
     def down(self, stack: Stack) -> None:
         """Remove the stack, its volumes and its tree."""
         self.remove_containers(stack)
-        names = self.quiet(["podman", "volume", "ls", "--quiet", "--filter", f"label={PROJECT_LABEL}={stack.project}"]).split()
-        if names:
-            self.quiet(["podman", "volume", "rm", "--force", *names])
+        self.remove_volumes(stack)
         self.remove_tree(stack.dir)
+
+    def remove_volumes(self, stack: Stack) -> list[str]:
+        """Remove the stack's volumes, its containers already gone; the
+        names of those still there after.
+        """
+        listing = ["podman", "volume", "ls", "--quiet", "--filter", f"label={PROJECT_LABEL}={stack.project}"]
+        names = self.quiet(listing).split()
+        if not names:
+            return []
+        self.quiet(["podman", "volume", "rm", "--force", *names])
+        try:
+            return self.system.run(listing).split()
+        except subprocess.CalledProcessError:
+            return names
 
     def ps(self) -> int:
         """Every stack on the account: its state, when it was made, and its memory."""

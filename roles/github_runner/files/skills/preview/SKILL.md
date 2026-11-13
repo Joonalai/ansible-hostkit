@@ -73,11 +73,17 @@ applies.
    ```
 
    or `stack up --profile <name>` for another profile. It builds and
-   starts the stack, replacing this runner's last one with its volumes
-   kept, and prints the URL for the user, the one for the roles, from
-   here, and the phone page's. `stack logs [service]` shows why one that
-   failed did. Status 75 is no room on the executor, or a paused one: go
-   on without the preview, and say so in the PR.
+   starts the stack, replacing this runner's last one, and prints the URL
+   for the user, the one for the roles, from here, and the phone page's.
+   `stack logs [service]` shows why one that failed did. Status 75 is no
+   room on the executor, or a paused one: go on without the preview, and
+   say so in the PR.
+
+   The volumes are the last stack's only when it was of this commit or
+   one before it on its branch. After another branch, a rebase, a fold
+   that rewrote the branch, or the first up, they start empty, and the
+   seed runs on an empty database. `stack up` says which. `stack down`
+   and an up give a clean start any time.
 
 1. **Check it answers** before saying it does, with the URL from here:
 

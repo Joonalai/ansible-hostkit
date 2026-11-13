@@ -3,7 +3,9 @@
 # a caller of its own, a repository with a stack.toml, then `stack up` and a
 # request to the page; ups the executor must refuse, after which the page
 # must still answer; then `stack run`, `list` and `logs`; an up whose
-# service dies at start, which must fail with its log; and `down`.
+# service dies at start, which must fail with its log and keep the volume
+# of the same commit; a rewritten commit, whose volume starts empty; and
+# `down`.
 
 - name: Bring a stack up and down on the executor
   hosts: all
@@ -68,9 +70,11 @@
                 ports: ["${BIND}:${WEB_PORT}:8000"]
                 security_opt: ["no-new-privileges:true"]
               # A one-shot service the next waits for, as migrations are.
+              # Its volume is kept for the same commit, and new for another.
               seed:
                 image: {{ dev_smoke_image }}
                 command: ["true"]
+                volumes: ["data:/data"]
               # A one-shot service no other waits for: its status 0 is fine.
               job:
                 image: {{ dev_smoke_image }}
@@ -104,6 +108,8 @@
                 image: {{ dev_smoke_image }}
                 profiles: [docs]
                 volumes: ["./site:/srv"]
+            volumes:
+              data: {}
         - name: Containerfile.app
           content: |
             FROM {{ dev_smoke_image }}
@@ -206,6 +212,17 @@
       register: dev_smoke_exec_uid
       changed_when: false
 
+    # A run that failed midway left its stack, whose volume the next run's
+    # commit, on top of that one's, would keep.
+    - name: Take down a stack an earlier run left
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack down
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+      become: true
+
     - name: Bring the stack up
       ansible.builtin.shell:
         cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --json
@@ -213,6 +230,7 @@
         executable: /bin/bash
       register: dev_smoke_up
       changed_when: true
+      failed_when: dev_smoke_up.rc != 0 or (dev_smoke_up.stdout | from_json).volumes != 'new'
       become: true
 
     - name: Ask the page
@@ -224,6 +242,15 @@
       delay: 2
       until: dev_smoke_page.status == 200
       failed_when: "'hostkit smoke' not in dev_smoke_page.content"
+
+    - name: Find when the stack's volume was made
+      ansible.builtin.command:
+        argv: &dev_smoke_volume_created
+          [runuser, -u, stacks-exec, --, env, "XDG_RUNTIME_DIR=/run/user/{{ dev_smoke_exec_uid.stdout }}",
+           podman, volume, inspect, --format, "{{ '{{' }}.CreatedAt{{ '}}' }}", stack-dev-smoke_data]
+      register: dev_smoke_volume
+      changed_when: false
+      become: true
 
     - name: Find the images of the services with app's build or its image
       ansible.builtin.command:
@@ -301,7 +328,41 @@
         executable: /bin/bash
       register: dev_smoke_broken
       changed_when: true
-      failed_when: dev_smoke_broken.rc == 0 or 'smoke app broken at start' not in dev_smoke_broken.stdout + dev_smoke_broken.stderr
+      failed_when: >-
+        dev_smoke_broken.rc == 0
+        or 'smoke app broken at start' not in dev_smoke_broken.stdout + dev_smoke_broken.stderr
+        or 'The volumes are kept' not in dev_smoke_broken.stderr
+      become: true
+
+    - name: Find the volume kept for the same commit
+      ansible.builtin.command:
+        argv: *dev_smoke_volume_created
+      register: dev_smoke_volume_kept
+      changed_when: false
+      failed_when: dev_smoke_volume_kept.rc != 0 or dev_smoke_volume_kept.stdout != dev_smoke_volume.stdout
+      become: true
+
+    # A rewritten commit, as after a rebase, is another branch's: its
+    # stack's volumes start empty.
+    - name: Rewrite the commit and bring it up
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          git -c user.name=smoke -c user.email=smoke@example.com commit -q --amend -m smoke-rewritten
+          set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --json
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_rewritten
+      changed_when: true
+      failed_when: dev_smoke_rewritten.rc != 0 or (dev_smoke_rewritten.stdout | from_json).volumes != 'new'
+      become: true
+
+    - name: Find the volume made anew for the rewritten commit
+      ansible.builtin.command:
+        argv: *dev_smoke_volume_created
+      register: dev_smoke_volume_new
+      changed_when: false
+      failed_when: dev_smoke_volume_new.rc != 0 or dev_smoke_volume_new.stdout == dev_smoke_volume.stdout
       become: true
 
     - name: Take the stack down

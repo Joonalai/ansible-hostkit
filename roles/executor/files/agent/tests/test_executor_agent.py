@@ -32,23 +32,35 @@ class Fake:
         self.up_status = up_status
         self.disk = disk or [0]
         self.containers: list[dict[str, Any]] = []
+        self.volumes: list[str] = []
+        self.volumes_stay = False
         self.after_up: list[list[dict[str, Any]]] = []
 
     def run(self, command: list[str]) -> str:
         self.calls.append(command)
         if command[0] == "git":
             return subprocess.run(command, capture_output=True, text=True, check=True).stdout
-        if command[:2] == ["podman", "unshare"] and command[2] == "du":
-            used = self.disk.pop(0) if len(self.disk) > 1 else self.disk[0]
-            return f"{used}\t/x\n"
         if command[:2] == ["podman", "unshare"]:
-            subprocess.run(command[2:], check=True)
-            return ""
+            return self.unshare(command)
         if command[:2] == ["podman", "ps"]:
             return json.dumps(self.listed())
+        if command[:2] == ["podman", "volume"]:
+            return self.volume(command)
         if "docker-compose" in command and "config" in command:
             return json.dumps(self.compose_config)
         return ""
+
+    def unshare(self, command: list[str]) -> str:
+        if command[2] == "du":
+            used = self.disk.pop(0) if len(self.disk) > 1 else self.disk[0]
+            return f"{used}\t/x\n"
+        subprocess.run(command[2:], check=True)
+        return ""
+
+    def volume(self, command: list[str]) -> str:
+        if command[2] == "rm" and not self.volumes_stay:
+            self.volumes = []
+        return "\n".join(self.volumes) if command[2] == "ls" else ""
 
     def listed(self) -> list[dict[str, Any]]:
         if not (self.after_up and any(call[0] == "docker-compose" and "up" in call for call in self.calls)):
@@ -136,7 +148,7 @@ def test_up_checks_out_the_bundle_writes_the_env_and_starts_compose(tmp_path: Pa
     answer = serve(config, fake, up_request(bundle_of(checkout)))
 
     head = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    assert answer[-1] == {"exit": 0, "commit": head, "profile": "default", "page": 2}
+    assert answer[-1] == {"exit": 0, "commit": head, "profile": "default", "page": 2, "volumes": "new"}
     stack = tmp_path / "stacks" / "r-1"
     assert (stack / "tree" / "compose.yaml").is_file()
     assert (stack / "tree" / ".env").read_text() == (stack / "stack.env").read_text()
@@ -160,15 +172,111 @@ def test_up_checks_out_the_bundle_writes_the_env_and_starts_compose(tmp_path: Pa
     assert json.loads((stack / "stack.json").read_text())["suites"] == {"e2e": {"service": "e2e", "command": ["pytest", "-q"]}}
 
 
-def test_up_replaces_the_last_stack_keeping_its_volumes(tmp_path: Path) -> None:
+def add_commit(checkout: Path, name: str) -> None:
+    (checkout / name).write_text(name)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "-C", str(checkout), *identity, "commit", "--quiet", "-m", name], check=True)
+
+
+def volume_calls(fake: Fake) -> list[list[str]]:
+    return [call for call in fake.calls if call[:3] == ["podman", "volume", "rm"] or call[:3] == ["podman", "volume", "ls"]]
+
+
+@pytest.fixture
+def upped(tmp_path: Path) -> tuple[executor_agent.Config, Fake, Path]:
     checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
     config, fake = make_config(tmp_path), Fake()
-    fake.containers = [{"Id": "old1", "State": "running"}]
-
     serve(config, fake, up_request(bundle_of(checkout)))
+    fake.calls.clear()
+    fake.containers = [{"Id": "old1", "State": "running"}]
+    return config, fake, checkout
 
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_up_of_the_same_branch_keeps_the_last_stacks_volumes(upped: tuple[executor_agent.Config, Fake, Path], pushed: bool) -> None:
+    config, fake, checkout = upped
+    if pushed:
+        add_commit(checkout, "two")
+
+    answer = serve(config, fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    assert answer[-1]["volumes"] == "kept"
     assert ["podman", "rm", "--force", "--depend", "old1"] in fake.calls
-    assert not any(call[:2] == ["podman", "volume"] for call in fake.calls)
+    assert volume_calls(fake) == []
+
+
+def test_up_of_another_branch_removes_the_last_stacks_volumes(upped: tuple[executor_agent.Config, Fake, Path]) -> None:
+    config, fake, checkout = upped
+    git = ["git", "-C", str(checkout)]
+    subprocess.run([*git, "checkout", "--quiet", "--orphan", "other"], check=True)
+    add_commit(checkout, "two")
+
+    answer = serve(config, fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["volumes"] == "new"
+    assert ["podman", "volume", "ls", "--quiet", "--filter", "label=com.docker.compose.project=stack-r-1"] in fake.calls
+    assert fake.calls.index(["podman", "rm", "--force", "--depend", "old1"]) < fake.calls.index(volume_calls(fake)[0])
+    assert any("merge-base" in call for call in fake.calls)
+
+
+def test_up_of_an_older_commit_removes_the_last_stacks_volumes(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    older = bundle_of(checkout)
+    add_commit(checkout, "two")
+    config, fake = make_config(tmp_path), Fake()
+    serve(config, fake, up_request(bundle_of(checkout)))
+    fake.calls.clear()
+
+    answer = serve(config, fake, up_request(older))
+
+    assert answer[-1]["volumes"] == "new"
+    assert volume_calls(fake)
+
+
+def test_up_of_another_repository_removes_the_last_stacks_volumes(upped: tuple[executor_agent.Config, Fake, Path]) -> None:
+    config, fake, checkout = upped
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), repo="example/other"))
+
+    assert answer[-1]["volumes"] == "new"
+    assert volume_calls(fake)
+    assert not any("merge-base" in call for call in fake.calls)
+
+
+def test_up_over_a_stack_record_without_a_commit_removes_the_volumes(upped: tuple[executor_agent.Config, Fake, Path]) -> None:
+    config, fake, checkout = upped
+    meta_file = Path(config.stacks_dir) / "r-1" / "stack.json"
+    meta_file.write_text(json.dumps(json.loads(meta_file.read_text()) | {"commit": "--all"}))
+
+    answer = serve(config, fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["volumes"] == "new"
+    assert not any("merge-base" in call for call in fake.calls)
+
+
+def test_up_over_an_unreadable_stack_record_removes_the_volumes(upped: tuple[executor_agent.Config, Fake, Path]) -> None:
+    config, fake, checkout = upped
+    (Path(config.stacks_dir) / "r-1" / "stack.json").write_text("")
+
+    answer = serve(config, fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    assert answer[-1]["volumes"] == "new"
+
+
+def test_up_whose_last_volumes_will_not_go_starts_nothing(upped: tuple[executor_agent.Config, Fake, Path]) -> None:
+    config, fake, checkout = upped
+    fake.volumes, fake.volumes_stay = ["stack-r-1_db"], True
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), repo="example/other"))
+
+    assert answer[-1] == {"exit": 1, "message": "the last stack's volumes could not be removed: down, then up again"}
+    assert ["podman", "volume", "rm", "--force", "stack-r-1_db"] in fake.calls
+    assert not any(call[0] == "docker-compose" and "up" in call for call in fake.calls)
+    assert not (Path(config.stacks_dir) / "r-1" / "incoming").exists()
+    assert not (Path(config.stacks_dir) / "r-1" / "incoming.stack.env").exists()
 
 
 def test_the_bundle_runs_no_hook_and_is_checked(tmp_path: Path) -> None:
@@ -804,7 +912,7 @@ def test_a_refused_up_keeps_the_last_stack_as_it_was(tmp_path: Path) -> None:
     assert (stack / "tree" / "compose.yaml").is_file()
     assert not (stack / "incoming").exists()
     assert not (stack / "incoming.stack.env").exists()
-    assert not any(call[:2] == ["podman", "rm"] or "up" in call for call in fake.calls)
+    assert not any(call[:2] in (["podman", "rm"], ["podman", "volume"]) or "up" in call for call in fake.calls)
 
 
 def test_a_bundle_that_does_not_check_out_keeps_the_last_stack(tmp_path: Path) -> None:
