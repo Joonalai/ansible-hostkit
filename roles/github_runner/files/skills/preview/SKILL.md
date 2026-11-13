@@ -41,6 +41,15 @@ applies.
    `Dockerfile`, or runs the service's own start command on a stock image,
    with what the service writes in a named volume.
 
+1. **Keep its build cheap.** Every `stack up` builds the images on the
+   executor, one at a time, keeping the layers between ups. In the
+   repository's Containerfile, copy the manifest and lock file alone and
+   install from them before copying the source (`uv sync --frozen --no-install-project`, `bun install --frozen-lockfile`), so a change
+   rebuilds only what it changed. Services that run one image share one
+   `build:` through a YAML anchor, without an `image:` name, which would be
+   shared with the executor's other callers. A Containerfile that copies
+   the source first is worth fixing in the PR.
+
 1. **The preview shows what the change changed.** A compose file that
    leaves out the part the change is in, such as a web front end it does
    not serve yet, is a preview of nothing the user can try: add that part,

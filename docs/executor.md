@@ -171,6 +171,21 @@ by a service that does not run as root.
 An instance's `overrides` can add or replace a repository's profiles from
 the inventory.
 
+### Keeping its build cheap
+
+Every up builds the stack's images on a host that may be small and busy,
+one image at a time, and keeps the layers between ups. What a repository
+can do so that a change rebuilds only what it changed:
+
+- **Dependencies before the source.** Copy the manifest and the lock file
+  alone, install from them, then copy the rest: `uv sync --frozen --no-install-project` (`--no-install-workspace` in a workspace) before
+  the source and `uv sync --frozen` after it, or `bun install --frozen-lockfile` before copying the app. A Containerfile that copies
+  the source first downloads every package again on every change.
+- **One build for the services that run one image**, a YAML anchor they
+  all take. They are built one after another, so all but the first are
+  cache hits. Leave the image unnamed: a named one is shared with the
+  instance's other callers.
+
 ## Variables
 
 Required, per instance, with no usable default:
