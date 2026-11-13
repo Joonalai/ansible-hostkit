@@ -22,6 +22,10 @@ A request is one line of JSON, and for up the bundle's bytes after it:
     {"action": "stop" | "start", "caller": ..., "service": "db"}   one service
     {"action": "ps"} | {"action": "prune"}
 
+Each may carry the front's id of the request, "request", which every line
+the agent writes to its journal for it starts with. The agent exits 0 once
+it has answered, whatever the request's status, which is in the answer.
+
 The answer is lines of JSON: {"out": "<a line of output>"} as it comes,
 then one {"exit": <status>, ...} with what the action found.
 
@@ -77,6 +81,7 @@ ENV_KEY = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REPO = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 SECRET_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,96}")
 PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host|url|secret:[a-z][a-z0-9_]{0,31})\}")
 MAX_HEADER = 65536
 MAX_PORTS = 16
@@ -179,6 +184,8 @@ class Out:
         self.stream = stream
         # Each hidden value and its placeholder, the longest value first.
         self.hidden: list[tuple[str, str]] = []
+        # The request answered, for the journal's line of a failure.
+        self.request: object = None
 
     def hide(self, secrets: dict[str, str]) -> None:
         """Replace each of the secrets' values with its placeholder in
@@ -209,8 +216,12 @@ class Out:
         self.stream.flush()
 
     def done(self, status: int, **data: object) -> int:
-        """The last line, with the action's status."""
+        """The last line, with the action's status; a failure's goes to the
+        journal too, with the request's id, cleaned as the answer is.
+        """
         self.event({"exit": status, **data})
+        if status != 0:
+            log_failure(self.request, self.clean(str(data.get("message") or f"exit {status}")))
         return status
 
 
@@ -1227,6 +1238,8 @@ def check_request(config: Config, request: object) -> dict[str, Any]:
     """
     if not isinstance(request, dict) or request.get("action") not in ACTIONS:
         raise RefusedError(f"the request wants an action of {', '.join(ACTIONS)}")
+    if "request" in request and not (isinstance(request["request"], str) and REQUEST_ID.fullmatch(request["request"])):
+        raise RefusedError("request is the front's id of it")
     if request["action"] in ("ps", "prune"):
         return request
     caller = request.get("caller")
@@ -1324,15 +1337,16 @@ def dispatch(agent: Agent, config: Config, conn: IO[bytes], request: dict[str, A
 
 
 def log_failure(request: object, message: str) -> None:
-    """One line to the journal for a refused or failed request: its caller,
-    its action and what the caller was told, which is all it holds. An
-    action that ran and failed is the front's to log, with its status.
+    """One line to the journal for a refused or failed request: its id, its
+    caller, its action and what the caller was told, which is all it holds.
     """
     fields = request if isinstance(request, dict) else {}
     caller, action = fields.get("caller"), fields.get("action")
     who = caller if isinstance(caller, str) and CALLER.fullmatch(caller) else "-"
     what = action if action in ACTIONS else "-"
-    print(f"{what} for {who}: {json.dumps(message)}", file=sys.stderr, flush=True)
+    request_id = fields.get("request")
+    known = isinstance(request_id, str) and REQUEST_ID.fullmatch(request_id) is not None
+    print(f"{f'request {request_id}: ' if known else ''}{what} for {who}: {json.dumps(message)}", file=sys.stderr, flush=True)
 
 
 def handle(config: Config, conn: IO[bytes], out: Out, system: System) -> int:
@@ -1344,13 +1358,13 @@ def handle(config: Config, conn: IO[bytes], out: Out, system: System) -> int:
             request = json.loads(line or b"null")
         except ValueError as error:
             raise RefusedError("the request is one line of JSON") from error
+        out.request = request
         return dispatch(Agent(config, system, out), config, conn, check_request(config, request))
     except RefusedError as error:
         message = str(error)
     except (subprocess.CalledProcessError, OSError) as error:
         detail = getattr(error, "stderr", "") or str(error)
         message = f"failed: {detail.strip()}"
-    log_failure(request, out.clean(message))
     return out.done(1, message=message)
 
 
@@ -1362,7 +1376,10 @@ def main(argv: list[str]) -> int:
     os.umask(0o077)
     config = load_config(argv[1])
     system = System(run=run_command, stream=stream_command)
-    return handle(config, sys.stdin.buffer, Out(sys.stdout.buffer), system)
+    # Answered: the request's status is in the answer, and a failed unit
+    # is left for an agent that could not answer.
+    handle(config, sys.stdin.buffer, Out(sys.stdout.buffer), system)
+    return 0
 
 
 if __name__ == "__main__":

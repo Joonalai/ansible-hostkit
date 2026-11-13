@@ -59,6 +59,9 @@
             memory_max: 2G
             cpu_weight: 20
             disk_max_gb: 5
+            # One place of the three for people: the smoke test's second
+            # person finds no room.
+            waiting_reserve: 2
             # The caller container, and an address no container has.
             remote: true
             remote_callers:

@@ -777,6 +777,44 @@ def test_a_request_out_of_shape_is_logged_without_its_fields(tmp_path: Path, cap
     assert capsys.readouterr().err.startswith('- for -: "the request wants an action of ')
 
 
+def test_a_journal_line_carries_the_id_the_request_brought(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    request = {"action": "logs", "caller": "r-1", "request": "5-1234-2001"}
+
+    serve(make_config(tmp_path), Fake(), json.dumps(request).encode() + b"\n")
+
+    assert capsys.readouterr().err == 'request 5-1234-2001: logs for r-1: "the caller has no stack: up first"\n'
+
+
+def test_a_failed_answer_goes_to_the_journal_with_its_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config, fake = make_config(tmp_path), Fake()
+    serve(config, fake, up_request(bundle_of(checkout)))
+    capsys.readouterr()
+
+    serve(config, fake, b'{"action": "run", "caller": "r-1", "suite": "rm", "request": "7-99-2001"}\n')
+
+    assert capsys.readouterr().err == 'request 7-99-2001: run for r-1: "no suite \'rm\'; the repository has e2e"\n'
+
+
+def test_a_request_id_that_is_no_id_is_refused(tmp_path: Path) -> None:
+    request = {"action": "logs", "caller": "r-1", "request": "a b\nc"}
+
+    answer = serve(make_config(tmp_path), Fake(), json.dumps(request).encode() + b"\n")
+
+    assert answer[-1] == {"exit": 1, "message": "request is the front's id of it"}
+
+
+def test_main_exits_0_once_it_has_answered_a_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = make_config(tmp_path)
+    answer = io.BytesIO()
+    monkeypatch.setattr(executor_agent, "load_config", lambda _: config)
+    monkeypatch.setattr(executor_agent.sys, "stdin", io.TextIOWrapper(io.BytesIO(b'{"action": "down", "caller": "../x"}\n')))
+    monkeypatch.setattr(executor_agent.sys, "stdout", io.TextIOWrapper(answer))
+
+    assert executor_agent.main(["serve", "agent.json"]) == 0
+    assert b'"exit": 1' in answer.getvalue()
+
+
 def test_past_the_disk_cap_unused_images_go_and_then_it_refuses(tmp_path: Path) -> None:
     (tmp_path / "storage").mkdir()
     checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})

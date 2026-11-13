@@ -193,6 +193,37 @@ def test_run_streams_the_suites_output(tmp_path: Path, capsys: pytest.CaptureFix
     assert "3 passed" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("argv", "result", "printed"),
+    [
+        (["down"], {"exit": 75, "message": "no room", "request": "5-1234-2001"}, "stack: failed (request 5-1234-2001): no room"),
+        (["run", "e2e"], {"exit": 2, "request": "5-1234-2001"}, "stack: failed (request 5-1234-2001): exit 2"),
+        (["list"], {"exit": 1, "message": "refused", "request": "ab12"}, "stack: failed (request ab12): refused"),
+    ],
+)
+def test_a_failure_is_printed_with_its_request_id(
+    argv: list[str],
+    result: dict[str, Any],
+    printed: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status = stack.main(argv, ENV, io.StringIO(), Instance([result]).connect)
+
+    assert status == result["exit"]
+    assert capsys.readouterr().err.strip() == printed
+
+
+def test_a_failed_up_is_printed_with_its_request_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = checkout(tmp_path)
+    out = io.StringIO()
+
+    status = stack.main(["up", "-C", str(path), "--json"], ENV, out, Instance([{"exit": 1, "message": "bad", "request": "r-9"}]).connect)
+
+    assert status == 1
+    assert "stack: failed (request r-9): bad" in capsys.readouterr().err
+    assert out.getvalue() == ""
+
+
 def test_a_failed_suite_is_its_status(tmp_path: Path) -> None:
     assert stack.main(["run", "e2e"], ENV, io.StringIO(), Instance([{"exit": 2}]).connect) == 2
 

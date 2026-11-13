@@ -245,7 +245,7 @@ def up(args: argparse.Namespace, env: dict[str, str], out: IO[str], connector: C
         with open(path, "rb") as bundle:
             result = call(request, env, bundle, connector)
     if result["exit"] != 0:
-        print(result.get("message") or "up failed", file=sys.stderr)
+        print(failure(result), file=sys.stderr)
         return int(result["exit"])
     found = urls(result, env)
     if args.json:
@@ -269,7 +269,7 @@ def show_list(args: argparse.Namespace, env: dict[str, str], out: IO[str], conne
     """Print the instance's stacks."""
     result = call({"action": "list"}, env, None, connector)
     if result["exit"] != 0:
-        print(result.get("message") or "list failed", file=sys.stderr)
+        print(failure(result), file=sys.stderr)
         return int(result["exit"])
     if args.json:
         print(json.dumps(result.get("stacks", [])), file=out)
@@ -284,6 +284,15 @@ def show_list(args: argparse.Namespace, env: dict[str, str], out: IO[str], conne
             file=out,
         )
     return 0
+
+
+def failure(result: dict[str, Any]) -> str:
+    """A failure as the user reads it, with the instance's id of the request,
+    which finds its lines in the front's and the agent's journals.
+    """
+    request_id = result.get("request")
+    where = f" (request {request_id})" if isinstance(request_id, str) and request_id else ""
+    return f"stack: failed{where}: {result.get('message') or 'exit ' + str(result['exit'])}"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -332,8 +341,10 @@ def main(
     except StackError as error:
         print(f"stack: {error}", file=sys.stderr)
         return 1
-    if result.get("message"):
-        print(result["message"], file=sys.stderr if result["exit"] else out)
+    if result["exit"]:
+        print(failure(result), file=sys.stderr)
+    elif result.get("message"):
+        print(result["message"], file=out)
     return int(result["exit"])
 
 

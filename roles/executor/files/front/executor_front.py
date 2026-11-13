@@ -43,10 +43,21 @@ status 75, to go on without a stack; one that does not, a person, gets 75
 at once with what holds the room. While the instance's pause file exists,
 no up or run is taken, the same way.
 
+Every request has an id, the front's alone, never the caller's: the unit
+instance systemd started for the connection, or a short random one. It is
+in every line of the answer, as "request", in every line the front and the
+agent write to their journals for it, and with the request the agent gets,
+so `journalctl --grep <id>` finds both sides. Once the front has answered
+it exits 0, whatever the request's status, which is in the answer and the
+journal; only a front that could not answer, the agent out of reach, an
+answer it could not write or an error before it, exits otherwise, so a
+failed unit means a broken executor, never a refused request.
+
 Standard library only, on the system python3.
 """
 
 import contextlib
+import contextvars
 import fcntl
 import hashlib
 import hmac
@@ -54,6 +65,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import struct
@@ -61,7 +73,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import IO, Any, override
@@ -87,6 +99,35 @@ REMOTE_TIMEOUT_S = 60
 Events = Iterator[dict[str, Any]]
 # Sends the agent a request, and the bundle's file for up; yields its answer.
 AgentCall = Callable[[dict[str, Any], "str | None"], Events]
+
+
+class UnreachableError(OSError):
+    """The agent cannot be reached: the executor is broken, not the request."""
+
+
+# The id of the request being served, for every line of the journal.
+REQUEST_ID: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+UNIT_INSTANCE = re.compile(r"[^/@]+@([A-Za-z0-9._:-]{1,96})\.service")
+
+
+def new_request_id(cgroup: str = "/proc/self/cgroup") -> str:
+    """The id of this connection's request: the instance of the unit
+    systemd started for it, `<n>-<pid>-<uid>` on the socket, or a short
+    random one outside such a unit.
+    """
+    try:
+        with open(cgroup) as cgroup_file:
+            last = cgroup_file.read().strip().rsplit("/", 1)[-1]
+    except OSError:
+        last = ""
+    match = UNIT_INSTANCE.fullmatch(last)
+    return str(match.group(1)) if match else secrets.token_hex(6)
+
+
+def journal(text: str) -> None:
+    """One line to the journal, with the request's id while one is served."""
+    request_id = REQUEST_ID.get()
+    print(f"request {request_id}: {text}" if request_id else text, file=sys.stderr, flush=True)
 
 
 class RefusedError(Exception):
@@ -171,7 +212,7 @@ class Instance:
                     sources=sources_of(raw),
                 )
             except (OSError, ValueError, KeyError, TypeError) as error:
-                print(f"Skipping the caller file {entry}: {error}", file=sys.stderr)
+                journal(f"Skipping the caller file {entry}: {error}")
         return found
 
 
@@ -404,17 +445,18 @@ class Front:
         } | self.https()
         try:
             result = self.finish(self.agent(agent_request, bundle), say)
+        except UnreachableError:
+            # The agent never had it: the last stack is as it was.
+            self.restore(caller, previous)
+            raise
         except OSError as error:
             result = {"exit": 1, "message": f"the agent failed: {error}"}
         now = self.now()
+        # Refused before it replaced anything: the last stack is as it was.
+        if result.get("kept") is True:
+            self.restore(caller, previous)
+            return {**result, "ports": ports, "host": self.instance["host"], **self.https()}
         with locked_state(self.instance) as state:
-            # Refused before it replaced anything: the last stack is as it was.
-            if result.get("kept") is True:
-                if previous is None:
-                    state.stacks.pop(caller.name, None)
-                else:
-                    state.stacks[caller.name] = previous
-                return {**result, "ports": ports, "host": self.instance["host"], **self.https()}
             state.stacks[caller.name] = {
                 "repo": repo,
                 "profile": profile,
@@ -426,6 +468,14 @@ class Front:
             }
         page_url = f"http://{self.instance['host']}:{self.instance['page_port']}/"
         return {**result, "ports": ports, "host": self.instance["host"], "control": page_url, **self.https()}
+
+    def restore(self, caller: Caller, previous: dict[str, Any] | None) -> None:
+        """Put back the caller's last stack, as it was before an up took its place."""
+        with locked_state(self.instance) as state:
+            if previous is None:
+                state.stacks.pop(caller.name, None)
+            else:
+                state.stacks[caller.name] = previous
 
     def https(self) -> dict[str, int]:
         """The caller's port the host serves the page on with HTTPS, by its
@@ -604,7 +654,10 @@ def agent_over_socket(path: str) -> AgentCall:
 
     def call(request: dict[str, Any], bundle: str | None) -> Events:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.connect(path)
+            try:
+                conn.connect(path)
+            except OSError as error:
+                raise UnreachableError(f"the agent is out of reach: {error}") from error
             conn.sendall(json.dumps(request).encode() + b"\n")
             if bundle is not None:
                 with open(bundle, "rb") as bundle_file:
@@ -701,8 +754,19 @@ class Reply:
         self.gone = False
 
     def __call__(self, event: dict[str, Any]) -> None:
-        """One line of the answer, if the caller is still there."""
-        self.gone = self.gone or not answer(self.out, event)
+        """One line of the answer, if the caller is still there, with the
+        request's id, whatever an event of the agent's said.
+        """
+        self.gone = self.gone or not answer(self.out, {**event, "request": REQUEST_ID.get()})
+
+
+def with_request_id(agent: AgentCall, request_id: str) -> AgentCall:
+    """The agent's calls, each request carrying the id the front gave it."""
+
+    def call(request: dict[str, Any], bundle: str | None) -> Events:
+        return agent({**request, "request": request_id}, bundle)
+
+    return call
 
 
 def on_stack(front: Front, caller: Caller, action: str, request: dict[str, Any], say: Callable[[str], None]) -> dict[str, Any]:
@@ -717,10 +781,24 @@ def on_stack(front: Front, caller: Caller, action: str, request: dict[str, Any],
 
 
 def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, address: str | None = None) -> int:
-    """Read one request, carry it out and answer it; returns its status.
-    uid is a local peer's, address a remote one's.
+    """Read one request, carry it out and answer it; returns 0 once it has
+    answered, whatever the request's status, and 1 when it could not: the
+    agent out of reach or the caller gone after it asked. uid is a local peer's, address
+    a remote one's. The id is REQUEST_ID's where it is set, a new one
+    otherwise, and never the request's.
     """
+    token = REQUEST_ID.set(REQUEST_ID.get() or new_request_id())
+    try:
+        return serve_request(replace(front, agent=with_request_id(front.agent, REQUEST_ID.get())), conn, out, uid, address)
+    finally:
+        REQUEST_ID.reset(token)
+
+
+def serve_request(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, address: str | None) -> int:
+    """The request serve reads, under its id."""
     reply = Reply(out)
+    broken = False
+    read = False
 
     def say(text: str) -> None:
         reply({"out": text})
@@ -731,6 +809,7 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, addres
     caller: Caller | None = None
     try:
         request = read_header(conn)
+        read = True
         action = request.get("action")
         caller = authenticate(front.instance, request.get("key"), uid, address)
         if action not in ACTIONS:
@@ -746,14 +825,21 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, addres
                 result = on_stack(front, caller, str(action), request, say)
     except RefusedError as error:
         result = {"exit": error.status, "message": str(error)}
-    except OSError as error:
+    except UnreachableError as error:
+        broken = True
         result = {"exit": 1, "message": f"the instance failed: {error}"}
+    except OSError as error:
+        result = {"exit": 1, "message": f"the instance failed: {error}" if read else f"no request came: {error}"}
     finally:
         if bundle is not None and os.path.exists(bundle):
             os.unlink(bundle)
     reply(result)
     log_failure(caller, action, address or f"uid {uid}", result)
-    return int(result["exit"])
+    if reply.gone and read:
+        journal("the answer could not be written: the caller is gone")
+    # A caller gone before it asked anything, one whose pin did not match,
+    # is the peer's doing, as a peer with no TLS is: nothing broke.
+    return 1 if broken or (reply.gone and read) else 0
 
 
 def tls_context(instance: Instance) -> ssl.SSLContext:
@@ -772,8 +858,9 @@ def serve_tls(front: Front, raw: socket.socket, context: ssl.SSLContext, address
     try:
         conn = context.wrap_socket(raw, server_side=True)
     except (ssl.SSLError, OSError) as error:
+        # The peer's doing, a scan or a client with no TLS: nothing broke.
         log_line("-", address, 1, f"no TLS: {error}")
-        return 1
+        return 0
     with conn:
         with conn.makefile("rb") as reader:
             writer = conn.makefile("wb")
@@ -803,7 +890,7 @@ def log_failure(caller: Caller | None, action: object, peer: str, result: dict[s
 
 def log_line(action: str, who: str, status: object, message: object) -> None:
     """One line to the journal: the message quoted, so it stays one line."""
-    print(f"{action} for {who}: exit {status}: {json.dumps(str(message))}", file=sys.stderr, flush=True)
+    journal(f"{action} for {who}: exit {status}: {json.dumps(str(message))}")
 
 
 # ---------------------------------------------------------------------
