@@ -58,6 +58,15 @@
             host: hostkit-dev.example.ts.net
             memory_max: 2G
             disk_max_gb: 5
+            # smoke_other is another repository's: the smoke stack asks for
+            # it and gets it empty.
+            secrets:
+              values:
+                smoke_key: "{{ dev_smoke_secret }}"
+                smoke_other: another-repositorys-value
+              repositories:
+                example/smoke: [smoke_key]
+                example/app: [smoke_other]
 
 - name: The CI runner
   hosts: all

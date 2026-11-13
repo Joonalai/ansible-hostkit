@@ -113,6 +113,25 @@ class Instance:
         start, end = int(self["callers_ports_start"]), int(self["ports_end"])
         return list(range(start, end - size + 2, size))
 
+    def secrets_for(self, repo: str) -> dict[str, str]:
+        """The secrets the instance gives repo's stacks, by name, read anew
+        for every up; none when the play wrote none. A file that does not
+        read refuses the up, without a word of what it holds.
+        """
+        path = self.raw.get("secrets_file")
+        if not path:
+            return {}
+        try:
+            with open(path) as secrets_file:
+                granted = json.load(secrets_file)["repositories"].get(repo) or {}
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise RefusedError("the instance's secrets do not read: tell its host") from None
+        if not (isinstance(granted, dict) and all(isinstance(name, str) and isinstance(value, str) for name, value in granted.items())):
+            raise RefusedError("the instance's secrets do not read: tell its host")
+        return {str(name): str(value) for name, value in granted.items()}
+
     def paused(self) -> bool:
         """Whether the host has paused the instance."""
         return os.path.exists(self["pause_file"])
@@ -296,6 +315,9 @@ class Front:
         profile = request.get("profile") or "default"
         if not (isinstance(profile, str) and NAME.fullmatch(profile)):
             raise RefusedError("refused: the profile is a name")
+        # Only the request's repository's, which the caller may bring up;
+        # read before a place is taken, which a refusal would leave starting.
+        secrets = self.instance.secrets_for(repo)
         with locked_state(self.instance) as state:
             previous = state.stacks.get(caller.name)
             previous = dict(previous) if previous is not None else None
@@ -311,6 +333,7 @@ class Front:
             "ports": ports,
             "host": self.instance["host"],
             "override": overrides.get(repo) or {},
+            "secrets": secrets,
             "bundle_size": size,
         }
         try:

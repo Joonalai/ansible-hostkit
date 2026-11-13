@@ -97,6 +97,7 @@
           'max_age_hours': executor_instance.max_age_hours | float,
           'bundle_max_mb': executor_instance.bundle_max_mb | int,
           'overrides': executor_instance.overrides,
+          'secrets_file': executor_instance_config_dir ~ '/secrets.json',
           'callers_dir': executor_instance_config_dir ~ '/callers',
           'state_dir': executor_instance_state_dir,
           'agent_socket': executor_instance_run_dir ~ '/agent/agent.sock',
@@ -107,6 +108,24 @@
     group: "{{ executor_front_user }}"
     mode: "0640"
   register: executor_config
+  become: true
+
+# Its own file, so the config stays printable in a diff: per repository,
+# the values its stacks are given, which the front reads for every up.
+- name: Write the secrets of {{ executor_instance.name }}
+  ansible.builtin.copy:
+    content: >-
+      {%- set values = executor_instance.secrets.get('values', {}) -%}
+      {%- set grants = {} -%}
+      {%- for repo, names in executor_instance.secrets.get('repositories', {}).items() -%}
+      {%-   set _ = grants.update({repo: dict(names | zip(names | map('extract', values)))}) -%}
+      {%- endfor -%}
+      {{ {'repositories': grants} | to_nice_json }}
+    dest: "{{ executor_instance_config_dir }}/secrets.json"
+    owner: root
+    group: "{{ executor_front_user }}"
+    mode: "0640"
+  no_log: true
   become: true
 
 # The agent's, which holds nothing secret; outside the exec account's home,

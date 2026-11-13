@@ -5,7 +5,8 @@
 # must still answer; then `stack run`, `list` and `logs`; an up whose
 # service dies at start, which must fail with its log and keep the volume
 # of the same commit; a rewritten commit, whose volume starts empty; and
-# `down`.
+# `down`. The stack is given a secret, which its service sees and nothing
+# else shows: not the up's output, its logs, the journal or its image.
 
 - name: Bring a stack up and down on the executor
   hosts: all
@@ -83,10 +84,15 @@
               # checkout's modes are what COPY puts in the image.
               # The image name is the file's: the executor builds it as the
               # stack's own, stack-<caller>-app.
+              # It is given the secret, and prints only its hash.
               app:
                 build: {context: ., dockerfile: Containerfile.app}
                 image: smoke-app
-                command: ["sh", "-c", "cat /app/site/index.html && exec sleep 3600"]
+                environment: {SMOKE_KEY: "${SMOKE_KEY}"}
+                command:
+                  - sh
+                  - -c
+                  - cat /app/site/index.html && echo "key-sha256 $$(printf %s "$$SMOKE_KEY" | sha256sum)" && exec sleep 3600
                 depends_on: {seed: {condition: service_completed_successfully}}
               # The same build as app's: built after it, it is app's image.
               worker:
@@ -116,6 +122,7 @@
             COPY build-nonce /app/build-nonce
             RUN sleep 3
             COPY site /app/site
+            COPY . /app/tree
             USER 1000
         - name: compose.broken.yaml
           content: |
@@ -155,7 +162,13 @@
             compose = ["compose.yaml"]
             compose_profiles = ["extra"]
             page = 1
-            env = { WEB_PORT = "{port1}", BIND = "{bind}", SMOKE_GREETING = "hello from the profile" }
+
+            [profiles.default.env]
+            WEB_PORT = "{port1}"
+            BIND = "{bind}"
+            SMOKE_GREETING = "hello from the profile"
+            SMOKE_KEY = "{secret:smoke_key}"
+            SMOKE_OTHER = "{secret:smoke_other}"
 
             {% for name in ['privileged', 'profiled', 'writable', 'home', 'foreign', 'broken'] %}
             [profiles.{{ name }}]
@@ -230,7 +243,48 @@
         executable: /bin/bash
       register: dev_smoke_up
       changed_when: true
-      failed_when: dev_smoke_up.rc != 0 or (dev_smoke_up.stdout | from_json).volumes != 'new'
+      failed_when: >-
+        dev_smoke_up.rc != 0 or (dev_smoke_up.stdout | from_json).volumes != 'new'
+        or 'left empty: smoke_other.' not in dev_smoke_up.stderr
+        or dev_smoke_secret in dev_smoke_up.stdout + dev_smoke_up.stderr
+      become: true
+
+    - name: Find the secret's hash, and not the secret, in app's logs
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack logs app
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_key_logs
+      changed_when: false
+      failed_when: >-
+        dev_smoke_key_logs.rc != 0
+        or ('key-sha256 ' ~ (dev_smoke_secret | hash('sha256'))) not in dev_smoke_key_logs.stdout + dev_smoke_key_logs.stderr
+        or dev_smoke_secret in dev_smoke_key_logs.stdout + dev_smoke_key_logs.stderr
+      become: true
+
+    # The tree's .env is in the build's context, and the stack's env
+    # without its secrets: COPY . put it in the image, and not the secret.
+    # no_log, since a module logs its arguments to the journal, the secret
+    # among them here.
+    - name: Find the tree's .env in app's image, without the secret
+      ansible.builtin.command:
+        argv: [runuser, -u, stacks-exec, --, env, "XDG_RUNTIME_DIR=/run/user/{{ dev_smoke_exec_uid.stdout }}",
+               podman, run, --rm, stack-dev-smoke-app, sh, -c,
+               'grep -q "^WEB_PORT=" /app/tree/.env && ! grep -rqF -- "$0" /app', "{{ dev_smoke_secret }}"]
+      register: dev_smoke_image_env
+      changed_when: false
+      no_log: true
+      become: true
+
+    # no_log, so a failure does not print the journal: look for the value
+    # in it with journalctl on the host.
+    - name: Find no secret in the journal
+      ansible.builtin.command:
+        argv: [journalctl, --no-pager, --quiet, --since, -1h]
+      register: dev_smoke_journal
+      changed_when: false
+      failed_when: dev_smoke_journal.rc != 0 or dev_smoke_secret in dev_smoke_journal.stdout
+      no_log: true
       become: true
 
     - name: Ask the page
