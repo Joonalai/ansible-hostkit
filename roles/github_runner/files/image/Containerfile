@@ -93,6 +93,11 @@ RUN sed -i "s|@WORK_DIR@|${WORK_DIR:?}|" /home/runner/.claude/settings.json \
 # stops seconds in, with the product owner's answer never read. In the foreground, the role's answer comes back in the turn.
 # Every step inherits the runner's environment, the action's among them.
 ENV CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+# A Bash call may ask for up to ten minutes by default, and a repository's
+# whole prek run, its tests and its image builds among them, can take
+# longer: it then ends unfinished, and the job is left without its checks.
+# Thirty minutes, well within a job's own limit; the default stays two.
+ENV BASH_MAX_TIMEOUT_MS=1800000
 # docker-compose builds through the podman socket's own build API, which
 # podman serves. Its default, BuildKit, boots a builder container of its own,
 # which podman refuses the mounts it asks for.
