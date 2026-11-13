@@ -2,7 +2,8 @@
 # An executor stack, end to end, on the dev container after `make converge`:
 # a caller of its own, a repository with a stack.toml, then `stack up` and a
 # request to the page; ups the executor must refuse, after which the page
-# must still answer; then `stack run`, `list`, `logs` and `down`.
+# must still answer; then `stack run`, `list` and `logs`; an up whose
+# service dies at start, which must fail with its log; and `down`.
 
 - name: Bring a stack up and down on the executor
   hosts: all
@@ -70,6 +71,10 @@
               seed:
                 image: {{ dev_smoke_image }}
                 command: ["true"]
+              # A one-shot service no other waits for: its status 0 is fine.
+              job:
+                image: {{ dev_smoke_image }}
+                command: ["true"]
               # Built from the tree, its files read by a user not root: the
               # checkout's modes are what COPY puts in the image.
               app:
@@ -93,6 +98,11 @@
             FROM {{ dev_smoke_image }}
             COPY site /app/site
             USER 1000
+        - name: compose.broken.yaml
+          content: |
+            services:
+              app:
+                command: ["sh", "-c", "echo smoke app broken at start; exit 3"]
         - name: compose.privileged.yaml
           content: |
             services:
@@ -123,7 +133,7 @@
             page = 1
             env = { WEB_PORT = "{port1}", BIND = "{bind}", SMOKE_GREETING = "hello from the profile" }
 
-            {% for name in ['privileged', 'profiled', 'writable', 'home'] %}
+            {% for name in ['privileged', 'profiled', 'writable', 'home', 'broken'] %}
             [profiles.{{ name }}]
             compose = ["compose.yaml", "compose.{{ name }}.yaml"]
             compose_profiles = {{ '["later"]' if name == 'profiled' else '[]' }}
@@ -230,6 +240,18 @@
         dev_smoke_calls.rc != 0
         or (item == 'run check' and 'hostkit smoke' not in dev_smoke_calls.stdout + dev_smoke_calls.stderr)
         or (item == 'logs extra' and 'greeting: hello from the profile' not in dev_smoke_calls.stdout + dev_smoke_calls.stderr)
+      become: true
+
+    # Up waits for every service: one that dies at start fails it, with
+    # its log, and stops the stack.
+    - name: Fail to bring up a stack whose service dies at start
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --profile broken
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_broken
+      changed_when: true
+      failed_when: dev_smoke_broken.rc == 0 or 'smoke app broken at start' not in dev_smoke_broken.stdout + dev_smoke_broken.stderr
       become: true
 
     - name: Take the stack down

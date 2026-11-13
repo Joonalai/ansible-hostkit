@@ -20,6 +20,7 @@ class Agent:
         self.stacks = stacks or {}
         self.up_exit = 0
         self.up_kept = False
+        self.start_exit = 0
 
     def __call__(self, request: dict[str, Any], bundle: str | None) -> Iterator[dict[str, Any]]:
         self.calls.append(request)
@@ -32,6 +33,8 @@ class Agent:
             yield {"exit": 0, "stacks": self.stacks}
         elif request["action"] == "stop":
             yield {"exit": 0, "stopped": 1}
+        elif request["action"] == "start" and self.start_exit:
+            yield {"exit": self.start_exit, "message": "a service did not run"}
         else:
             yield {"out": f"{request['action']} done"}
             yield {"exit": 0}
@@ -447,6 +450,21 @@ def test_the_page_stops_and_starts_a_stack(tmp_path: Path) -> None:
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "stopped"
     assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (200, "Started.")
     assert agent.actions()[-1] == ("start", "runner-app-1")
+    assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
+
+
+def test_the_page_starts_a_failed_stack_again(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    agent = Agent()
+    agent.up_exit = 1
+    front, _, _ = make_front(tmp_path, agent)
+    serve(front, request("up", body=b"B"))
+    agent.start_exit = 1
+
+    assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (500, "a service did not run")
+    assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "failed"
+    agent.start_exit = 0
+    assert executor_front.page_post(front, "/stacks/runner-app-1/start", "1") == (200, "Started.")
     assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
 
 

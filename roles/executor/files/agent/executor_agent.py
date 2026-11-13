@@ -63,6 +63,10 @@ from dataclasses import dataclass
 from typing import IO, Any, cast
 
 PROJECT_LABEL = "com.docker.compose.project"
+SERVICE_LABEL = "com.docker.compose.service"
+# A container of `compose run`, which a suite's run leaves when it is cut
+# short: not a service of the stack's.
+ONEOFF_LABEL = "com.docker.compose.oneoff"
 PROFILE_FILE = "stack.toml"
 CALLER = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 SERVICE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
@@ -79,6 +83,16 @@ MAX_COMPOSE_PROFILES = 16
 # The only security_opt a service may set: one that tightens.
 SECURITY_OPTS = ("no-new-privileges", "no-new-privileges:true")
 LOG_TAIL = 200
+# The lines of each failed service's log an up that failed answers with.
+FAILED_LOG_TAIL = 50
+# How long an up or a start watches the services for, at most, well within
+# the unit's RuntimeMaxSec: until every one runs, healthy where it has a
+# health check, or ended with status 0, and has stayed so SETTLE_SECONDS,
+# long enough to see a service that dies as it starts.
+WAIT_SECONDS = 600
+SETTLE_SECONDS = 5
+POLL_SECONDS = 1
+SETTLED, PENDING, FAILED = "settled", "pending", "failed"
 # The tree is checked out with git's usual modes, whatever the agent's own
 # umask: a Dockerfile's COPY takes them into the image, where a service that
 # is not root must still read its files. The tree is in the exec account's
@@ -181,6 +195,9 @@ class System:
     # Runs a command, yielding its lines of output as they come, then returns its status.
     stream: Callable[[list[str]], Iterator[str | int]]
     now: Callable[[], float] = time.time
+    # The watch's clock, which a change of the wall clock leaves alone.
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
 
 
 def run_command(command: list[str]) -> str:
@@ -705,11 +722,82 @@ class Agent:
         meta = {"repo": request["repo"], "commit": commit, "up_at": self.system.now(), **profile}
         with open(stack.meta_file, "w") as meta_file:
             json.dump(meta, meta_file)
-        status = self.emit([*stack.compose(), "up", "--detach", "--build", "--force-recreate", "--remove-orphans"])
-        if status != 0:
-            self.stop(stack)
-            return self.out.done(status, message="docker-compose up failed; the stack is stopped.", commit=commit)
+        failure = self.bring_up(stack, ["--build", "--force-recreate", "--remove-orphans"])
+        if failure is not None:
+            return self.out.done(1, message=failure, commit=commit)
         return self.out.done(0, commit=commit, profile=profile["profile"], page=profile["page"])
+
+    def bring_up(self, stack: Stack, flags: list[str]) -> str | None:
+        """docker-compose up, detached, then the services watched until they
+        settle: None, or why they did not, with the stack stopped and the
+        failed services' logs passed on.
+        """
+        if self.emit([*stack.compose(), "up", "--detach", *flags]) != 0:
+            services, reason = self.services_in(stack, (FAILED,)), "docker-compose up failed"
+        else:
+            try:
+                failure = self.watch(stack)
+            except (subprocess.CalledProcessError, OSError, ValueError) as error:
+                detail = getattr(error, "stderr", "") or str(error)
+                failure = {}, f"the stack could not be watched: {detail.strip()}"
+            if failure is None:
+                return None
+            services, reason = failure
+        self.fail(stack, services)
+        return f"{reason}; the stack is stopped."
+
+    def services_in(self, stack: Stack, verdicts: tuple[str, ...], restarts: dict[str, int] | None = None) -> dict[str, str]:
+        """The stack's services whose containers are in one of verdicts, by
+        the worst verdict of their containers; with restarts, the count each
+        container was first seen with, one restarted since is failed.
+        """
+        found: dict[str, str] = {}
+        for container in self.containers(stack.project):
+            labels = container.get("Labels") or {}
+            if labels.get(ONEOFF_LABEL) == "True":
+                continue
+            service = labels.get(SERVICE_LABEL, "")
+            verdict = FAILED if restarts is not None and restarted(container, restarts) else verdict_of(container)
+            if verdict in verdicts and SERVICE.fullmatch(service) and found.get(service) != FAILED:
+                found[service] = verdict
+        return found
+
+    def watch(self, stack: Stack) -> tuple[dict[str, str], str] | None:
+        """Poll the stack's containers until every one has stayed settled
+        for SETTLE_SECONDS: None; or the services that failed, at once, or
+        that had not settled by WAIT_SECONDS, and why.
+        """
+        deadline = self.system.clock() + WAIT_SECONDS
+        settled_at = None
+        restarts: dict[str, int] = {}
+        while True:
+            found = self.services_in(stack, (FAILED, PENDING), restarts)
+            failed = {name: verdict for name, verdict in found.items() if verdict == FAILED}
+            if failed:
+                return failed, f"{', '.join(sorted(failed))} exited with an error, restarted or is unhealthy"
+            now = self.system.clock()
+            if found:
+                settled_at = None
+            elif settled_at is None:
+                settled_at = now
+            elif now - settled_at >= SETTLE_SECONDS:
+                return None
+            if now >= deadline:
+                return found, f"{', '.join(sorted(found)) or 'the stack'} did not run, or was not healthy, within {WAIT_SECONDS} s"
+            self.system.sleep(POLL_SECONDS)
+
+    def fail(self, stack: Stack, services: dict[str, str]) -> None:
+        """After an up or a start that failed: the services' logs, then the
+        stack stopped, even when the logs cannot be read.
+        """
+        try:
+            if services:
+                self.out.line(f"The logs of {', '.join(sorted(services))}:")
+                self.emit([*stack.compose(), "logs", "--no-color", "--tail", str(FAILED_LOG_TAIL), *sorted(services)])
+        except (subprocess.CalledProcessError, OSError) as error:
+            self.out.line(f"The logs could not be read: {error}")
+        finally:
+            self.stop(stack)
 
     def stack_meta(self, stack: Stack) -> dict[str, Any]:
         """The stack's record of its last up; refused when it has none."""
@@ -749,7 +837,10 @@ class Agent:
     def start(self, stack: Stack) -> int:
         """Bring a stopped stack back from its tree, building only what changed."""
         self.stack_meta(stack)
-        return self.emit([*stack.compose(), "up", "--detach", "--force-recreate"])
+        failure = self.bring_up(stack, ["--force-recreate"])
+        if failure is not None:
+            return self.out.done(1, message=failure)
+        return self.out.done(0)
 
     def down(self, stack: Stack) -> None:
         """Remove the stack, its volumes and its tree."""
@@ -791,6 +882,31 @@ class Agent:
         """Remove the images no container uses, keeping the build cache's layers."""
         self.quiet(["podman", "image", "prune", "--force"])
         return self.out.done(0)
+
+
+def restarted(container: dict[str, Any], restarts: dict[str, int]) -> bool:
+    """Whether the container restarted since the watch first saw it: a
+    restart policy brings back a service that dies, often before a poll
+    sees it ended.
+    """
+    count = int(container.get("Restarts") or 0)
+    return count > restarts.setdefault(str(container.get("Id", "")), count)
+
+
+def verdict_of(container: dict[str, Any]) -> str:
+    """Whether a container has settled: running, and healthy where it has a
+    health check, or ended with status 0; failed: ended otherwise, dead or
+    unhealthy; or pending, as one created or starting is. Podman shows one
+    its restart policy is about to bring back as stopped.
+    """
+    state, status = container.get("State"), str(container.get("Status", ""))
+    if state in ("exited", "stopped"):
+        return SETTLED if container.get("ExitCode", 0) == 0 else FAILED
+    if state == "dead" or (state == "running" and "(unhealthy)" in status):
+        return FAILED
+    if state == "running" and "(starting)" not in status:
+        return SETTLED
+    return PENDING
 
 
 def size_of(text: str) -> int:
@@ -868,7 +984,7 @@ def dispatch(agent: Agent, config: Config, conn: IO[bytes], request: dict[str, A
     if action == "stop":
         return agent.out.done(0, stopped=agent.stop(stack))
     if action == "start":
-        return agent.out.done(agent.start(stack))
+        return agent.start(stack)
     agent.down(stack)
     return agent.out.done(0)
 

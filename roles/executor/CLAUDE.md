@@ -55,6 +55,19 @@ consumer is [docs/executor.md](../../docs/executor.md).
   is one the image's non-root user cannot read; `TREE_UMASK` sets git's
   usual ones for the checkout alone. The tree sits in the exec account's
   home, which no other account enters.
+- **An up and a start watch the stack** (`Agent.watch`), not compose's
+  `--wait`, which fails a stack on any container that ends, status 0 too,
+  but one another service waits for. After `up --detach` the agent polls
+  the containers until every one runs, healthy where it has a check, or
+  ended with 0, and has stayed so `SETTLE_SECONDS`, up to `WAIT_SECONDS`,
+  on a monotonic clock. A restart policy brings a dying service back
+  before a poll may see it ended, so a container whose `Restarts` grew
+  during the watch has failed, and podman's `stopped` is judged by its
+  exit code. `compose run`'s leftovers (`ONEOFF_LABEL`) are no service. On
+  a failure, the watch's own included, it answers with the failed
+  services' log tail and stops the stack, even when the logs cannot be
+  read. The smoke test's `app`, its `broken` profile and the one-shot
+  `seed` and `job` prove it.
 - **No `NoNewPrivileges` on the agent's unit.** Rootless podman starts the
   account's user namespace with the setuid `newuidmap` and `newgidmap`,
   which it refuses, and the play's check then fails with "newuidmap: write
