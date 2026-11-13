@@ -52,6 +52,15 @@ consumer is [docs/executor.md](../../docs/executor.md).
   a service running a built image by the file's name gets the stack's
   name for it. A service may not run a `stack-` image it does not build
   (`stack_image_refusals`): that is another caller's.
+- **An up keeps the volumes only for a commit that follows the last**
+  (`followed_commit`): the same repository, and the last stack's commit
+  an ancestor of the new one in the new tree. A caller is a runner slot
+  or a bench, not a branch; another branch's data was made and migrated
+  by code the new commit lacks. A commit the bundle does not carry counts
+  as another branch's, so a rebase or a force-push starts empty; a
+  refused up removes nothing, and a volume left after the removal fails
+  the up rather than start on it. A shallow checkout's bundle is a
+  parentless commit dated as HEAD, the same for the same HEAD.
 - **The checkout runs no git config of the repository's.** The bundle is
   fetched into a fresh `git init` with `core.hooksPath=/dev/null` and
   `fetch.fsckObjects`, then checked out detached; nothing runs in the tree

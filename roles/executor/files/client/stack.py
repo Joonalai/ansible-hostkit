@@ -51,10 +51,10 @@ class StackError(Exception):
     """Something this side cannot do, said to the user."""
 
 
-def git(directory: str, *args: str) -> str:
+def git(directory: str, *args: str, env: dict[str, str] | None = None) -> str:
     """What a git command in the checkout printed; a failure raises."""
     try:
-        return subprocess.run(["git", "-C", directory, *args], capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(["git", "-C", directory, *args], capture_output=True, text=True, check=True, env=env).stdout.strip()
     except subprocess.CalledProcessError as error:
         command = next((arg for arg in args if not arg.startswith("-") and "=" not in arg), "")
         raise StackError(f"git {command} failed: {error.stderr.strip()}") from error
@@ -76,7 +76,8 @@ def make_bundle(directory: str, path: str) -> str:
 
     A shallow clone's history cannot be bundled, so there it is HEAD's tree
     alone, as a commit with no parent: the instance checks out the
-    bundle's one head, whatever its name.
+    bundle's one head, whatever its name. Dated as HEAD is, it is the same
+    commit for the same HEAD, so a second up of it keeps its volumes.
     """
     head = git(directory, "rev-parse", "HEAD")
     commit = head
@@ -84,7 +85,9 @@ def make_bundle(directory: str, path: str) -> str:
         # An identity of its own: a container may have none configured, and
         # the commit goes nowhere but the instance.
         identity = ["-c", "user.name=stack", "-c", "user.email=stack@localhost"]
-        commit = git(directory, *identity, "commit-tree", "-m", f"HEAD's tree, {head}", f"{head}^{{tree}}")
+        date = git(directory, "show", "--no-patch", "--format=%cd", "--date=raw", head)
+        dated = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+        commit = git(directory, *identity, "commit-tree", "-m", f"HEAD's tree, {head}", f"{head}^{{tree}}", env=dated)
         git(directory, "update-ref", "refs/stack/head", commit)
         git(directory, "bundle", "create", "--quiet", path, "refs/stack/head")
         git(directory, "update-ref", "-d", "refs/stack/head")
@@ -173,9 +176,13 @@ def up(args: argparse.Namespace, env: dict[str, str], out: IO[str], connector: C
         return int(result["exit"])
     found = urls(result, env)
     if args.json:
-        print(json.dumps({"commit": commit, "repo": repo, **found}), file=out)
+        print(json.dumps({"commit": commit, "repo": repo, "volumes": result.get("volumes", ""), **found}), file=out)
         return 0
     print(f"{repo} at {commit[:12]} is up.", file=out)
+    if result.get("volumes") == "new":
+        print("Its volumes started empty: the last stack was another branch's, or there was none.", file=out)
+    elif result.get("volumes") == "kept":
+        print("Its volumes are the last stack's: it was of this commit or one before it on its branch.", file=out)
     print(f"For the user: {found['page']}", file=out)
     print(f"From here:    {found['local']}", file=out)
     if len(found["ports"]) > 1:

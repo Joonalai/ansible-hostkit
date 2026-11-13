@@ -53,6 +53,7 @@ UP = {
     "ports": [9302, 9303, 9304],
     "host": "stacks.example.ts.net",
     "control": "http://stacks.example.ts.net:9301/",
+    "volumes": "new",
 }
 
 
@@ -70,6 +71,7 @@ def test_up_sends_heads_bundle_and_prints_where_the_stack_is(tmp_path: Path) -> 
     assert "For the user: http://stacks.example.ts.net:9303/" in out.getvalue()
     assert "From here:    http://host.containers.internal:9303/" in out.getvalue()
     assert "from the phone at http://stacks.example.ts.net:9301/" in out.getvalue()
+    assert "Its volumes started empty" in out.getvalue()
     assert instance.paths == ["/run/stack.sock"]
 
 
@@ -81,6 +83,7 @@ def test_up_as_json(tmp_path: Path) -> None:
 
     printed = json.loads(out.getvalue())
     assert printed["repo"] == "example/other"
+    assert printed["volumes"] == "new"
     assert printed["page"] == "http://stacks.example.ts.net:9303/"
     assert printed["local_ports"]["9304"] == "http://host.containers.internal:9304/"
 
@@ -108,6 +111,20 @@ def test_a_shallow_checkout_sends_heads_tree(tmp_path: Path, monkeypatch: pytest
     subprocess.run(["git", "-C", str(target), "fetch", "--quiet", str(bundle), "refs/stack/head"], check=True)
     assert subprocess.run(["git", "-C", str(target), "show", "FETCH_HEAD:a"], capture_output=True, text=True, check=True).stdout == "a"
     assert not subprocess.run(["git", "-C", str(shallow), "for-each-ref", "refs/stack"], capture_output=True, text=True, check=True).stdout
+
+
+def test_a_shallow_checkout_sends_one_commit_for_one_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = checkout(tmp_path)
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "--quiet", "--depth", "1", f"file://{path}", str(shallow)], check=True)
+    heads = []
+    for number in (1, 2):
+        monkeypatch.setenv("GIT_COMMITTER_DATE", f"170000000{number} +0000")
+        monkeypatch.setenv("GIT_AUTHOR_DATE", f"170000000{number} +0000")
+        stack.make_bundle(str(shallow), str(tmp_path / f"{number}.bundle"))
+        heads.append((tmp_path / f"{number}.bundle").read_bytes().split(b"\n")[1])
+
+    assert heads[0] == heads[1]
 
 
 def test_no_room_is_status_75_with_the_reason(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

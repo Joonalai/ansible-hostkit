@@ -81,6 +81,15 @@ flowchart LR
   config checked beside the stack; the stack is replaced only once both
   pass. A broken compose file or a refused mount leaves the last stack up,
   the one someone may be looking at, and says why.
+- **A stack keeps its data only on the same branch.** The last stack's
+  volumes stay when the new commit is the last one or follows it, as when
+  a job pushes more commits to its branch. A caller serves one job after
+  another, so after another repository, another branch, an older commit,
+  or a rebase or folded fix that rewrote the branch, whose last commit
+  the bundle no longer carries, they are removed before the new stack
+  starts, and a volume that will not go fails the up: its migrations and seed run on an
+  empty database, never on one another branch's code made. The up says
+  which (`volumes`: `kept` or `new`); a down gives a clean start any time.
 - **An up waits for its stack.** It returns once every service runs,
   healthy where it has a healthcheck, or has ended with status 0, and has
   stayed so a few seconds, up to ten minutes. A service that exits with
