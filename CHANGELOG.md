@@ -8,6 +8,20 @@ carry.
 
 <!-- version list -->
 
+## v0.3.1 (2026-11-13)
+
+### Bug Fixes
+
+- Keep a repository's bun packages in its runner cache
+  ([`1e821f3`](https://github.com/Joonalai/ansible-hostkit/commit/1e821f3c9d3eed1cb7484302ca984fc85c2302d0))
+
+- Let a runner job's commands run up to thirty minutes
+  ([`e17d120`](https://github.com/Joonalai/ansible-hostkit/commit/e17d1201cece51a98e20b5949a8d1a402a4fa703))
+
+- Start a stack's volumes empty when its branch changes
+  ([`6b50a6b`](https://github.com/Joonalai/ansible-hostkit/commit/6b50a6be5fa50963e0e0775c065407faa3895f5e))
+
+
 ## v0.3.0 (2026-11-13)
 
 ### Features
