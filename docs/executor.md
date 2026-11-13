@@ -62,7 +62,8 @@ flowchart LR
   options but `no-new-privileges`, another runtime or cgroup, the host's namespaces or another
   container's, bind mounts from outside the checkout and writable ones from
   inside it, builds that reach outside it or onto the host's network,
-  volumes and networks not the stack's own, compose's own labels, and
+  volumes and networks not the stack's own, compose's own labels, another
+  stack's image (`stack-...`, which it does not build itself), and
   published ports not the caller's. It checks the services the stack
   starts, those of the compose profiles its profile turns on and no
   others, which are then not in the config it runs from at all. It reads
@@ -73,7 +74,9 @@ flowchart LR
   beside the tree and runs every later `start`, `run` and `logs` from it,
   never from the tree's files, which a container could rewrite. It drops
   fixed `container_name`s and healthchecks' `start_interval`, which compose
-  on podman does not take.
+  on podman does not take, and names every image the stack builds after
+  the stack, whatever the compose file calls it: the instance's callers
+  share one image store, and one could otherwise replace another's image.
 - **A refused up changes nothing.** The new tree is checked out and its
   config checked beside the stack; the stack is replaced only once both
   pass. A broken compose file or a refused mount leaves the last stack up,
@@ -181,10 +184,10 @@ can do so that a change rebuilds only what it changed:
   alone, install from them, then copy the rest: `uv sync --frozen --no-install-project` (`--no-install-workspace` in a workspace) before
   the source and `uv sync --frozen` after it, or `bun install --frozen-lockfile` before copying the app. A Containerfile that copies
   the source first downloads every package again on every change.
-- **One build for the services that run one image**, a YAML anchor they
-  all take. They are built one after another, so all but the first are
-  cache hits. Leave the image unnamed: a named one is shared with the
-  instance's other callers.
+- **One build for the services that run one image**: a YAML anchor they
+  all take, or one service's `build:` and `image:` whose name the others
+  run. They are built one after another, so all but the first are cache
+  hits.
 
 ## Variables
 

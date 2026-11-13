@@ -736,10 +736,54 @@ def test_the_checked_config_drops_what_the_host_cannot_run_and_fixed_names() -> 
         },
     }
 
-    assert executor_agent.with_resets(config) == {
+    assert executor_agent.with_resets(config, "stack-r-1") == {
         "name": "stack-r-1",
         "services": {"db": {"healthcheck": {"interval": "5s"}}, "web": {"healthcheck": {"interval": "5s"}}},
     }
+
+
+def test_the_images_a_stack_builds_are_named_its_own() -> None:
+    services = {
+        "api": {"build": {"context": "."}, "image": "postgres:16"},
+        "worker": {"image": "postgres:16"},
+        "web": {"build": {"context": "."}},
+        "Web.": {"build": {"context": "."}},
+        "db": {"image": "docker.io/library/postgres:17"},
+    }
+
+    named = executor_agent.own_images(services, "stack-r-1")
+
+    assert {name: service["image"] for name, service in named.items()} == {
+        "api": "stack-r-1-api",
+        "worker": "stack-r-1-api",
+        "web": "stack-r-1-web-2",
+        "Web.": "stack-r-1-web",
+        "db": "docker.io/library/postgres:17",
+    }
+
+
+def test_the_checked_config_names_the_built_images_after_the_stack(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake({"name": "stack-r-1", "services": {"web": {"build": {"context": "."}, "image": "stack-r-2-web"}, "e2e": {}}})
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    checked = json.loads((tmp_path / "stacks" / "r-1" / "checked.json").read_text())
+    assert checked["services"]["web"]["image"] == "stack-r-1-web"
+
+
+@pytest.mark.parametrize("image", ["stack-r-2-web", "localhost/stack-r-2-web:latest", "stack-r-2-web@sha256:" + "0" * 64])
+def test_a_service_that_runs_another_stacks_image_is_refused(image: str) -> None:
+    services = {"web": {"image": image}}
+
+    assert executor_agent.stack_image_refusals(services) == [f"web: the image {image}, a stack's that this one does not build"]
+
+
+def test_a_service_that_runs_the_image_its_own_stack_builds_passes() -> None:
+    services = {"api": {"build": {"context": "."}, "image": "stack-app"}, "worker": {"image": "stack-app"}, "db": {"image": "postgres:17"}}
+
+    assert executor_agent.stack_image_refusals(services) == []
 
 
 def test_a_refused_up_keeps_the_last_stack_as_it_was(tmp_path: Path) -> None:

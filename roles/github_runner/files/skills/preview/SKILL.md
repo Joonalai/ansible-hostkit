@@ -46,9 +46,8 @@ applies.
    repository's Containerfile, copy the manifest and lock file alone and
    install from them before copying the source (`uv sync --frozen --no-install-project`, `bun install --frozen-lockfile`), so a change
    rebuilds only what it changed. Services that run one image share one
-   `build:` through a YAML anchor, without an `image:` name, which would be
-   shared with the executor's other callers. A Containerfile that copies
-   the source first is worth fixing in the PR.
+   `build:` through a YAML anchor, or run the `image:` one of them builds.
+   A Containerfile that copies the source first is worth fixing in the PR.
 
 1. **The preview shows what the change changed.** A compose file that
    leaves out the part the change is in, such as a web front end it does
