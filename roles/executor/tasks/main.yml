@@ -43,6 +43,47 @@
   loop_control:
     label: "{{ item.name | default(item) }}"
 
+# The values never in a message: the facts name only what is wrong with
+# them, and the assert prints those names.
+- name: Find what is wrong with each instance's secrets
+  ansible.builtin.set_fact:
+    executor_secrets_problems: >-
+      {%- set problems = [] -%}
+      {%- for instance in executor_merged -%}
+      {%-   set values = (instance.secrets | default({})).get('values', {}) -%}
+      {%-   set grants = (instance.secrets | default({})).get('repositories', {}) -%}
+      {%-   if values is not mapping or grants is not mapping -%}
+      {%-     set _ = problems.append(instance.name ~ ': secrets.values and secrets.repositories are mappings') -%}
+      {%-   else -%}
+      {%-     for name, value in values.items() -%}
+      {%-       if name is not match('^[a-z][a-z0-9_]{0,31}$') -%}
+      {%-         set _ = problems.append(instance.name ~ ': secret name ' ~ name ~ ' is not lowercase letters, digits and _') -%}
+      {%-       elif value is not string or value | length < 8 or value | length > 4096 -%}
+      {%-         set _ = problems.append(instance.name ~ ': secret ' ~ name ~ ' is not a string of 8 to 4096 characters') -%}
+      {%-       elif value is search("[\\n\\r\\x00']") -%}
+      {%-         set _ = problems.append(instance.name ~ ': secret ' ~ name ~ ' has a newline or a quote') -%}
+      {%-       endif -%}
+      {%-     endfor -%}
+      {%-     for repo, names in grants.items() -%}
+      {%-       if repo is not match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') or names is string or names is mapping or names is not iterable -%}
+      {%-         set _ = problems.append(instance.name ~ ': secrets.repositories maps owner/name to a list of names, not ' ~ repo) -%}
+      {%-       else -%}
+      {%-         for name in names if name not in values -%}
+      {%-           set _ = problems.append(instance.name ~ ': ' ~ repo ~ ' is given ' ~ name ~ ', which has no value') -%}
+      {%-         endfor -%}
+      {%-       endif -%}
+      {%-     endfor -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{- problems -}}
+  no_log: true
+
+- name: Assert every instance's secrets are named and set
+  ansible.builtin.assert:
+    that: executor_secrets_problems | length == 0
+    fail_msg: "{{ executor_secrets_problems }}"
+    quiet: true
+
 - name: Assert the instances share no name and no port
   vars:
     executor_all_ports: >-

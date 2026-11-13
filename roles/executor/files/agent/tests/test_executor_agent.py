@@ -4,7 +4,7 @@ import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import executor_agent
 import pytest
@@ -35,6 +35,8 @@ class Fake:
         self.volumes: list[str] = []
         self.volumes_stay = False
         self.after_up: list[list[dict[str, Any]]] = []
+        self.config_error = ""
+        self.output = ["building\n"]
 
     def run(self, command: list[str]) -> str:
         self.calls.append(command)
@@ -47,6 +49,8 @@ class Fake:
         if command[:2] == ["podman", "volume"]:
             return self.volume(command)
         if "docker-compose" in command and "config" in command:
+            if self.config_error:
+                raise subprocess.CalledProcessError(1, command, stderr=self.config_error)
             return json.dumps(self.compose_config)
         return ""
 
@@ -71,7 +75,7 @@ class Fake:
         self.calls.append(command)
         if self.logs_fail and "logs" in command:
             raise OSError("no docker-compose")
-        yield "building\n"
+        yield from self.output
         yield self.up_status if "up" in command else 0
 
 
@@ -170,6 +174,156 @@ def test_up_checks_out_the_bundle_writes_the_env_and_starts_compose(tmp_path: Pa
     assert ["--env-file", str(stack / "stack.env"), "-f", str(stack / "checked.json")] == up[at : at + 4]
     assert json.loads((stack / "checked.json").read_text())["services"]["web"] == {"ports": [{"published": "9302"}]}
     assert json.loads((stack / "stack.json").read_text())["suites"] == {"e2e": {"service": "e2e", "command": ["pytest", "-q"]}}
+
+
+SECRET = "the-model-key-value"
+
+SECRET_PROFILE = """
+[profiles.default]
+compose = ["compose.yaml"]
+env = { WEB_PORT = "{port1}", MODEL_API_KEY = "{secret:model_key}", AUTH = "Bearer {secret:model_key}", MAIL = "{secret:mail_key}" }
+
+[suites.e2e]
+service = "e2e"
+command = ["pytest", "-q"]
+"""
+
+
+def secret_stack(tmp_path: Path) -> tuple[executor_agent.Config, Fake, Path]:
+    checkout = repository(tmp_path, {"stack.toml": SECRET_PROFILE, "compose.yaml": "services: {}\n"})
+    return make_config(tmp_path), Fake(), checkout
+
+
+def test_a_secret_fills_the_stacks_env_and_never_the_tree(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 0
+    stack = tmp_path / "stacks" / "r-1"
+    env = (stack / "stack.env").read_text()
+    assert f"MODEL_API_KEY='{SECRET}'" in env
+    assert f"AUTH='Bearer {SECRET}'" in env
+    assert "MAIL=''" in env
+    tree_env = (stack / "tree" / ".env").read_text()
+    assert "WEB_PORT='9302'" in tree_env
+    assert "MODEL_API_KEY" not in tree_env
+    assert "AUTH" not in tree_env
+    assert SECRET not in (stack / "stack.json").read_text()
+    assert json.loads((stack / "stack.json").read_text())["secret_keys"] == ["AUTH", "MAIL", "MODEL_API_KEY"]
+    assert json.loads((stack / "secrets.json").read_text()) == {"model_key": SECRET}
+    assert not (stack / "incoming.secrets.json").exists()
+
+
+def test_a_secret_not_granted_is_left_empty_and_named(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+
+    answer = serve(config, fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    assert {"out": "Secrets the instance does not give this repository, left empty: mail_key, model_key."} in answer
+    assert "MODEL_API_KEY=''" in (tmp_path / "stacks" / "r-1" / "stack.env").read_text()
+
+
+def test_a_secrets_value_is_hidden_in_composes_config_error(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+    fake.config_error = f"invalid interpolation: Bearer {SECRET}"
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 1
+    assert "Bearer {secret:model_key}" in answer[-1]["message"]
+    assert SECRET not in json.dumps(answer)
+    stack = tmp_path / "stacks" / "r-1"
+    assert not (stack / "incoming.secrets.json").exists()
+    assert not (stack / "incoming.stack.env").exists()
+
+
+def test_a_secrets_value_is_hidden_in_a_failed_ups_logs(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+    fake.up_status = 1
+    fake.containers = [exited("a1", "api", "exited", 1)]
+    fake.output = [f"api | connecting with {SECRET}\n"]
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert {"out": "api | connecting with {secret:model_key}"} in answer
+    assert SECRET not in json.dumps(answer)
+
+
+def test_a_secrets_value_is_hidden_in_the_stacks_logs_and_suites(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+    serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+    fake.output = [f"key={SECRET}\n"]
+
+    logs = serve(config, fake, b'{"action": "logs", "caller": "r-1"}\n')
+    run = serve(config, fake, b'{"action": "run", "caller": "r-1", "suite": "e2e"}\n')
+
+    assert logs[0] == run[0] == {"out": "key={secret:model_key}"}
+
+
+def test_a_secrets_value_is_hidden_in_the_journal(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config, _, checkout = secret_stack(tmp_path)
+
+    class Failing(Fake):
+        @override
+        def run(self, command: list[str]) -> str:
+            if command[:2] == ["podman", "unshare"] and command[2] == "du":
+                raise subprocess.CalledProcessError(1, command, stderr=f"du: {SECRET}")
+            return super().run(command)
+
+    answer = serve(config, Failing(), up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 1
+    assert SECRET not in json.dumps(answer)
+    assert "{secret:model_key}" in capsys.readouterr().err
+
+
+def test_a_build_arg_holding_a_secret_is_refused(tmp_path: Path) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+    fake.compose_config = {"name": "stack-r-1", "services": {"web": {"build": {"context": ".", "args": {"KEY": SECRET}}}}}
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 1
+    assert "web: build arg KEY holds a secret, which would stay in the image" in answer[-1]["message"]
+    assert SECRET not in json.dumps(answer)
+
+
+@pytest.mark.parametrize(
+    ("build", "says"),
+    [
+        ({"labels": {"key": f"Bearer {SECRET}"}}, "web: build labels holds a secret"),
+        ({"dockerfile_inline": f"FROM alpine\nRUN echo {SECRET} > /key"}, "web: build dockerfile_inline holds a secret"),
+    ],
+)
+def test_a_build_holding_a_secret_anywhere_is_refused(tmp_path: Path, build: dict[str, Any], says: str) -> None:
+    config, fake, checkout = secret_stack(tmp_path)
+    fake.compose_config = {"name": "stack-r-1", "services": {"web": {"build": {"context": "."} | build}}}
+
+    answer = serve(config, fake, up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 1
+    assert says in answer[-1]["message"]
+    assert SECRET not in json.dumps(answer)
+
+
+def test_a_stage_that_fails_leaves_no_secret_beside_the_stack(tmp_path: Path) -> None:
+    config, _, checkout = secret_stack(tmp_path)
+
+    class Failing(Fake):
+        @override
+        def run(self, command: list[str]) -> str:
+            if "docker-compose" in command and "config" in command:
+                raise OSError("no docker-compose")
+            return super().run(command)
+
+    answer = serve(config, Failing(), up_request(bundle_of(checkout), secrets={"model_key": SECRET}))
+
+    assert answer[-1]["exit"] == 1
+    stack = tmp_path / "stacks" / "r-1"
+    assert not (stack / "incoming.secrets.json").exists()
+    assert not (stack / "incoming.stack.env").exists()
 
 
 def add_commit(checkout: Path, name: str) -> None:
@@ -615,6 +769,11 @@ def test_past_the_disk_cap_a_prune_that_frees_enough_lets_it_up(tmp_path: Path) 
         {"action": "up", "caller": "r-1", "repo": "example/app", "ports": [], "bundle_size": 1},
         {"action": "up", "caller": "r-1", "repo": "not a repo", "ports": PORTS, "bundle_size": 1},
         {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS},
+        {"action": "logs", "caller": "r-1", "secrets": {}},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": []},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"Bad": "a-long-value"}},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"key": "short"}},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"key": "a-long-'value"}},
     ],
 )
 def test_a_request_out_of_shape_is_refused(tmp_path: Path, request_: dict[str, Any]) -> None:

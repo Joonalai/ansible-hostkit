@@ -31,6 +31,11 @@
 #           profiles:
 #             seed:
 #               compose: [compose.yaml, compose.seed.yaml]
+#       secrets:                    # optional, values a profile's {secret:<name>} asks for
+#         values:
+#           model_key: "{{ vault_stacks_model_key }}"
+#         repositories:             # which repository's stacks get which
+#           example/app: [model_key]
 #
 # Any key of executor_instance_defaults below may be set per instance.
 #
@@ -69,6 +74,12 @@ executor_instance_defaults:
   # The largest bundle an up may send, the checkout's whole history.
   bundle_max_mb: 200
   overrides: {}
+  # Named values, from the consumer's vault, and the names each repository's
+  # stacks are given. Everyone who may bring a repository up can read what
+  # it is given: see docs/executor.md, "Who can read a secret".
+  secrets:
+    values: {}
+    repositories: {}
 
 # Host packages beyond podman, which rootless_account installs with the
 # account: git for the bundles, docker-compose for the stacks.

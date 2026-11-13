@@ -183,6 +183,76 @@ by a service that does not run as root.
 An instance's `overrides` can add or replace a repository's profiles from
 the inventory.
 
+### Secrets
+
+A value the repository must not hold, such as a key for a service the
+host's sandbox lets the stacks reach, comes from the instance. The
+profile names it with `{secret:<name>}`, and the instance's `secrets`
+decide which repository is given which:
+
+```yaml
+# The consumer's inventory: the values from its vault.
+executor_instances:
+  - name: stacks
+    # ...
+    secrets:
+      values:
+        model_key: "{{ vault_stacks_model_key }}"
+      repositories:
+        example/app: [model_key]
+```
+
+```toml
+[profiles.default]
+compose = ["compose.yaml"]
+env = { MODEL_API_KEY = "{secret:model_key}" }
+```
+
+```yaml
+# compose.yaml: the service takes it by name.
+services:
+  api:
+    environment:
+      MODEL_API_KEY: ${MODEL_API_KEY}
+```
+
+- **Only for the files' `${...}`.** A value holding a secret is in the
+  stack's env that compose reads, never in the tree's `.env`. The tree is
+  the build's context and a service's to bind-mount, so a service's
+  `env_file: .env` does not get it, and a `COPY .` does not put it in an
+  image. A build that holds one, in an arg, a label, an inline
+  Dockerfile or anywhere else, is refused: it would stay in the image and
+  its build cache, which every caller of the instance builds in.
+- **A secret not given is empty.** The up names the secrets that were left
+  empty, never a value. A stack still comes up on an instance that gives
+  its repository nothing, a workstation's or a test container's, and only
+  the part that needs the service fails.
+- **Names, not values, in what the callers see.** Wherever the up, a
+  suite, the logs or a refusal would print a value given to the stack,
+  the instance prints `{secret:<name>}`, and the journal does the same.
+  This catches a value printed by mistake. A service that encodes it
+  first gets past it.
+- **Suites get the same values.** A suite's container is a new container
+  of one of the stack's services, with the same environment.
+- **A change takes effect at the next up.** A start from the phone page
+  runs the stack as it was brought up. To take a value back at once,
+  `down` the stacks that hold it; the reaper removes every stack after
+  `max_age_hours` anyway.
+
+#### Who can read a secret
+
+A secret given to a repository is given to everyone who can bring that
+repository up on the instance: every caller whose registration lists the
+repository. The caller sends the code that runs with the value, so one
+line that prints it encoded, then `stack logs`, hands it over. The
+instance keeps the value off the forge, out of the play's output and away
+from other repositories' stacks. It does not keep it from the callers of
+the repository it is given to.
+
+So give a stack only a value you would give those callers anyway. Make it
+a key of its own on the far side, which can be revoked alone, with a rate
+limit there if the service has one.
+
 ### Keeping its build cheap
 
 Every up builds the stack's images on a host that may be small and busy,
@@ -213,19 +283,20 @@ Required, per instance, with no usable default:
 
 The most used of the optional ones, per instance:
 
-| Key                     | Default         | What it is                                  |
-| ----------------------- | --------------- | ------------------------------------------- |
-| `host`                  | the host's FQDN | Where the user opens a stack                |
-| `ports_per_caller`      | `3`             | Ports in a caller's block                   |
-| `max_stacks`            | `3`             | Stacks running at once                      |
-| `memory_max`            | `4G`            | Memory of every stack and build at once     |
-| `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded       |
-| `disk_max_gb`           | `20`            | Images and trees, past which an up refuses  |
-| `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped      |
-| `queue_timeout_minutes` | `20`            | How long a runner's job waits for room      |
-| `idle_hours`            | `12`            | Unused this long, a stack is stopped        |
-| `max_age_hours`         | `72`            | Up this long, a stack is removed            |
-| `overrides`             | none            | Profiles per repository, from the inventory |
+| Key                     | Default         | What it is                                   |
+| ----------------------- | --------------- | -------------------------------------------- |
+| `host`                  | the host's FQDN | Where the user opens a stack                 |
+| `ports_per_caller`      | `3`             | Ports in a caller's block                    |
+| `max_stacks`            | `3`             | Stacks running at once                       |
+| `memory_max`            | `4G`            | Memory of every stack and build at once      |
+| `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded        |
+| `disk_max_gb`           | `20`            | Images and trees, past which an up refuses   |
+| `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped       |
+| `queue_timeout_minutes` | `20`            | How long a runner's job waits for room       |
+| `idle_hours`            | `12`            | Unused this long, a stack is stopped         |
+| `max_age_hours`         | `72`            | Up this long, a stack is removed             |
+| `overrides`             | none            | Profiles per repository, from the inventory  |
+| `secrets`               | none            | Values the stacks of chosen repositories get |
 
 Every variable is described in
 [`roles/executor/defaults/main.yml`](../roles/executor/defaults/main.yml).

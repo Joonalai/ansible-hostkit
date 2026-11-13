@@ -24,3 +24,6 @@ all:
     workbench_subuid_count: 16000
     dev_exec_subuid_start: 44000
     dev_exec_subuid_count: 20000
+    # The executor's secret for the smoke stack, a made-up value the smoke
+    # test looks for where it must not be.
+    dev_smoke_secret: smoke-secret-for-the-dev-container

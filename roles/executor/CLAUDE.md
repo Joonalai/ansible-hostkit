@@ -29,11 +29,28 @@ consumer is [docs/executor.md](../../docs/executor.md).
   from with the same `--profile`s, so nothing can start them. A suite's
   service must be in it. `security_opt` passes only as `no-new-privileges`.
 - **The stack's env is the tree's `.env` too**, compose's default, which a
-  service's `env_file: .env` reads; it replaces the repository's own, and a
-  link there is removed, never written through (`write_tree_env`).
+  service's `env_file: .env` reads, less the values that hold a secret; it
+  replaces the repository's own, and a link there is removed, never written
+  through (`write_tree_env`).
   The namespaces are an allow list (`OWN_MODE`); what a service may never
   set is `NEVER` in `executor_agent.py`. A new compose key that widens a
   container's reach goes there with a test before anything relies on it.
+- **A secret reaches only its repository's stacks, and never the tree.**
+  The play writes `secrets.json`, root's and the front's to read, with
+  `no_log`, its own file so `instance.json` stays printable. The front
+  adds to an up the secrets of the request's repository alone
+  (`Instance.secrets_for`). The agent fills `{secret:<name>}` into the
+  stack's `stack.env`, keeps the values in `secrets.json` beside it, and
+  writes the tree's `.env` without the keys that hold one
+  (`without_secrets`). The tree is the build's context and a service's to
+  bind-mount. `stack.json` keeps their names, never their values. The
+  agent's config stays free of secrets.
+- **Every word the agent sends passes `Out.clean`.** The up hides the
+  values it was given, and every action on a stack hides the stack's own
+  (`stack_meta`), replacing each value with `{secret:<name>}`. A new path
+  to the caller or the journal goes through `Out`, never around it. A
+  build holding a value, in an arg, a label or anywhere else, is refused
+  (`secret_build_refusals`).
 - **`config` reads files, so it runs confined.** `include`, `extends` and
   `env_file` take any path, and `env_file`'s contents land in the
   container's environment. `CONFINE` runs it in a user and mount namespace

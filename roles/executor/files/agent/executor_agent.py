@@ -59,7 +59,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import IO, Any, cast
 
 PROJECT_LABEL = "com.docker.compose.project"
@@ -74,11 +74,15 @@ NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 ENV_KEY = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REPO = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host)\}")
+SECRET_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host|secret:[a-z][a-z0-9_]{0,31})\}")
 MAX_HEADER = 65536
 MAX_PORTS = 16
 MAX_COMPOSE_FILES = 8
 MAX_VALUE = 4096
+# The shortest secret value the play lets through, so that hiding one in
+# the output never mangles ordinary words.
+MIN_SECRET = 8
 MAX_COMMAND = 64
 MAX_COMPOSE_PROFILES = 16
 # The only security_opt a service may set: one that tightens.
@@ -171,6 +175,27 @@ class Out:
     def __init__(self, stream: IO[bytes]) -> None:
         """Write to stream, flushing every line."""
         self.stream = stream
+        # Each hidden value and its placeholder, the longest value first.
+        self.hidden: list[tuple[str, str]] = []
+
+    def hide(self, secrets: dict[str, str]) -> None:
+        """Replace each of the secrets' values with its placeholder in
+        everything written from now on, the journal's line included.
+        """
+        hidden = dict(self.hidden) | {value: f"{{secret:{name}}}" for name, value in secrets.items() if value}
+        self.hidden = sorted(hidden.items(), key=lambda pair: len(pair[0]), reverse=True)
+
+    def clean(self, data: Any) -> Any:  # noqa: ANN401 -- an event's values are of every JSON kind
+        """The data, with every hidden value replaced, the longest first."""
+        if isinstance(data, str):
+            for value, placeholder in self.hidden:
+                data = data.replace(value, placeholder)
+            return data
+        if isinstance(data, dict):
+            return {key: self.clean(item) for key, item in data.items()}
+        if isinstance(data, list):
+            return [self.clean(item) for item in data]
+        return data
 
     def line(self, text: str) -> None:
         """One line of output, as it comes."""
@@ -178,7 +203,7 @@ class Out:
 
     def event(self, data: dict[str, Any]) -> None:
         """One event, flushed at once so the caller sees progress."""
-        self.stream.write(json.dumps(data).encode() + b"\n")
+        self.stream.write(json.dumps(self.clean(data)).encode() + b"\n")
         self.stream.flush()
 
     def done(self, status: int, **data: object) -> int:
@@ -243,6 +268,8 @@ class Stack:
         prefix = "incoming." if staged else ""
         self.tree = os.path.join(self.dir, "incoming" if staged else "tree")
         self.env_file = os.path.join(self.dir, f"{prefix}stack.env")
+        # The values the up was given, for hiding them in the stack's output.
+        self.secrets_file = os.path.join(self.dir, f"{prefix}secrets.json")
         self.checked = os.path.join(self.dir, f"{prefix}checked.json")
         self.meta_file = os.path.join(self.dir, f"{prefix}stack.json")
 
@@ -253,6 +280,17 @@ class Stack:
                 return json.load(meta_file)
         except FileNotFoundError:
             return None
+
+    def secrets(self) -> dict[str, str]:
+        """The secrets the stack's up was given, by name; none for a stack
+        brought up without, or by an agent before them.
+        """
+        try:
+            with open(self.secrets_file) as secrets_file:
+                found = json.load(secrets_file)
+        except (FileNotFoundError, ValueError):
+            return {}
+        return {str(name): str(value) for name, value in found.items()} if isinstance(found, dict) else {}
 
     def base(self) -> list[str]:
         """docker-compose with the project and its env file, which keeps the tree's .env out."""
@@ -321,11 +359,34 @@ def check_compose_files(tree: str, files: object) -> list[str]:
     return checked
 
 
-def fill(value: str, ports: list[int], host: str) -> str:
-    """A value with {port1}..{portN}, {bind} and {host} put in."""
+@dataclass
+class Secrets:
+    """The secrets the instance gives the request's repository, and the
+    names the profile asked for, granted or not.
+    """
+
+    values: dict[str, str] = field(default_factory=dict)
+    asked: set[str] = field(default_factory=set)
+
+    def empty(self) -> list[str]:
+        """The names asked for and not granted, which were filled in empty."""
+        return sorted(self.asked - set(self.values))
+
+
+def fill(value: str, ports: list[int], host: str, secrets: Secrets | None = None) -> str:
+    """A value with {port1}..{portN}, {bind}, {host} and {secret:<name>}
+    put in, once: a value put in is not read again. A secret the instance
+    does not grant is put in empty, and noted in secrets.
+    """
 
     def one(match: re.Match[str]) -> str:
         word = match.group(1)
+        if word.startswith("secret:"):
+            name = word.removeprefix("secret:")
+            if secrets is None:
+                return ""
+            secrets.asked.add(name)
+            return secrets.values.get(name, "")
         if word == "bind":
             return "0.0.0.0"  # noqa: S104 -- a stack's ports are published on every address, as the host's sandbox decides
         if word == "host":
@@ -338,8 +399,10 @@ def fill(value: str, ports: list[int], host: str) -> str:
     return PLACEHOLDER.sub(one, value)
 
 
-def check_env(env: object, ports: list[int], host: str) -> dict[str, str]:
-    """The profile's .env values, filled in, as the env file can hold them."""
+def check_env(env: object, ports: list[int], host: str, secrets: Secrets | None = None) -> dict[str, str]:
+    """The profile's .env values, filled in, as the env file can hold them;
+    the secrets they ask for are noted in secrets.
+    """
     if env is None:
         return {}
     if not isinstance(env, dict):
@@ -350,7 +413,7 @@ def check_env(env: object, ports: list[int], host: str) -> dict[str, str]:
             raise RefusedError(f"env name {key!r} is not one: upper case, digits and _, not starting STACK_, COMPOSE_ or DOCKER_")
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             raise RefusedError(f"env {key} is not a string or a number")
-        text = fill(str(value), ports, host)
+        text = fill(str(value), ports, host, secrets)
         if len(text) > MAX_VALUE or any(char in text for char in "\n\r\0'"):
             raise RefusedError(f"env {key} has a newline or a quote, or is too long")
         checked[key] = text
@@ -388,16 +451,21 @@ def resolve_profile(tree: str, request: dict[str, Any]) -> dict[str, Any]:
         known = ", ".join(sorted(profiles["profiles"])) or "none"
         raise RefusedError(f"no profile {name!r}; the repository has {known}")
     ports = request["ports"]
+    secrets = Secrets(values=dict(request.get("secrets") or {}))
     page = profile.get("page", 1)
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= len(ports):
         raise RefusedError(f"page is the number of one of the caller's {len(ports)} ports")
     return {
         "profile": name,
         "files": check_compose_files(tree, profile.get("compose", ["compose.yaml"])),
-        "env": check_env(profile.get("env"), ports, request.get("host", "")),
+        "env": check_env(profile.get("env"), ports, request.get("host", ""), secrets),
         "page": page,
         "suites": check_suites(profiles["suites"]),
         "compose_profiles": check_compose_profiles(profile.get("compose_profiles", [])),
+        # Names only: the keys whose values hold a secret, which the tree's
+        # .env and the stack's record leave out.
+        "secret_keys": sorted(key for key, value in (profile.get("env") or {}).items() if "{secret:" in str(value)),
+        "empty_secrets": secrets.empty(),
     }
 
 
@@ -433,6 +501,13 @@ def write_tree_env(tree: str, text: str) -> None:
     os.fchmod(descriptor, 0o644)
     with os.fdopen(descriptor, "w") as env_file:
         env_file.write(text)
+
+
+def without_secrets(env: dict[str, str], secret_keys: list[str]) -> dict[str, str]:
+    """The profile's values without those that hold a secret: what the
+    tree's .env and the stack's record may have.
+    """
+    return {key: value for key, value in env.items() if key not in secret_keys}
 
 
 def env_file_text(ports: list[int], host: str, env: dict[str, str]) -> str:
@@ -548,6 +623,43 @@ def stack_image_refusals(services: dict[str, dict[str, Any]]) -> list[str]:
         if not service.get("build") and image not in built and image.removeprefix("localhost/").startswith("stack-"):
             found.append(f"{name}: the image {image}, a stack's that this one does not build")
     return found
+
+
+def strings_in(value: object) -> Iterator[str]:
+    """Every string in a value of the compose config, keys included."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from strings_in(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings_in(item)
+    elif value is not None:
+        yield str(value)
+
+
+def secret_build_refusals(services: dict[str, dict[str, Any]], secrets: dict[str, str]) -> list[str]:
+    """A build holding a secret's value, in an arg, a label, an inline
+    Dockerfile or anywhere else: it would stay in the image and its build
+    cache, in the store every caller builds in.
+    """
+    values = [secret for secret in secrets.values() if secret]
+
+    def holds(value: object) -> bool:
+        return any(secret in text for text in strings_in(value) for secret in values)
+
+    refusals: list[str] = []
+    for name, service in services.items():
+        build = service.get("build")
+        if not isinstance(build, dict):
+            continue
+        for key, value in build.items():
+            if key == "args" and isinstance(value, dict):
+                held = [f"arg {arg}" for arg, item in value.items() if holds(item)]
+            else:
+                held = [key] if holds(value) else []
+            refusals += [f"{name}: build {what} holds a secret, which would stay in the image" for what in held]
+    return refusals
 
 
 def relocate(value: object, old: str, new: str) -> object:
@@ -729,10 +841,16 @@ class Agent:
                 os.unlink(bundle)
         profile = resolve_profile(staged.tree, request)
         self.out.line(f"{request['repo']} at {commit[:12]}, profile {profile['profile']}.")
-        text = env_file_text(request["ports"], request.get("host", ""), profile["env"])
+        if profile["empty_secrets"]:
+            self.out.line(f"Secrets the instance does not give this repository, left empty: {', '.join(profile['empty_secrets'])}.")
+        ports, host = request["ports"], request.get("host", "")
         with open(staged.env_file, "w") as env_file:
-            env_file.write(text)
-        write_tree_env(staged.tree, text)
+            env_file.write(env_file_text(ports, host, profile["env"]))
+        with open(staged.secrets_file, "w") as secrets_file:
+            json.dump(request.get("secrets") or {}, secrets_file)
+        # Never a secret in the tree: it is the build's context, and a
+        # service's to bind-mount.
+        write_tree_env(staged.tree, env_file_text(ports, host, without_secrets(profile["env"], profile["secret_keys"])))
         # The services of the compose profiles turned on, and only those: the
         # rest are not in the config the stack runs from, so nothing starts them.
         flags = profile_flags(profile["compose_profiles"])
@@ -742,6 +860,7 @@ class Agent:
         except subprocess.CalledProcessError as error:
             raise RefusedError(f"docker-compose cannot read the stack: {(error.stderr or '').strip()}") from error
         refusals = config_refusals(config, staged.tree, request["ports"])
+        refusals += secret_build_refusals(config.get("services") or {}, request.get("secrets") or {})
         unknown = sorted({suite["service"] for suite in profile["suites"].values()} - set(config.get("services") or {}))
         refusals += [f"a suite's service {name} is not one of the stack's" for name in unknown]
         if refusals:
@@ -756,18 +875,22 @@ class Agent:
         """
         stack = Stack(self.config, request["caller"])
         staged = Stack(self.config, request["caller"], staged=True)
+        self.out.hide(request.get("secrets") or {})
         try:
             commit, profile, config = self.stage(request, bundle, staged)
         except RefusedError as error:
-            self.remove_tree(staged.tree)
-            if os.path.exists(staged.env_file):
-                os.unlink(staged.env_file)
+            self.remove_staged(staged)
             return self.out.done(1, message=f"{error}\nThe last stack is as it was.", kept=True)
+        except BaseException:
+            # A failure of git or podman: the staged env and secrets go too,
+            # and the failure is what the caller is told.
+            with contextlib.suppress(subprocess.CalledProcessError, OSError):
+                self.remove_staged(staged)
+            raise
         self.remove_containers(stack)
         volumes = self.replace_volumes(stack, request["repo"], commit, staged.tree)
         if volumes is None:
-            self.remove_tree(staged.tree)
-            os.unlink(staged.env_file)
+            self.remove_staged(staged)
             return self.out.done(1, message="the last stack's volumes could not be removed: down, then up again")
         self.remove_tree(stack.tree)
         for stale in (stack.checked, stack.meta_file):
@@ -775,9 +898,11 @@ class Agent:
                 os.unlink(stale)
         os.rename(staged.tree, stack.tree)
         os.replace(staged.env_file, stack.env_file)
+        os.replace(staged.secrets_file, stack.secrets_file)
         with open(stack.checked, "w") as checked:
             json.dump(with_resets(cast("dict[str, Any]", relocate(config, staged.tree, stack.tree)), stack.project), checked)
         meta = {"repo": request["repo"], "commit": commit, "up_at": self.system.now(), **profile}
+        meta["env"] = without_secrets(profile["env"], profile["secret_keys"])
         with open(f"{stack.meta_file}.new", "w") as meta_file:
             json.dump(meta, meta_file)
         os.replace(f"{stack.meta_file}.new", stack.meta_file)
@@ -785,6 +910,13 @@ class Agent:
         if failure is not None:
             return self.out.done(1, message=failure, commit=commit, volumes=volumes)
         return self.out.done(0, commit=commit, profile=profile["profile"], page=profile["page"], volumes=volumes)
+
+    def remove_staged(self, staged: Stack) -> None:
+        """Remove what a refused or abandoned up staged beside the stack."""
+        self.remove_tree(staged.tree)
+        for path in (staged.env_file, staged.secrets_file):
+            if os.path.exists(path):
+                os.unlink(path)
 
     def replace_volumes(self, stack: Stack, repo: str, commit: str, tree: str) -> str | None:
         """After the last stack's containers: its volumes kept when this
@@ -899,6 +1031,7 @@ class Agent:
         meta = stack.meta()
         if meta is None:
             raise RefusedError("the caller has no stack: up first")
+        self.out.hide(stack.secrets())
         return meta
 
     def run(self, request: dict[str, Any]) -> int:
@@ -1044,7 +1177,10 @@ def check_request(config: Config, request: object) -> dict[str, Any]:
     caller = request.get("caller")
     if not (isinstance(caller, str) and CALLER.fullmatch(caller)):
         raise RefusedError("caller is a name of lowercase letters, digits and dashes")
+    if "secrets" in request and request["action"] != "up":
+        raise RefusedError("only up takes secrets")
     if request["action"] == "up":
+        check_secrets(request.get("secrets"))
         ports = request.get("ports")
         if not (
             isinstance(ports, list)
@@ -1057,6 +1193,21 @@ def check_request(config: Config, request: object) -> dict[str, Any]:
         if not (isinstance(request.get("bundle_size"), int) and request["bundle_size"] > 0):
             raise RefusedError("up wants the bundle's size")
     return request
+
+
+def check_secrets(secrets: object) -> None:
+    """The secrets the front sends with an up: names and values the env
+    file can hold, as the play checked them.
+    """
+    if secrets is None:
+        return
+    if not isinstance(secrets, dict):
+        raise RefusedError("secrets are a table of names and values")
+    for name, value in secrets.items():
+        if not (isinstance(name, str) and SECRET_NAME.fullmatch(name)):
+            raise RefusedError("a secret's name is lowercase letters, digits and _")
+        if not (isinstance(value, str) and MIN_SECRET <= len(value) <= MAX_VALUE) or any(char in value for char in "\n\r\0'"):
+            raise RefusedError(f"secret {name} is not a value the env file can hold")
 
 
 def receive_bundle(conn: IO[bytes], size: int, path: str) -> None:
@@ -1123,7 +1274,7 @@ def handle(config: Config, conn: IO[bytes], out: Out, system: System) -> int:
     except (subprocess.CalledProcessError, OSError) as error:
         detail = getattr(error, "stderr", "") or str(error)
         message = f"failed: {detail.strip()}"
-    log_failure(request, message)
+    log_failure(request, out.clean(message))
     return out.done(1, message=message)
 
 

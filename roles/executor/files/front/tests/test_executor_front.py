@@ -228,6 +228,58 @@ def test_up_hands_the_bundle_unread_to_the_agent_with_the_callers_ports(tmp_path
     assert list((tmp_path / "state" / "spool").iterdir()) == []
 
 
+SECRETS = {"repositories": {"example/app": {"model_key": "app-key-value"}, "example/other": {"model_key": "other-key-value"}}}
+
+
+def test_up_sends_only_the_secrets_of_the_requests_repository(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    (tmp_path / "secrets.json").write_text(json.dumps(SECRETS))
+    front, agent, _ = make_front(tmp_path, secrets_file=str(tmp_path / "secrets.json"))
+
+    serve(front, request("up", body=b"BUNDLE"))
+
+    assert agent.calls[0]["secrets"] == {"model_key": "app-key-value"}
+    assert "other-key-value" not in json.dumps(agent.calls)
+
+
+def test_no_action_but_up_carries_secrets(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    (tmp_path / "secrets.json").write_text(json.dumps(SECRETS))
+    front, agent, _ = make_front(tmp_path, secrets_file=str(tmp_path / "secrets.json"))
+    serve(front, request("up", body=b"BUNDLE"))
+
+    serve(front, request("run", suite="e2e"))
+    for action in ("logs", "list", "down"):
+        serve(front, request(action))
+
+    assert [call["action"] for call in agent.calls if "secrets" in call] == ["up"]
+
+
+@pytest.mark.parametrize("written", [None, '{"repositories": {}}'])
+def test_an_instance_without_secrets_sends_none(tmp_path: Path, written: str | None) -> None:
+    register(tmp_path, "runner-app-1")
+    if written is not None:
+        (tmp_path / "secrets.json").write_text(written)
+    front, agent, _ = make_front(tmp_path, secrets_file=str(tmp_path / "secrets.json"))
+
+    serve(front, request("up", body=b"BUNDLE"))
+
+    assert agent.calls[0]["secrets"] == {}
+
+
+@pytest.mark.parametrize("written", ["not json app-key-value", '{"repositories": {"example/app": ["app-key-value"]}}', "[]"])
+def test_secrets_that_do_not_read_refuse_the_up_without_their_contents(tmp_path: Path, written: str) -> None:
+    register(tmp_path, "runner-app-1")
+    (tmp_path / "secrets.json").write_text(written)
+    front, agent, _ = make_front(tmp_path, secrets_file=str(tmp_path / "secrets.json"))
+
+    answer = serve(front, request("up", body=b"BUNDLE"))
+
+    assert answer == [{"exit": 1, "message": "the instance's secrets do not read: tell its host"}]
+    assert agent.calls == []
+    assert not (tmp_path / "state" / "state.json").exists()
+
+
 def test_a_callers_ports_stay_its_own_across_ups_and_downs(tmp_path: Path) -> None:
     register(tmp_path, "runner-app-1")
     register(tmp_path, "runner-app-2", key="two")
