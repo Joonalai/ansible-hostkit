@@ -200,6 +200,23 @@ def test_logs_down_and_list(tmp_path: Path) -> None:
     assert "(yours)" in out.getvalue()
 
 
+@pytest.mark.parametrize("action", ["stop", "start"])
+def test_stop_and_start_send_one_service(action: str) -> None:
+    instance = Instance([{"exit": 0}])
+
+    assert stack.main([action, "db"], ENV, io.StringIO(), instance.connect) == 0
+    assert instance.header == {"key": "k", "action": action, "service": "db"}
+
+
+def test_list_names_the_stopped_services() -> None:
+    listed = Instance([{"exit": 0, "caller": "me", "stacks": [{"caller": "me", "state": "running", "stopped_services": ["db", "mail"]}]}])
+    out = io.StringIO()
+
+    stack.main(["list"], ENV, out, listed.connect)
+
+    assert "(stopped: db, mail)" in out.getvalue()
+
+
 def test_an_instance_that_ends_without_an_answer_is_a_failure() -> None:
     assert stack.main(["down"], ENV, io.StringIO(), Instance([{"out": "x"}]).connect) == 1
 

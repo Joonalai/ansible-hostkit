@@ -18,6 +18,7 @@ A request is one line of JSON, and for up the bundle's bytes after it:
     {"action": "run", "caller": ..., "suite": "e2e"}
     {"action": "logs", "caller": ..., "service": "web"}   service optional
     {"action": "down" | "stop" | "start", "caller": ...}
+    {"action": "stop" | "start", "caller": ..., "service": "db"}   one service
     {"action": "ps"} | {"action": "prune"}
 
 The answer is lines of JSON: {"out": "<a line of output>"} as it comes,
@@ -302,6 +303,14 @@ class Stack:
         for name in meta["files"]:
             command += ["-f", os.path.join(self.tree, name)]
         return command
+
+    def services(self) -> set[str]:
+        """The services of the checked config, which every later command runs."""
+        try:
+            with open(self.checked) as checked:
+                return set(json.load(checked).get("services") or {})
+        except FileNotFoundError:
+            raise RefusedError("the stack has no checked config: up again") from None
 
     def compose(self) -> list[str]:
         """docker-compose on the config the up checked, never the tree's
@@ -1055,6 +1064,18 @@ class Agent:
         command = [*stack.compose(), "logs", "--no-color", "--tail", str(LOG_TAIL)]
         return self.out.done(self.emit(command + ([service] if service is not None else [])))
 
+    def service(self, request: dict[str, Any]) -> int:
+        """Stop or start one service of the stack with compose's own stop or
+        start, from the checked config: a service it does not have is not
+        started, and nothing else is started with it.
+        """
+        stack = Stack(self.config, request["caller"])
+        self.stack_meta(stack)
+        service = request["service"]
+        if service not in stack.services():
+            raise RefusedError(f"the stack has no service {service}")
+        return self.out.done(self.emit([*stack.compose(), request["action"], service]))
+
     def stop(self, stack: Stack) -> int:
         """Stop the stack's running containers, keeping everything."""
         ids = [container["Id"] for container in self.containers(stack.project) if container.get("State") == "running"]
@@ -1179,20 +1200,36 @@ def check_request(config: Config, request: object) -> dict[str, Any]:
         raise RefusedError("caller is a name of lowercase letters, digits and dashes")
     if "secrets" in request and request["action"] != "up":
         raise RefusedError("only up takes secrets")
+    check_service(request)
     if request["action"] == "up":
-        check_secrets(request.get("secrets"))
-        ports = request.get("ports")
-        if not (
-            isinstance(ports, list)
-            and 1 <= len(ports) <= MAX_PORTS
-            and all(isinstance(port, int) and config.ports_start <= port <= config.ports_end for port in ports)
-        ):
-            raise RefusedError(f"ports are 1 to {MAX_PORTS} of the instance's {config.ports_start}–{config.ports_end}")
-        if not (isinstance(request.get("repo"), str) and REPO.fullmatch(request["repo"])):
-            raise RefusedError("repo is owner/name")
-        if not (isinstance(request.get("bundle_size"), int) and request["bundle_size"] > 0):
-            raise RefusedError("up wants the bundle's size")
+        check_up(config, request)
     return request
+
+
+def check_service(request: dict[str, Any]) -> None:
+    """A service named only where an action takes one, and as a name."""
+    if "service" not in request:
+        return
+    if request["action"] not in ("logs", "stop", "start"):
+        raise RefusedError("only logs, stop and start take a service")
+    if not (isinstance(request["service"], str) and SERVICE.fullmatch(request["service"])):
+        raise RefusedError("service is a service's name")
+
+
+def check_up(config: Config, request: dict[str, Any]) -> None:
+    """An up's ports within the instance's, its repository and its bundle's size."""
+    check_secrets(request.get("secrets"))
+    ports = request.get("ports")
+    if not (
+        isinstance(ports, list)
+        and 1 <= len(ports) <= MAX_PORTS
+        and all(isinstance(port, int) and config.ports_start <= port <= config.ports_end for port in ports)
+    ):
+        raise RefusedError(f"ports are 1 to {MAX_PORTS} of the instance's {config.ports_start}–{config.ports_end}")
+    if not (isinstance(request.get("repo"), str) and REPO.fullmatch(request["repo"])):
+        raise RefusedError("repo is owner/name")
+    if not (isinstance(request.get("bundle_size"), int) and request["bundle_size"] > 0):
+        raise RefusedError("up wants the bundle's size")
 
 
 def check_secrets(secrets: object) -> None:
@@ -1238,6 +1275,8 @@ def dispatch(agent: Agent, config: Config, conn: IO[bytes], request: dict[str, A
     }
     if action in simple:
         return simple[action]()
+    if action in ("stop", "start") and "service" in request:
+        return agent.service(request)
     stack = Stack(config, request["caller"])
     if action == "stop":
         return agent.out.done(0, stopped=agent.stop(stack))

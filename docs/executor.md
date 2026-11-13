@@ -112,6 +112,13 @@ flowchart LR
   places, and a person past that is refused at once with what holds them.
   Where runners share an instance with people, `waiting_reserve: 1` keeps
   a place a job always gets, at once or by stopping another runner's.
+- **One service stops for a try.** `stack stop <service>` stops one
+  service of the caller's running stack, a database for example, to try
+  the page's error state, and `stack start <service>` starts it again,
+  with compose's `start`: that service only, from the checked config, so
+  nothing the stack was not checked with starts. The stack stays running,
+  and `stack list` and the phone page name the services stopped. An up, or
+  a start of the whole stack from the phone page, starts them all again.
 - **Stacks end by themselves.** The reaper stops a stack nobody has used
   for `idle_hours`, keeping its tree and volumes, and removes one brought
   up `max_age_hours` ago, and those of callers no longer registered. The

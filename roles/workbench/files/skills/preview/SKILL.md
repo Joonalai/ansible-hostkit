@@ -51,5 +51,8 @@ the checkout's HEAD, on ports of the repository's own.
 1. **Check it answers** with the URL from here, and give that one to the
    roles; the user's is the other.
 1. **End-to-end suites**: `stack run <suite>`.
+1. **A page without one service**, its error state: `stack stop <service>`,
+   then `stack start <service>` to bring it back; `stack up` starts them
+   all.
 1. **Take it down** with `stack down` when the user is done; otherwise it
    is stopped after hours unused, and the phone page starts it again.

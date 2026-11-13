@@ -20,6 +20,7 @@ of JSON and, for up, its bundle's bytes after it:
      "bundle_size": 123456}                                     then the bundle
     {"key": "...", "action": "run", "suite": "e2e"}
     {"key": "...", "action": "logs", "service": "web"}          service optional
+    {"key": "...", "action": "stop", "service": "db"}           and start: one service
     {"key": "...", "action": "down"} | {"key": "...", "action": "list"}
 
 and gets lines of JSON back: {"out": "..."} as the work goes, then one
@@ -74,7 +75,7 @@ PAGE_HEADER = "X-Executor"
 CALLER = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 SERVICE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
-ACTIONS = ("up", "run", "logs", "down", "list")
+ACTIONS = ("up", "run", "logs", "stop", "start", "down", "list")
 PAGE_PATH_PARTS = 3
 # Longer than any up runs, the front's unit's RuntimeMaxSec.
 STARTING_MAX_S = 2 * 3600
@@ -459,6 +460,26 @@ class Front:
         agent_request = {"action": "logs", "caller": caller.name} | ({"service": service} if service is not None else {})
         return self.finish(self.agent(agent_request, None), say)
 
+    def service(self, caller: Caller, action: str, request: dict[str, Any], say: Callable[[str], None]) -> dict[str, Any]:
+        """Stop or start one service of the caller's running stack, to try
+        its page without it; the stack stays running, the service named
+        stopped until it is started again, the next up or the page's start.
+        """
+        service = request.get("service")
+        if not (isinstance(service, str) and SERVICE.fullmatch(service)):
+            raise RefusedError(f"refused: {action} wants a service's name")
+        stack = self.existing(caller)
+        if stack.get("state") != "running":
+            raise RefusedError(f"refused: the stack is {stack.get('state')}: up again first")
+        self.touch(caller.name)
+        result = self.finish(self.agent({"action": action, "caller": caller.name, "service": service}, None), say)
+        with locked_state(self.instance) as state:
+            if result["exit"] == 0 and caller.name in state.stacks:
+                stopped = set(state.stacks[caller.name].get("stopped_services") or [])
+                stopped = stopped | {service} if action == "stop" else stopped - {service}
+                state.stacks[caller.name]["stopped_services"] = sorted(stopped)
+        return result
+
     def down(self, caller: Caller) -> dict[str, Any]:
         """Remove the caller's stack, its volumes and its tree; its ports stay its own."""
         result = self.finish(self.agent({"action": "down", "caller": caller.name}, None))
@@ -479,6 +500,9 @@ class Front:
             state_now = seen.get("state", "none")
             if stack.get("state") in ("starting", "failed") and state_now != "running":
                 state_now = stack["state"]
+            # Every service stopped one by one: still the caller's, holding its place.
+            if stack.get("state") == "running" and stack.get("stopped_services") and state_now == "stopped":
+                state_now = "running"
             first = ports.get(name)
             page = first + int(stack.get("page", 1)) - 1 if first is not None else None
             items.append({
@@ -490,6 +514,7 @@ class Front:
                 "idle_minutes": round((now - stack["used_at"]) / 60) if "used_at" in stack else None,
                 "memory_mb": round(seen.get("memory", 0) / 1024**2),
                 "url": f"http://{self.instance['host']}:{page}/" if page is not None else "",
+                "stopped_services": (stack.get("stopped_services") or []) if state_now == "running" else [],
             })
         return items
 
@@ -505,7 +530,7 @@ class Front:
         except RefusedError as error:
             return 409, str(error)
         result = self.finish(self.agent({"action": "start", "caller": name}, None))
-        self.touch(name, state="running" if result["exit"] == 0 else "failed")
+        self.touch(name, state="running" if result["exit"] == 0 else "failed", stopped_services=[])
         return (200, "Started.") if result["exit"] == 0 else (500, str(result.get("message", "Did not start.")))
 
     def page_stop(self, name: str) -> tuple[int, str]:
@@ -516,7 +541,7 @@ class Front:
         result = self.finish(self.agent({"action": "stop", "caller": name}, None))
         with locked_state(self.instance) as state:
             if name in state.stacks:
-                state.stacks[name]["state"] = "stopped"
+                state.stacks[name].update(state="stopped", stopped_services=[])
         return 200, f"Stopped {result.get('stopped', 0)} container(s)."
 
     def reap(self) -> list[str]:
@@ -669,6 +694,17 @@ class Reply:
         self.gone = self.gone or not answer(self.out, event)
 
 
+def on_stack(front: Front, caller: Caller, action: str, request: dict[str, Any], say: Callable[[str], None]) -> dict[str, Any]:
+    """An action on the caller's stack, its own lock held."""
+    if action == "run":
+        return front.run(caller, request, say)
+    if action == "logs":
+        return front.logs(caller, request, say)
+    if action in ("stop", "start"):
+        return front.service(caller, action, request, say)
+    return front.down(caller)
+
+
 def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, address: str | None = None) -> int:
     """Read one request, carry it out and answer it; returns its status.
     uid is a local peer's, address a remote one's.
@@ -696,12 +732,7 @@ def serve(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None, addres
                 result = front.up(caller, request, bundle, say)
         else:
             with caller_lock(front.instance, caller.name, wait=False):
-                if action == "run":
-                    result = front.run(caller, request, say)
-                elif action == "logs":
-                    result = front.logs(caller, request, say)
-                else:
-                    result = front.down(caller)
+                result = on_stack(front, caller, str(action), request, say)
     except RefusedError as error:
         result = {"exit": error.status, "message": str(error)}
     except OSError as error:
@@ -809,9 +840,10 @@ function card(s) {
     ? `<button data-id="${esc(s.caller)}" data-act="stop">Stop</button>`
     : ["stopped", "failed"].includes(s.state) ? `<button data-id="${esc(s.caller)}" data-act="start">Start</button>` : "";
   const age = s.up_hours === null ? "" : ` · up ${esc(s.up_hours)} h ago, used ${esc(s.idle_minutes)} min ago`;
+  const held = (s.stopped_services || []).length ? ` · stopped: ${s.stopped_services.map(esc).join(", ")}` : "";
   return `<div class="stack"><div class="top">
       <div><div class="id">${esc(s.caller)}</div>
-        <div class="state ${esc(s.state)}">${esc(s.state)}${age}</div></div>
+        <div class="state ${esc(s.state)}">${esc(s.state)}${held}${age}</div></div>
       <div>${button}</div></div>
     <div class="meta">${esc(s.repo)} ${esc(String(s.commit).slice(0, 7))} · ${esc(s.memory_mb)} MB${s.state === "running" && s.url
       ? ` · <a href="${esc(s.url)}">${esc(s.url)}</a>` : ""}</div></div>`;

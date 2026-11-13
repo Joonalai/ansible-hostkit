@@ -809,6 +809,45 @@ def test_logs_and_run_want_a_stack(tmp_path: Path) -> None:
     assert answer[-1] == {"exit": 1, "message": "the caller has no stack: up first"}
 
 
+@pytest.mark.parametrize("action", ["stop", "start"])
+def test_one_service_is_stopped_or_started_from_the_checked_config(tmp_path: Path, action: str) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config, fake = make_config(tmp_path), Fake()
+    serve(config, fake, up_request(bundle_of(checkout)))
+
+    answer = serve(config, fake, json.dumps({"action": action, "caller": "r-1", "service": "web"}).encode() + b"\n")
+
+    assert answer[-1] == {"exit": 0}
+    command = last_compose(fake)
+    assert command[-2:] == [action, "web"]
+    assert str(tmp_path / "stacks" / "r-1" / "checked.json") in command
+
+
+def test_a_service_the_checked_config_does_not_have_is_not_started(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config, fake = make_config(tmp_path), Fake()
+    serve(config, fake, up_request(bundle_of(checkout)))
+    calls = len(fake.calls)
+
+    answer = serve(config, fake, b'{"action": "start", "caller": "r-1", "service": "other"}\n')
+
+    assert answer[-1] == {"exit": 1, "message": "the stack has no service other"}
+    assert not [call for call in fake.calls[calls:] if call[0] == "docker-compose"]
+
+
+@pytest.mark.parametrize(
+    ("request_line", "message"),
+    [
+        (b'{"action": "run", "caller": "r-1", "suite": "e2e", "service": "web"}', "only logs, stop and start take a service"),
+        (b'{"action": "stop", "caller": "r-1", "service": "--all"}', "service is a service's name"),
+    ],
+)
+def test_a_service_where_none_belongs_is_refused(tmp_path: Path, request_line: bytes, message: str) -> None:
+    answer = serve(make_config(tmp_path), Fake(), request_line + b"\n")
+
+    assert answer[-1] == {"exit": 1, "message": message}
+
+
 def test_down_removes_the_volumes_and_the_tree(tmp_path: Path) -> None:
     checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
     config, fake = make_config(tmp_path), Fake()
