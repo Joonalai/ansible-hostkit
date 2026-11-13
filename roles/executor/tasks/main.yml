@@ -29,6 +29,8 @@
       - item.ports_per_caller | int in range(1, 17)
       - item.ports_end | int - item.ports_start | int + 1 >= 2 + item.ports_per_caller | int
       - item.max_stacks | int >= 1
+      - item.waiting_reserve | string is match('^[0-9]+$')
+      - item.waiting_reserve | int < item.max_stacks | int
       - item.overrides is mapping
     fail_msg: >-
       {{ item }}: an instance wants a name of a lowercase letter and up to 15
@@ -36,8 +38,9 @@
       sandbox names, sandbox_units, the units of the host's own hardening
       that keep {{ item.name | default('it') }}-exec and its range off the
       host, its LAN and its private network (this collection never changes
-      the firewall), and ports_start..ports_end with room for the API port,
-      the phone page and one block of ports_per_caller.
+      the firewall), ports_start..ports_end with room for the API port,
+      the phone page and one block of ports_per_caller, and a
+      waiting_reserve below max_stacks.
     quiet: true
   loop: "{{ executor_merged }}"
   loop_control:

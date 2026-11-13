@@ -31,9 +31,12 @@ instead of a uid, and its key is taken only on the TLS port, from them; a
 local caller's only on the socket. A caller has one stack, on a block of the instance's ports that
 is its own for as long as it is a caller.
 
-At the limit, max_stacks running, an up evicts the running stack used
-longest ago, if it has been idle for evict_idle_minutes; a caller's stack in
-use is never stopped to make room. With nothing to evict, a caller that
+At the limit, max_stacks running, an up evicts the running stack of a
+caller that waits used longest ago, if it has been idle for
+evict_idle_minutes; a caller's stack in use is never stopped to make room,
+and a person's, a caller that does not wait, never at all: it holds its
+place until its down or the reaper. People's stacks take at most
+max_stacks - waiting_reserve places. With nothing to evict, a caller that
 waits, a runner's job, waits for up to queue_timeout_minutes and then gets
 status 75, to go on without a stack; one that does not, a person, gets 75
 at once with what holds the room. While the instance's pause file exists,
@@ -287,6 +290,14 @@ def holders(state: State, now: float) -> str:
     return "; ".join(lines) or "nothing"
 
 
+def waits(callers: dict[str, Caller], name: str) -> bool:
+    """Whether the stack's caller waits for a place, and so may lose its own
+    to another's; a caller no longer registered counts as one that waits.
+    """
+    caller = callers.get(name)
+    return caller is None or caller.waits
+
+
 @dataclass
 class Front:
     """The front's actions, with what they reach replaced by the tests."""
@@ -319,12 +330,23 @@ class Front:
         """The caller's ports when there is a place, else why there is none."""
         if self.instance.paused():
             return "the instance is paused by its host"
+        callers = self.instance.callers()
         with locked_state(self.instance) as state:
             now = self.now()
             others = {name: stack for name, stack in state.running().items() if name != caller.name}
+            people = [name for name in others if not waits(callers, name)]
+            people_max = int(self.instance["max_stacks"]) - int(self.instance.raw.get("waiting_reserve", 0))
+            # The registered caller's, not the request's: the page starts a
+            # runner's stack as a person, but it stays a runner's.
+            if not waits(callers, caller.name) and not replacing and len(people) >= people_max:
+                return f"{len(people)} of the {people_max} places for people's stacks are taken: {holders(state, now)}"
             if len(others) >= int(self.instance["max_stacks"]) and not replacing:
                 idle_before = now - float(self.instance["evict_idle_minutes"]) * 60
-                idle = [name for name, stack in others.items() if stack.get("state") == "running" and stack.get("used_at", 0) < idle_before]
+                idle = [
+                    name
+                    for name, stack in others.items()
+                    if stack.get("state") == "running" and stack.get("used_at", 0) < idle_before and waits(callers, name)
+                ]
                 if not idle:
                     return f"{len(others)} of {self.instance['max_stacks']} stacks are in use: {holders(state, now)}"
                 victim = min(idle, key=lambda name: others[name].get("used_at", 0))

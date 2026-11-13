@@ -69,11 +69,17 @@ executor_instance_defaults:
   # The exec account's container storage and the stacks' trees. Past it, an
   # up first removes the images no container uses, then refuses.
   disk_max_gb: 20
-  # Stacks running at once. At the limit, an up stops the stack idle
-  # longest, if it has been idle evict_idle_minutes; a caller that waits,
-  # a runner's job, then waits for queue_timeout_minutes and goes on
-  # without a stack, and a person is refused at once.
+  # Stacks running at once. At the limit, an up stops the stack of a caller
+  # that waits idle longest, if it has been idle evict_idle_minutes; a
+  # caller that waits, a runner's job, then waits for queue_timeout_minutes
+  # and goes on without a stack, and a person is refused at once. A
+  # person's stack, a caller that does not wait, is never stopped for
+  # another: it holds its place until its down or idle_hours.
   max_stacks: 3
+  # Places of max_stacks that people's stacks leave to the callers that
+  # wait. 1 where runners share the instance with people, so a job always
+  # finds a place or a runner's stack to stop.
+  waiting_reserve: 0
   evict_idle_minutes: 30
   queue_timeout_minutes: 20
   # A stack nobody has used for idle_hours is stopped, its tree and volumes
