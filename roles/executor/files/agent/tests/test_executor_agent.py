@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -190,6 +191,39 @@ def test_a_failed_up_is_stopped(tmp_path: Path) -> None:
 
     assert answer[-1]["exit"] == 1
     assert {"out": "building"} in answer
+
+
+@pytest.fixture
+def agent_umask() -> Iterator[None]:
+    previous = os.umask(0o077)
+    yield
+    os.umask(previous)
+
+
+@pytest.mark.usefixtures("agent_umask")
+def test_the_tree_has_gits_usual_modes_whatever_the_agents_umask(tmp_path: Path) -> None:
+    files = {"stack.toml": PROFILE, "compose.yaml": "services: {}\n", "corpus/pin.json": "{}\n", "run.sh": "true\n"}
+    checkout = repository(tmp_path, files)
+    (checkout / "run.sh").chmod(0o755)
+    subprocess.run(["git", "-C", str(checkout), "add", "run.sh"], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "two"],
+        check=True,
+    )
+
+    answer = serve(make_config(tmp_path), Fake(), up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    stack = tmp_path / "stacks" / "r-1"
+    tree = stack / "tree"
+    assert (tree / "corpus" / "pin.json").stat().st_mode & 0o777 == 0o644
+    assert (tree / "run.sh").stat().st_mode & 0o777 == 0o755
+    assert (tree / "corpus").stat().st_mode & 0o777 == 0o755
+    assert tree.stat().st_mode & 0o777 == 0o755
+    assert stack.stat().st_mode & 0o777 == 0o700
+    assert (tree / ".env").stat().st_mode & 0o777 == 0o644
+    assert (stack / "stack.env").stat().st_mode & 0o777 == 0o600
+    assert os.umask(0o077) == 0o077
 
 
 def test_past_the_disk_cap_unused_images_go_and_then_it_refuses(tmp_path: Path) -> None:
