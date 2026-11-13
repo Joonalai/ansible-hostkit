@@ -81,6 +81,10 @@
                 build: {context: ., dockerfile: Containerfile.app}
                 command: ["sh", "-c", "cat /app/site/index.html && exec sleep 3600"]
                 depends_on: {seed: {condition: service_completed_successfully}}
+              # The same build as app's: built after it, it is app's image.
+              worker:
+                build: {context: ., dockerfile: Containerfile.app}
+                command: ["sleep", "3600"]
               # Turned on by the profile, and set up the way a repository
               # whose .env is a copy of .env.example is.
               extra:
@@ -96,6 +100,8 @@
         - name: Containerfile.app
           content: |
             FROM {{ dev_smoke_image }}
+            COPY build-nonce /app/build-nonce
+            RUN sleep 3
             COPY site /app/site
             USER 1000
         - name: compose.broken.yaml
@@ -157,6 +163,18 @@
         mode: "0644"
       become: true
 
+    # New on every run, so the image is built, not found in the cache:
+    # built at once, app's and worker's would be two images.
+    - name: Write a nonce the image copies
+      ansible.builtin.copy:
+        dest: "{{ dev_smoke_repo }}/build-nonce"
+        content: "{{ now().timestamp() }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      changed_when: false
+      become: true
+
     - name: Commit the repository
       ansible.builtin.shell:
         cmd: |
@@ -169,6 +187,12 @@
         executable: /bin/bash
       changed_when: false
       become: true
+
+    - name: Look up the exec account's uid
+      ansible.builtin.command:
+        argv: [id, -u, stacks-exec]
+      register: dev_smoke_exec_uid
+      changed_when: false
 
     - name: Bring the stack up
       ansible.builtin.shell:
@@ -188,6 +212,15 @@
       delay: 2
       until: dev_smoke_page.status == 200
       failed_when: "'hostkit smoke' not in dev_smoke_page.content"
+
+    - name: Find the images of the two services with the same build
+      ansible.builtin.command:
+        argv: [runuser, -u, stacks-exec, --, env, "XDG_RUNTIME_DIR=/run/user/{{ dev_smoke_exec_uid.stdout }}",
+               podman, inspect, --format, "{{ '{{' }}.Image{{ '}}' }}", stack-dev-smoke-app-1, stack-dev-smoke-worker-1]
+      register: dev_smoke_images
+      changed_when: false
+      failed_when: dev_smoke_images.rc != 0 or dev_smoke_images.stdout_lines | unique | length != 1
+      become: true
 
     # A file of the exec account's that no stack may read: its home is out
     # of sight while the agent reads the compose files.
