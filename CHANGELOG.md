@@ -8,6 +8,23 @@ carry.
 
 <!-- version list -->
 
+## v0.3.0 (2026-11-13)
+
+### Features
+
+- Let a group of the host's read the ci timing report
+  ([`6dc8c42`](https://github.com/Joonalai/ansible-hostkit/commit/6dc8c420b3e2590d8c0d32daac0105df599bed69))
+
+- Record when each ci runner's container starts, ends and goes
+  ([`988e0e0`](https://github.com/Joonalai/ansible-hostkit/commit/988e0e0ccf87dc01ffa69921417f945a8d8b10e9))
+
+- Record where each ci job's time goes
+  ([`224cff6`](https://github.com/Joonalai/ansible-hostkit/commit/224cff615fd0c116ebbf721ba88e2622c517863e))
+
+- Report where the ci jobs' time went
+  ([`88220e6`](https://github.com/Joonalai/ansible-hostkit/commit/88220e63bb234b1be37dae0a2e09ddaae809f254))
+
+
 ## v0.2.0 (2026-11-13)
 
 ### Bug Fixes
