@@ -68,6 +68,11 @@ consumer is [docs/executor.md](../../docs/executor.md).
   services' log tail and stops the stack, even when the logs cannot be
   read. The smoke test's `app`, its `broken` profile and the one-shot
   `seed` and `job` prove it.
+- **Builds run one at a time** (`COMPOSE_PARALLEL_LIMIT=1` in the agent's
+  unit): the legacy builder shares nothing between builds running at once,
+  so services with one build section each built it. One after another,
+  all but the first are cache hits; the smoke test's `app` and `worker`
+  check they get one image, from a build its nonce makes new every run.
 - **No `NoNewPrivileges` on the agent's unit.** Rootless podman starts the
   account's user namespace with the setuid `newuidmap` and `newgidmap`,
   which it refuses, and the play's check then fails with "newuidmap: write

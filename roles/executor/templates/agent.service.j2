@@ -14,6 +14,12 @@ StandardError=journal
 # container of its own, and rootless podman refuses it the mounts it asks for.
 Environment=DOCKER_HOST=unix://%t/podman/podman.sock
 Environment=DOCKER_BUILDKIT=0
+# One build at a time. The legacy builder shares no work between builds
+# running at once, so services with the same build section each did all of
+# it, and on a small host they starved each other and the host's other
+# users; one after another, all but the first are cache hits. It holds
+# compose's container operations to one at a time too, which are quick.
+Environment=COMPOSE_PARALLEL_LIMIT=1
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # No NoNewPrivileges: rootless podman maps the account's subordinate range
 # with the setuid newuidmap and newgidmap whenever it starts the account's
