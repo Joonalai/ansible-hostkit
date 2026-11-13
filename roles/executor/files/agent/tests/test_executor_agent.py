@@ -194,6 +194,45 @@ def secret_stack(tmp_path: Path) -> tuple[executor_agent.Config, Fake, Path]:
     return make_config(tmp_path), Fake(), checkout
 
 
+URL_PROFILE = """
+[profiles.default]
+compose = ["compose.yaml"]
+env = { APP_URL = "{url}" }
+"""
+
+
+@pytest.mark.parametrize(
+    ("changes", "url"),
+    [({}, "http://stacks.example.ts.net:9302"), ({"https_port": 3}, "https://stacks.example.ts.net:9304")],
+)
+def test_url_is_where_the_user_opens_the_page(tmp_path: Path, changes: dict[str, Any], url: str) -> None:
+    checkout = repository(tmp_path, {"stack.toml": URL_PROFILE, "compose.yaml": "services: {}\n"})
+
+    answer = serve(make_config(tmp_path), Fake(), up_request(bundle_of(checkout), **changes))
+
+    assert answer[-1]["exit"] == 0
+    assert f"APP_URL='{url}'" in (tmp_path / "stacks" / "r-1" / "stack.env").read_text()
+
+
+def test_behind_the_hosts_https_the_page_is_the_first_port(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+
+    answer = serve(make_config(tmp_path), Fake(), up_request(bundle_of(checkout), https_port=3))
+
+    assert answer[-1]["exit"] == 1
+    assert "page is 1 on this instance" in answer[-1]["message"]
+
+
+def test_a_stack_publishing_the_https_port_is_refused(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": URL_PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake({"name": "stack-r-1", "services": {"web": {"ports": [{"published": "9302"}, {"published": "9304"}]}}})
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout), https_port=3))
+
+    assert answer[-1]["exit"] == 1
+    assert "web: host port 9304 is the host's HTTPS in front of the page" in answer[-1]["message"]
+
+
 def test_a_secret_fills_the_stacks_env_and_never_the_tree(tmp_path: Path) -> None:
     config, fake, checkout = secret_stack(tmp_path)
 
@@ -774,6 +813,8 @@ def test_past_the_disk_cap_a_prune_that_frees_enough_lets_it_up(tmp_path: Path) 
         {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"Bad": "a-long-value"}},
         {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"key": "short"}},
         {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "secrets": {"key": "a-long-'value"}},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "https_port": 1},
+        {"action": "up", "caller": "r-1", "repo": "example/app", "ports": PORTS, "bundle_size": 1, "https_port": 4},
     ],
 )
 def test_a_request_out_of_shape_is_refused(tmp_path: Path, request_: dict[str, Any]) -> None:

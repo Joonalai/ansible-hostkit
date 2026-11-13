@@ -650,6 +650,19 @@ def test_a_service_of_a_stopped_stack_is_not_started(tmp_path: Path) -> None:
     assert agent.actions()[-1] == ("stop", "runner-app-1")
 
 
+def test_behind_the_hosts_https_the_page_is_its_https_port(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path, https_port=3)
+
+    answer = serve(front, request("up", body=b"B"))
+    agent.stacks = {"runner-app-1": {"state": "running"}}
+    listed = serve(front, request("list"))
+
+    assert agent.calls[0]["https_port"] == 3
+    assert answer[-1]["https_port"] == 3
+    assert listed[-1]["stacks"][0]["url"] == "https://stacks.example.ts.net:9304/"
+
+
 def test_down_forgets_the_stack(tmp_path: Path) -> None:
     register(tmp_path, "runner-app-1")
     front, agent, _ = make_front(tmp_path)

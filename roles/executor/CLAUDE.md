@@ -61,6 +61,11 @@ consumer is [docs/executor.md](../../docs/executor.md).
   to the caller or the journal goes through `Out`, never around it. A
   build holding a value, in an arg, a label or anywhere else, is refused
   (`secret_build_refusals`).
+- **`https_port` is the host's, never the stack's.** The front sends it
+  with an up; the agent fills `{url}` from it (`page_origin`), refuses a
+  `page` other than 1, since the host's proxy forwards to the first port
+  whatever the profile, and refuses a service publishing it
+  (`https_refusals`). The collection never configures the proxy.
 - **`config` reads files, so it runs confined.** `include`, `extends` and
   `env_file` take any path, and `env_file`'s contents land in the
   container's environment. `CONFINE` runs it in a user and mount namespace

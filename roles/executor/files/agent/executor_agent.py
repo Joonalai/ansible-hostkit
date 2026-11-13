@@ -15,6 +15,7 @@ A request is one line of JSON, and for up the bundle's bytes after it:
     {"action": "up", "caller": "runner-app-1", "repo": "example/app",
      "profile": "default", "ports": [9302, 9303, 9304], "host": "...",
      "override": {...}, "bundle_size": 123456}            then the bundle
+     with "https_port": 2 where the host serves the page with HTTPS
     {"action": "run", "caller": ..., "suite": "e2e"}
     {"action": "logs", "caller": ..., "service": "web"}   service optional
     {"action": "down" | "stop" | "start", "caller": ...}
@@ -76,7 +77,7 @@ ENV_KEY = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 REPO = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 SECRET_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
-PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host|secret:[a-z][a-z0-9_]{0,31})\}")
+PLACEHOLDER = re.compile(r"\{(port[0-9]+|bind|host|url|secret:[a-z][a-z0-9_]{0,31})\}")
 MAX_HEADER = 65536
 MAX_PORTS = 16
 MAX_COMPOSE_FILES = 8
@@ -382,10 +383,11 @@ class Secrets:
         return sorted(self.asked - set(self.values))
 
 
-def fill(value: str, ports: list[int], host: str, secrets: Secrets | None = None) -> str:
-    """A value with {port1}..{portN}, {bind}, {host} and {secret:<name>}
-    put in, once: a value put in is not read again. A secret the instance
-    does not grant is put in empty, and noted in secrets.
+def fill(value: str, ports: list[int], host: str, secrets: Secrets | None = None, url: str = "") -> str:
+    """A value with {port1}..{portN}, {bind}, {host}, {url} and
+    {secret:<name>} put in, once: a value put in is not read again. A
+    secret the instance does not grant is put in empty, and noted in
+    secrets.
     """
 
     def one(match: re.Match[str]) -> str:
@@ -400,6 +402,8 @@ def fill(value: str, ports: list[int], host: str, secrets: Secrets | None = None
             return "0.0.0.0"  # noqa: S104 -- a stack's ports are published on every address, as the host's sandbox decides
         if word == "host":
             return host
+        if word == "url":
+            return url
         index = int(word.removeprefix("port"))
         if not 1 <= index <= len(ports):
             raise RefusedError(f"{{{word}}}: the caller has {len(ports)} ports")
@@ -408,7 +412,7 @@ def fill(value: str, ports: list[int], host: str, secrets: Secrets | None = None
     return PLACEHOLDER.sub(one, value)
 
 
-def check_env(env: object, ports: list[int], host: str, secrets: Secrets | None = None) -> dict[str, str]:
+def check_env(env: object, ports: list[int], host: str, secrets: Secrets | None = None, url: str = "") -> dict[str, str]:
     """The profile's .env values, filled in, as the env file can hold them;
     the secrets they ask for are noted in secrets.
     """
@@ -422,7 +426,7 @@ def check_env(env: object, ports: list[int], host: str, secrets: Secrets | None 
             raise RefusedError(f"env name {key!r} is not one: upper case, digits and _, not starting STACK_, COMPOSE_ or DOCKER_")
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             raise RefusedError(f"env {key} is not a string or a number")
-        text = fill(str(value), ports, host, secrets)
+        text = fill(str(value), ports, host, secrets, url)
         if len(text) > MAX_VALUE or any(char in text for char in "\n\r\0'"):
             raise RefusedError(f"env {key} has a newline or a quote, or is too long")
         checked[key] = text
@@ -464,10 +468,13 @@ def resolve_profile(tree: str, request: dict[str, Any]) -> dict[str, Any]:
     page = profile.get("page", 1)
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= len(ports):
         raise RefusedError(f"page is the number of one of the caller's {len(ports)} ports")
+    https = request.get("https_port")
+    if https is not None and page != 1:
+        raise RefusedError(f"page is 1 on this instance, whose host serves the first port's page with HTTPS on port {https}")
     return {
         "profile": name,
         "files": check_compose_files(tree, profile.get("compose", ["compose.yaml"])),
-        "env": check_env(profile.get("env"), ports, request.get("host", ""), secrets),
+        "env": check_env(profile.get("env"), ports, request.get("host", ""), secrets, page_origin(request, page)),
         "page": page,
         "suites": check_suites(profiles["suites"]),
         "compose_profiles": check_compose_profiles(profile.get("compose_profiles", [])),
@@ -476,6 +483,32 @@ def resolve_profile(tree: str, request: dict[str, Any]) -> dict[str, Any]:
         "secret_keys": sorted(key for key, value in (profile.get("env") or {}).items() if "{secret:" in str(value)),
         "empty_secrets": secrets.empty(),
     }
+
+
+def page_origin(request: dict[str, Any], page: int) -> str:
+    """Where the user opens the page: behind the host's HTTPS on an instance
+    that has it, the page's own port otherwise.
+    """
+    host, ports, https = request.get("host", ""), request["ports"], request.get("https_port")
+    if https is not None:
+        return f"https://{host}:{ports[https - 1]}"
+    return f"http://{host}:{ports[page - 1]}"
+
+
+def https_refusals(services: dict[str, dict[str, Any]], request: dict[str, Any]) -> list[str]:
+    """A service publishing the port the host's HTTPS holds."""
+    https = request.get("https_port")
+    if https is None:
+        return []
+    held = request["ports"][https - 1]
+    refusals = []
+    for name, service in services.items():
+        published: list[int] = []
+        for port in service.get("ports") or []:
+            published += published_ports(port) if isinstance(port, dict) else []
+        if held in published:
+            refusals.append(f"{name}: host port {held} is the host's HTTPS in front of the page, not the stack's")
+    return refusals
 
 
 def check_compose_profiles(names: object) -> list[str]:
@@ -870,6 +903,7 @@ class Agent:
             raise RefusedError(f"docker-compose cannot read the stack: {(error.stderr or '').strip()}") from error
         refusals = config_refusals(config, staged.tree, request["ports"])
         refusals += secret_build_refusals(config.get("services") or {}, request.get("secrets") or {})
+        refusals += https_refusals(config.get("services") or {}, request)
         unknown = sorted({suite["service"] for suite in profile["suites"].values()} - set(config.get("services") or {}))
         refusals += [f"a suite's service {name} is not one of the stack's" for name in unknown]
         if refusals:
@@ -1230,6 +1264,9 @@ def check_up(config: Config, request: dict[str, Any]) -> None:
         raise RefusedError("repo is owner/name")
     if not (isinstance(request.get("bundle_size"), int) and request["bundle_size"] > 0):
         raise RefusedError("up wants the bundle's size")
+    https = request.get("https_port")
+    if https is not None and (isinstance(https, bool) or not isinstance(https, int) or not 1 < https <= len(ports)):
+        raise RefusedError(f"https_port is the number of one of the caller's ports but the first, 2 to {len(ports)}")
 
 
 def check_secrets(secrets: object) -> None:

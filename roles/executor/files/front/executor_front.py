@@ -401,7 +401,7 @@ class Front:
             "override": overrides.get(repo) or {},
             "secrets": secrets,
             "bundle_size": size,
-        }
+        } | self.https()
         try:
             result = self.finish(self.agent(agent_request, bundle), say)
         except OSError as error:
@@ -414,7 +414,7 @@ class Front:
                     state.stacks.pop(caller.name, None)
                 else:
                     state.stacks[caller.name] = previous
-                return {**result, "ports": ports, "host": self.instance["host"]}
+                return {**result, "ports": ports, "host": self.instance["host"], **self.https()}
             state.stacks[caller.name] = {
                 "repo": repo,
                 "profile": profile,
@@ -425,7 +425,14 @@ class Front:
                 "used_at": now,
             }
         page_url = f"http://{self.instance['host']}:{self.instance['page_port']}/"
-        return {**result, "ports": ports, "host": self.instance["host"], "control": page_url}
+        return {**result, "ports": ports, "host": self.instance["host"], "control": page_url, **self.https()}
+
+    def https(self) -> dict[str, int]:
+        """The caller's port the host serves the page on with HTTPS, by its
+        number, where the host does.
+        """
+        https = self.instance.raw.get("https_port")
+        return {"https_port": int(https)} if https else {}
 
     def existing(self, caller: Caller) -> dict[str, Any]:
         """The caller's stack, refused when it has none."""
@@ -494,6 +501,8 @@ class Front:
             recorded = dict(state.stacks)
             ports = dict(state.ports)
         now = self.now()
+        https = self.https().get("https_port")
+        scheme = "https" if https is not None else "http"
         items = []
         for name in sorted(set(recorded) | set(live)):
             stack, seen = recorded.get(name, {}), live.get(name, {})
@@ -505,6 +514,8 @@ class Front:
                 state_now = "running"
             first = ports.get(name)
             page = first + int(stack.get("page", 1)) - 1 if first is not None else None
+            if first is not None and https is not None:
+                page = first + https - 1
             items.append({
                 "caller": name,
                 "repo": stack.get("repo", ""),
@@ -513,7 +524,7 @@ class Front:
                 "up_hours": round((now - stack["up_at"]) / 3600, 1) if "up_at" in stack else None,
                 "idle_minutes": round((now - stack["used_at"]) / 60) if "used_at" in stack else None,
                 "memory_mb": round(seen.get("memory", 0) / 1024**2),
-                "url": f"http://{self.instance['host']}:{page}/" if page is not None else "",
+                "url": f"{scheme}://{self.instance['host']}:{page}/" if page is not None else "",
                 "stopped_services": (stack.get("stopped_services") or []) if state_now == "running" else [],
             })
         return items

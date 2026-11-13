@@ -221,8 +221,10 @@ def urls(result: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
     ports = result.get("ports") or []
     page = int(result.get("page") or 1)
     local = env.get("STACK_LOCAL_HOST") or result.get("host", "")
+    https = int(result.get("https_port") or 0)
+    user = f"https://{result.get('host')}:{ports[https - 1]}/" if ports and https else ""
     found = {
-        "page": f"http://{result.get('host')}:{ports[page - 1]}/" if ports else "",
+        "page": user or (f"http://{result.get('host')}:{ports[page - 1]}/" if ports else ""),
         "ports": {str(port): f"http://{result.get('host')}:{port}/" for port in ports},
         "local": f"http://{local}:{ports[page - 1]}/" if ports else "",
     }

@@ -58,6 +58,12 @@ executor_instance_defaults:
   # Ports per caller, its stack's to publish. A caller keeps its block for
   # as long as it is a caller, so a stack's URL is stable across ups.
   ports_per_caller: 3
+  # Where the host serves each caller's page with HTTPS, a port of the
+  # block by its number, 2 to ports_per_caller, in front of the first: a
+  # proxy of the host's own, which this role does not configure. The
+  # stacks' {url} and the printed page are then https://, and a profile's
+  # page must be 1. Empty: plain HTTP.
+  https_port: ""
   # The exec account's caps: every stack and every build at once.
   memory_max: 4G
   # Leave it bounded: unbounded, a full account pages instead of failing.

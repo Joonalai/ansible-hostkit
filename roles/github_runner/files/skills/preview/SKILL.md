@@ -31,7 +31,8 @@ applies.
    `env` is the stack's `.env`, which docker-compose reads for the compose
    files' `${...}` and a service's `env_file: .env` reads too, in place of
    the repository's own: `{port1}` to `{port3}` are this runner's ports on the
-   executor, `{bind}` all addresses and `{host}` the executor's host. The
+   executor, `{bind}` all addresses, `{host}` the executor's host and
+   `{url}` the page's origin as the user opens it, for an app's public URL. The
    compose files publish only those ports, on all addresses: a host port
    comes from a variable (`"${WEB_PORT:-8000}:8000"`), and what the user
    need not open gets none. Without a `stack.toml`, or with fixed ports or
