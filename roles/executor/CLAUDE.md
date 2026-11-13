@@ -131,6 +131,13 @@ consumer is [docs/executor.md](../../docs/executor.md).
   reaper wait for it. A
   stack left `starting` past `STARTING_MAX_S`, two hours, is a front that
   died, and the reaper treats it as stopped.
+- **A person's stack is never evicted** (`waits` in the front). The
+  executor cannot see a page in use: `podman stats`' counters, measured,
+  neither saw traffic through the port forwarding nor stayed still
+  without it. So a caller that does not wait keeps its place until its
+  down or `idle_hours`, eviction picks only among callers that wait, and
+  `waiting_reserve` caps people's stacks so a job still finds room. A
+  caller no longer registered counts as one that waits.
 - **The dev container proves the whole chain** (`make converge TAGS=executor`, then `make smoke`): the accounts, the units, a caller, a
   bundle, a stack answering on its port, a suite, a refused privileged
   profile and a down. Its subordinate ranges are too short for an image

@@ -408,6 +408,80 @@ def test_a_person_is_refused_at_once_with_what_holds_the_room(tmp_path: Path) ->
     assert clock.t == 1_000_000
 
 
+def test_at_the_limit_a_persons_stack_is_never_the_one_stopped(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    register(tmp_path, "b", key="person", waits=False)
+    front, agent, clock = make_front(tmp_path)
+    full(tmp_path, clock.t - 3600)
+    stacks = state(tmp_path)["stacks"]
+    stacks["b"]["used_at"] = clock.t - 7200
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"a": 9302, "b": 9305}, "stacks": stacks}))
+
+    answer = serve(front, request("up", body=b"B"))
+
+    assert answer[-1]["exit"] == 0
+    assert ("stop", "a") in agent.actions()
+    assert ("stop", "b") not in agent.actions()
+
+
+def test_at_the_limit_with_only_peoples_stacks_a_job_waits_then_goes_on(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    register(tmp_path, "a", key="person-a", waits=False)
+    register(tmp_path, "b", key="person-b", waits=False)
+    front, agent, clock = make_front(tmp_path)
+    full(tmp_path, clock.t - 7200)
+
+    answer = serve(front, request("up", body=b"B"))
+
+    assert answer[-1]["exit"] == executor_front.NO_ROOM
+    assert all(action != "stop" for action, _ in agent.actions())
+
+
+@pytest.mark.parametrize(("reserve", "admitted"), [(0, True), (1, False)])
+def test_peoples_stacks_leave_the_waiting_reserve_free(tmp_path: Path, reserve: int, admitted: bool) -> None:
+    register(tmp_path, "person-j", waits=False)
+    register(tmp_path, "a", key="person-a", waits=False)
+    front, agent, clock = make_front(tmp_path, waiting_reserve=reserve)
+    stacks = {"a": {"state": "running", "repo": "example/app", "used_at": clock.t, "up_at": clock.t}}
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"a": 9302}, "stacks": stacks}))
+
+    answer = serve(front, request("up", body=b"B"))
+
+    assert (answer[-1]["exit"] == 0) is admitted
+    assert (("up", "person-j") in agent.actions()) is admitted
+    assert admitted or "of the 1 places for people's stacks are taken" in answer[-1]["message"]
+
+
+def test_a_job_takes_the_place_the_waiting_reserve_keeps(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    register(tmp_path, "a", key="person-a", waits=False)
+    front, _, clock = make_front(tmp_path, waiting_reserve=1)
+    stacks = {"a": {"state": "running", "repo": "example/app", "used_at": clock.t, "up_at": clock.t}}
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"a": 9302}, "stacks": stacks}))
+
+    answer = serve(front, request("up", body=b"B"))
+
+    assert answer[-1]["exit"] == 0
+
+
+@pytest.mark.parametrize(("name", "waits", "started"), [("runner-app-1", True, True), ("person-j", False, False)])
+def test_the_page_holds_a_stack_to_its_callers_share_of_the_places(tmp_path: Path, name: str, waits: bool, started: bool) -> None:
+    register(tmp_path, name, waits=waits)
+    register(tmp_path, "a", key="person-a", waits=False)
+    front, agent, clock = make_front(tmp_path, waiting_reserve=1)
+    stacks = {
+        "a": {"state": "running", "repo": "example/app", "used_at": clock.t, "up_at": clock.t},
+        name: {"state": "stopped", "repo": "example/app", "used_at": clock.t, "up_at": clock.t},
+    }
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"a": 9302, name: 9305}, "stacks": stacks}))
+
+    code, message = executor_front.page_post(front, f"/stacks/{name}/start", "1")
+
+    assert (code == 200) is started
+    assert (("start", name) in agent.actions()) is started
+    assert started or "places for people's stacks are taken" in message
+
+
 def test_replacing_ones_own_stack_needs_no_room(tmp_path: Path) -> None:
     register(tmp_path, "runner-app-1")
     front, _, clock = make_front(tmp_path, max_stacks=1)

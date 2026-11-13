@@ -92,6 +92,7 @@
           'ports_end': executor_instance.ports_end | int,
           'ports_per_caller': executor_instance.ports_per_caller | int,
           'max_stacks': executor_instance.max_stacks | int,
+          'waiting_reserve': executor_instance.waiting_reserve | int,
           'queue_timeout_minutes': executor_instance.queue_timeout_minutes | int,
           'evict_idle_minutes': executor_instance.evict_idle_minutes | int,
           'idle_hours': executor_instance.idle_hours | float,

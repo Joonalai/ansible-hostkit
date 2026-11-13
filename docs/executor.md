@@ -99,11 +99,19 @@ flowchart LR
   not answer. A start from the phone page waits the same way, and starts a
   failed stack again; until it answers, the caller's own requests are
   refused as for any request of its still running.
-- **Room is shared.** At `max_stacks` running, an up stops the stack idle
-  longest, if it has been idle `evict_idle_minutes`. With nothing to stop, a
-  runner's job waits up to `queue_timeout_minutes` and a person is refused
-  at once; both get status 75 and go on without a stack. The disk cap
-  removes unused images first, then refuses.
+- **Room is shared.** At `max_stacks` running, an up stops the runner's
+  stack idle longest, if it has been idle `evict_idle_minutes`. With
+  nothing to stop, a runner's job waits up to `queue_timeout_minutes` and a
+  person is refused at once; both get status 75 and go on without a stack.
+  The disk cap removes unused images first, then refuses.
+- **A person's stack holds its place.** A caller that does not wait, a
+  workbench's repository, is someone looking at its page, which the
+  executor cannot see. Its stack is never stopped for another; it holds
+  its place until its `down`, or until the reaper stops it after
+  `idle_hours`. People's stacks take at most `max_stacks - waiting_reserve`
+  places, and a person past that is refused at once with what holds them.
+  Where runners share an instance with people, `waiting_reserve: 1` keeps
+  a place a job always gets, at once or by stopping another runner's.
 - **Stacks end by themselves.** The reaper stops a stack nobody has used
   for `idle_hours`, keeping its tree and volumes, and removes one brought
   up `max_age_hours` ago, and those of callers no longer registered. The
@@ -353,6 +361,7 @@ The most used of the optional ones, per instance:
 | `host`                  | the host's FQDN | Where the user opens a stack                                                 |
 | `ports_per_caller`      | `3`             | Ports in a caller's block                                                    |
 | `max_stacks`            | `3`             | Stacks running at once                                                       |
+| `waiting_reserve`       | `0`             | Places people's stacks leave to runners' jobs; `1` where they share          |
 | `memory_max`            | `4G`            | Memory of every stack and build at once                                      |
 | `memory_swap_max`       | `512M`          | Swap on top of that. Leave it bounded                                        |
 | `cpu_quota`             | none            | CPU time of every stack and build at once                                    |
@@ -360,7 +369,7 @@ The most used of the optional ones, per instance:
 | `remote`                | `false`         | The TLS port on `ports_start`, for callers on other hosts                    |
 | `remote_callers`        | none            | Callers on other hosts, by their key's hash and their addresses              |
 | `disk_max_gb`           | `20`            | Images and trees, past which an up refuses                                   |
-| `evict_idle_minutes`    | `30`            | Idle this long, a stack can be stopped                                       |
+| `evict_idle_minutes`    | `30`            | Idle this long, a runner's stack can be stopped                              |
 | `queue_timeout_minutes` | `20`            | How long a runner's job waits for room                                       |
 | `idle_hours`            | `12`            | Unused this long, a stack is stopped                                         |
 | `max_age_hours`         | `72`            | Up this long, a stack is removed                                             |
