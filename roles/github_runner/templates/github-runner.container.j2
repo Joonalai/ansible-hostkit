@@ -68,6 +68,7 @@ EnvironmentFile={{ github_runner_home }}/claude/{{ item.id }}/gpu-models.env
 Volume={{ github_runner_home }}/cache/{{ item.name }}:/cache
 Environment=UV_CACHE_DIR=/cache/uv UV_LINK_MODE=copy PIP_CACHE_DIR=/cache/pip
 Environment=npm_config_cache=/cache/npm PLAYWRIGHT_BROWSERS_PATH=/cache/ms-playwright
+Environment=BUN_INSTALL_CACHE_DIR=/cache/bun
 # prek's hook environments: at ~/.cache/prek every job built them again,
 # and an npm timeout while installing a hook can leave a job with no prek
 # run at all.
