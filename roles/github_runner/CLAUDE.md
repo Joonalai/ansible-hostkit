@@ -211,8 +211,10 @@ account is set up by `rootless_account`.
   stack does: one per slot, replaced by its next `stack up`. There is no
   second, in-job way to start a preview, and parking a PR's preview is a
   plan of its own. The jobs keep coder's socket for the test services
-  they start themselves. The executor must be on the host before this
-  role runs; a remote one is not supported yet. The rebase runner is no
+  they start themselves. A local executor must be on the host before this
+  role runs; a remote one is named in `executor_remote_instances`, and the
+  slot's env file then carries its URL and certificate hash in place of
+  the mounted socket. The rebase runner is no
   caller.
 - **The preview's procedure is a skill, its values are the executor's.**
   `files/skills/preview/` is how a preview is brought up, loaded by whoever

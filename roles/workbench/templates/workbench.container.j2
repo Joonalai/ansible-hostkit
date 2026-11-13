@@ -36,8 +36,11 @@ EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}.env
 Volume=/run/workbench-gate/{{ item.name }}.sock:/run/workbench-gate.sock
 {% if item.executor | default('') %}
 # The executor instance's socket and this repository's key for it: `stack`
-# brings the checkout up there, the preview the sessions start.
+# brings the checkout up there, the preview the sessions start. A remote
+# instance has no socket here: its URL and certificate are in the env file.
+{% if item.executor not in (executor_remote_instances | default([]) | map(attribute='name')) %}
 Volume={{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock:/run/stack.sock
+{% endif %}
 EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}-stack.env
 {% endif %}
 WorkingDir={{ workbench_projects_dir }}/{{ item.name }}
@@ -53,7 +56,7 @@ Exec={{ workbench_home }}/.local/bin/claude remote-control --name "{{ item.name 
 [Service]
 # A bind mount of a socket that is not there yet would fail obscurely.
 ExecStartPre=/usr/bin/test -S /run/workbench-gate/{{ item.name }}.sock
-{% if item.executor | default('') %}
+{% if item.executor | default('') and item.executor not in (executor_remote_instances | default([]) | map(attribute='name')) %}
 ExecStartPre=/usr/bin/test -S {{ workbench_executor_run_dir }}/{{ item.executor }}/api.sock
 {% endif %}
 Restart=always

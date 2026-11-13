@@ -4,7 +4,7 @@
 # `make converge TAGS=executor` runs one role's play (Makefile).
 
 - name: Stand in for the host's hardening
-  hosts: all
+  hosts: hostkit-dev
   tags: [always]
   tasks:
     # Even in a dry run: it stands in for what the host has before any of
@@ -42,7 +42,7 @@
       become: true
 
 - name: The executor
-  hosts: all
+  hosts: hostkit-dev
   tags: [executor, github_runner, workbench]
   roles:
     - role: joonalai.hostkit.executor
@@ -59,6 +59,17 @@
             memory_max: 2G
             cpu_weight: 20
             disk_max_gb: 5
+            # The caller container, and an address no container has.
+            remote: true
+            remote_callers:
+              - name: remote-smoke
+                key_sha256: "{{ dev_remote_key | hash('sha256') }}"
+                repos: [example/smoke]
+                from: [192.0.2.20/32]
+              - name: remote-elsewhere
+                key_sha256: "{{ dev_remote_other_key | hash('sha256') }}"
+                repos: [example/smoke]
+                from: [192.0.2.99/32]
             # smoke_other is another repository's: the smoke stack asks for
             # it and gets it empty.
             secrets:
@@ -70,7 +81,7 @@
                 example/app: [smoke_other]
 
 - name: The CI runner
-  hosts: all
+  hosts: hostkit-dev
   tags: [ci_runner]
   roles:
     - role: joonalai.hostkit.ci_runner
@@ -83,7 +94,7 @@
         ci_runner_github_token: dev-container-opens-nothing
 
 - name: The GitHub runner
-  hosts: all
+  hosts: hostkit-dev
   tags: [github_runner]
   roles:
     - role: joonalai.hostkit.github_runner
@@ -99,14 +110,29 @@
             executor: stacks
 
 - name: The workbench
-  hosts: all
+  hosts: hostkit-dev
   tags: [workbench]
   vars:
     claude_code_user: bench
+    # The instance above, as a remote one: lib's registration goes the
+    # remote way, with the certificate the executor's play made.
+    executor_remote_instances:
+      - name: far
+        url: tls://hostkit-dev:9300
+        tls_sha256: "{{ dev_tls_fingerprint.stdout | default('') | split('=') | last | replace(':', '') | lower }}"
     claude_code_uid: 2002
     claude_code_update_restarts: ""
     claude_code_settings: "{{ workbench_claude_settings }}"
     claude_code_login_required: false
+  pre_tasks:
+    - name: Read the instance's certificate, for its remote callers
+      ansible.builtin.command:
+        argv: [openssl, x509, -noout, -fingerprint, -sha256, -in, /etc/hostkit-executor/stacks/tls.crt]
+      register: dev_tls_fingerprint
+      changed_when: false
+      check_mode: false
+      failed_when: dev_tls_fingerprint.rc != 0 and not ansible_check_mode
+      become: true
   roles:
     - role: joonalai.hostkit.claude_code
     - role: joonalai.hostkit.workbench
@@ -122,3 +148,4 @@
             executor: stacks
           - name: lib
             repo: example/lib
+            executor: far

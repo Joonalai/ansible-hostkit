@@ -35,8 +35,12 @@ Volume=%t/podman/podman.sock:/run/podman/podman.sock
 Environment=DOCKER_HOST=unix:///run/podman/podman.sock
 {% if item.executor %}
 # The executor instance's socket and this slot's key for it: `stack` brings
-# the checkout up there as the slot's stack, the preview the user opens.
+# the checkout up there as the slot's stack, the preview the user opens. A
+# remote instance has no socket here: its URL and certificate are in the
+# env file.
+{% if item.executor not in (executor_remote_instances | default([]) | map(attribute='name')) %}
 Volume={{ github_runner_executor_run_dir }}/{{ item.executor }}/api.sock:/run/stack.sock
+{% endif %}
 EnvironmentFile={{ github_runner_home }}/claude/{{ item.id }}/stack.env
 {% endif %}
 {% else %}
@@ -86,7 +90,7 @@ RuntimeDirectoryMode=0700
 # have written there as one of coder's subordinate uids.
 ExecStartPre=/usr/bin/podman unshare find {{ github_runner_home }}/work/{{ item.id }} -mindepth 1 -delete
 ExecStopPost=/usr/bin/podman unshare find {{ github_runner_home }}/work/{{ item.id }} -mindepth 1 -delete
-{% if item.executor and not item.rebase %}
+{% if item.executor and not item.rebase and item.executor not in (executor_remote_instances | default([]) | map(attribute='name')) %}
 # A bind mount of a socket that is not there yet would fail obscurely.
 ExecStartPre=/usr/bin/test -S {{ github_runner_executor_run_dir }}/{{ item.executor }}/api.sock
 {% endif %}

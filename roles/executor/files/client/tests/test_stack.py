@@ -1,6 +1,9 @@
+import hashlib
 import io
 import json
+import shutil
 import socket
+import ssl
 import subprocess
 import threading
 from pathlib import Path
@@ -21,7 +24,7 @@ class Instance:
         self.body = b""
         self.paths: list[str] = []
 
-    def connect(self, path: str) -> socket.socket:
+    def connect(self, path: str, env: dict[str, str]) -> socket.socket:
         self.paths.append(path)
         mine, theirs = socket.socketpair()
         threading.Thread(target=self.serve, args=(theirs,), daemon=True).start()
@@ -204,3 +207,76 @@ def test_an_instance_that_ends_without_an_answer_is_a_failure() -> None:
 def test_an_unreachable_instance_is_said(capsys: pytest.CaptureFixture[str]) -> None:
     assert stack.main(["down"], ENV | {"STACK_SOCKET": "/nonexistent/stack.sock"}, io.StringIO()) == 1
     assert "cannot reach the executor at /nonexistent/stack.sock" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------
+# A remote instance, over TLS
+# ---------------------------------------------------------------------
+
+
+class TlsInstance:
+    """A TLS port on localhost that records what it reads and answers one event."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        if shutil.which("openssl") is None:
+            pytest.skip("no openssl to make a certificate with")
+        cert, key = tmp_path / "tls.crt", tmp_path / "tls.key"
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
+             "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert)],
+            check=True,
+            capture_output=True,
+        )
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(cert, key)
+        self.sha256 = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.url = f"tls://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.received = b""
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self) -> None:
+        raw, _ = self.listener.accept()
+        try:
+            with self.context.wrap_socket(raw, server_side=True) as conn, conn.makefile("rb") as incoming:
+                self.received = incoming.readline()
+                conn.sendall(b'{"exit": 0, "message": "done"}\n')
+                conn.unwrap()
+        except (ssl.SSLError, OSError):
+            return
+
+
+def test_a_remote_instance_with_the_pinned_certificate_gets_the_request(tmp_path: Path) -> None:
+    instance = TlsInstance(tmp_path)
+    env = {"STACK_KEY": "k", "STACK_URL": instance.url, "STACK_TLS_SHA256": instance.sha256.upper()}
+
+    assert stack.main(["down"], env, io.StringIO()) == 0
+
+    instance.thread.join(10)
+    assert json.loads(instance.received) == {"key": "k", "action": "down"}
+
+
+def test_a_remote_instance_with_another_certificate_is_sent_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    instance = TlsInstance(tmp_path)
+    env = {"STACK_KEY": "k", "STACK_URL": instance.url, "STACK_TLS_SHA256": "0" * 64}
+
+    assert stack.main(["down"], env, io.StringIO()) == 1
+
+    instance.thread.join(10)
+    assert instance.received == b""
+    assert f"shows the certificate {instance.sha256}, not the pinned {'0' * 64}: nothing was sent" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("env", "says"),
+    [
+        ({"STACK_URL": "tls://stacks.example.ts.net:9300"}, "STACK_URL wants STACK_TLS_SHA256"),
+        ({"STACK_URL": "tls://stacks.example.ts.net:9300", "STACK_TLS_SHA256": "not-a-hash"}, "STACK_URL wants STACK_TLS_SHA256"),
+        ({"STACK_URL": "tls://stacks.example.ts.net", "STACK_TLS_SHA256": "0" * 64}, "is not tls://host:port"),
+        ({"STACK_URL": "tls://stacks.example.ts.net:9300", "STACK_TLS_CA": "/nonexistent/ca.pem"}, "STACK_TLS_CA /nonexistent/ca.pem"),
+    ],
+)
+def test_a_remote_instance_it_cannot_check_is_not_reached(env: dict[str, str], says: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert stack.main(["down"], {"STACK_KEY": "k"} | env, io.StringIO()) == 1
+    assert says in capsys.readouterr().err

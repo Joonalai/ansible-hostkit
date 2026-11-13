@@ -131,7 +131,9 @@ runner it shares a preview range with is
   queued. Its key is in `~/.config/workbench/<name>-stack.env`, `0600`
   bench's, which only that repository's unit reads as an
   `EnvironmentFile=`, with the instance's `api.sock` mounted at
-  `/run/stack.sock`. The other containers share the home but see neither
+  `/run/stack.sock`, or for a remote instance in
+  `executor_remote_instances`, its URL and certificate hash in the env file
+  and no socket. The other containers share the home but see neither
   file nor socket in their environment; a session could still read
   another repository's env file from the home, which is the same account
   and so the same boundary, and reaches only that repository's stack. The

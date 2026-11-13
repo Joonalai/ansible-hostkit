@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+[Unit]
+Description=The front of the executor instance {{ executor_instance.name }}, for one remote request
+
+[Service]
+# One per connection, as the local socket's: the front's account, which
+# holds the callers' hashes and never opens their code. It wraps the
+# connection in TLS itself; every read waits a minute at most.
+User={{ executor_front_user }}
+Group={{ executor_front_user }}
+ExecStart={{ executor_front_bin }} serve-tls {{ executor_instance_config_dir }}/instance.json
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# The connection is the socket's, accepted by systemd: the front needs no
+# network of its own.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ReadWritePaths={{ executor_instance_state_dir }}
+RuntimeMaxSec=7200
+MemoryMax=256M

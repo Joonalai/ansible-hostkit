@@ -99,6 +99,8 @@
           'bundle_max_mb': executor_instance.bundle_max_mb | int,
           'overrides': executor_instance.overrides,
           'secrets_file': executor_instance_config_dir ~ '/secrets.json',
+          'tls_cert': executor_instance.tls_cert or executor_instance_config_dir ~ '/tls.crt',
+          'tls_key': executor_instance.tls_key or executor_instance_config_dir ~ '/tls.key',
           'callers_dir': executor_instance_config_dir ~ '/callers',
           'state_dir': executor_instance_state_dir,
           'agent_socket': executor_instance_run_dir ~ '/agent/agent.sock',
@@ -202,6 +204,115 @@
   become_user: "{{ executor_exec_user }}"
 
 # ---------------------------------------------------------------------
+# The remote callers: the TLS port's certificate and their registrations
+# ---------------------------------------------------------------------
+
+# Made once and kept: the callers pin its hash, so a new one means copying
+# the new hash to every callers' host. Remove both files to make one.
+- name: Make the TLS port's certificate of {{ executor_instance.name }}
+  when:
+    - executor_instance.remote | bool
+    - executor_instance.tls_cert | length == 0
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -newkey
+      - ec
+      - -pkeyopt
+      - ec_paramgen_curve:P-256
+      - -nodes
+      - -days
+      - "3650"
+      - -subj
+      - "/CN={{ executor_instance.host }}"
+      - -keyout
+      - "{{ executor_instance_config_dir }}/tls.key"
+      - -out
+      - "{{ executor_instance_config_dir }}/tls.crt"
+    creates: "{{ executor_instance_config_dir }}/tls.crt"
+  become: true
+
+- name: Let the front read the TLS key of {{ executor_instance.name }}
+  when:
+    - executor_instance.remote | bool
+    - executor_instance.tls_cert | length == 0
+    - not ansible_check_mode
+  ansible.builtin.file:
+    path: "{{ executor_instance_config_dir }}/{{ item.name }}"
+    owner: root
+    group: "{{ executor_front_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: tls.key, mode: "0640"}
+    - {name: tls.crt, mode: "0644"}
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+- name: Read the TLS certificate's SHA-256 of {{ executor_instance.name }}
+  when:
+    - executor_instance.remote | bool
+    - not ansible_check_mode
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -noout
+      - -fingerprint
+      - -sha256
+      - -in
+      - "{{ executor_instance.tls_cert or executor_instance_config_dir ~ '/tls.crt' }}"
+  register: executor_tls_fingerprint
+  changed_when: false
+  become: true
+
+# Public: what the callers' hosts pin, in executor_remote_instances.
+- name: Say the TLS certificate's SHA-256 of {{ executor_instance.name }}
+  when:
+    - executor_instance.remote | bool
+    - not ansible_check_mode
+  ansible.builtin.debug:
+    msg: >-
+      {{ executor_instance.name }}'s tls_sha256:
+      {{ executor_tls_fingerprint.stdout.split('=')[-1] | replace(':', '') | lower }}
+
+- name: Register the remote callers of {{ executor_instance.name }}
+  ansible.builtin.copy:
+    content: >-
+      {{ {'key_sha256': item.key_sha256,
+          'repos': item.repos,
+          'waits': item.waits | default(false) | bool,
+          'from': item['from']}
+         | to_nice_json }}
+    dest: "{{ executor_instance_config_dir }}/callers/{{ item.name }}.json"
+    owner: root
+    group: "{{ executor_front_user }}"
+    mode: "0640"
+  loop: "{{ executor_instance.remote_callers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+- name: Find the remote callers of {{ executor_instance.name }}
+  ansible.builtin.find:
+    paths: "{{ executor_instance_config_dir }}/callers"
+    patterns: "remote-*.json"
+  register: executor_remote_found
+  become: true
+
+- name: Remove the remote callers of {{ executor_instance.name }} no longer listed
+  when: (item.path | basename | splitext | first) not in (executor_instance.remote_callers | map(attribute='name'))
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ executor_remote_found.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  become: true
+
+# ---------------------------------------------------------------------
 # The front: its socket, its page and its reaper
 # ---------------------------------------------------------------------
 
@@ -218,6 +329,8 @@
     - {src: page.service.j2, dest: page.service}
     - {src: reap.service.j2, dest: reap.service}
     - {src: reap.timer.j2, dest: reap.timer}
+    - {src: remote.socket.j2, dest: remote.socket}
+    - {src: remote.service.j2, dest: remote@.service}
   loop_control:
     label: "{{ executor_unit }}-{{ item.dest }}"
   register: executor_front_units
@@ -235,6 +348,24 @@
     enabled: true
     state: started
   loop: [front.socket, page.service, reap.timer]
+  become: true
+
+# Off, nothing listens on ports_start.
+- name: Start or stop the TLS port of {{ executor_instance.name }}
+  ansible.builtin.systemd_service:
+    name: "{{ executor_unit }}-remote.socket"
+    enabled: "{{ executor_instance.remote | bool }}"
+    state: "{{ 'started' if executor_instance.remote | bool else 'stopped' }}"
+  become: true
+
+# A socket already listening keeps its old port until it is restarted.
+- name: Restart the TLS port of {{ executor_instance.name }} on a new unit
+  when:
+    - executor_instance.remote | bool
+    - executor_front_units.results | selectattr('item.dest', 'equalto', 'remote.socket') | selectattr('changed') | list | length > 0
+  ansible.builtin.systemd_service:
+    name: "{{ executor_unit }}-remote.socket"
+    state: restarted
   become: true
 
 - name: Restart the page of {{ executor_instance.name }} on a new config or unit
