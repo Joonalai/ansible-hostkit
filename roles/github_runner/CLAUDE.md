@@ -28,6 +28,11 @@ account is set up by `rootless_account`.
   for every layer: that is how Debian's security updates, Chromium's among
   them, reach the image at all. The runner and Claude Code versions stay
   what the play last read; a new runner release still needs the play.
+- **Cheap lines go at the end of the Containerfile.** A changed or new
+  layer rebuilds every layer below it, the runner's download and Claude
+  Code's install among them when it sits above those. An `ENV`, a small
+  `COPY` or a `RUN` that only writes a file goes at the end of the file,
+  just before `ENTRYPOINT`, unless a layer above needs it.
 - **Two accounts, so a job cannot reach the key that registers runners.**
   The runner App's key can manage runners on every repository it is
   installed on, which with Administration permission means far more than
