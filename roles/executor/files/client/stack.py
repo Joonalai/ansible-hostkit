@@ -4,6 +4,7 @@
     stack up [--profile NAME] [--repo OWNER/NAME] [-C DIR] [--json]
     stack run SUITE
     stack logs [SERVICE]
+    stack stop SERVICE | stack start SERVICE
     stack down
     stack list [--json]
 
@@ -11,8 +12,9 @@ up sends the checkout's HEAD as a git bundle, commits not pushed included,
 and the instance builds it and starts it as this caller's stack, replacing
 its last; it prints the stack's URLs. Uncommitted changes are not in it.
 How the repository comes up is its stack.toml. run runs one of the suites
-it names against the stack, logs shows the tail of its logs, down removes
-it with its data.
+it names against the stack, logs shows the tail of its logs, stop and
+start stop one service and start it again, to try the page without it,
+and down removes it with its data.
 
 Where the instance is and who this caller is come from the environment,
 which the host sets:
@@ -272,9 +274,11 @@ def show_list(args: argparse.Namespace, env: dict[str, str], out: IO[str], conne
         return 0
     for stack in result.get("stacks", []):
         mine = "  (yours)" if stack.get("caller") == result.get("caller") else ""
+        stopped = stack.get("stopped_services") or []
+        held = f"  (stopped: {', '.join(stopped)})" if stopped else ""
         print(
             f"{stack['caller']:<24} {stack['state']:<9} {stack.get('repo', ''):<32} "
-            f"{stack.get('memory_mb', 0):>6} MB  {stack.get('url', '')}{mine}",
+            f"{stack.get('memory_mb', 0):>6} MB  {stack.get('url', '')}{mine}{held}",
             file=out,
         )
     return 0
@@ -293,6 +297,10 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("suite")
     logs_parser = actions.add_parser("logs", help="the tail of the stack's logs")
     logs_parser.add_argument("service", nargs="?")
+    stop_parser = actions.add_parser("stop", help="stop one service of the stack, to try the page without it")
+    stop_parser.add_argument("service")
+    start_parser = actions.add_parser("start", help="start a stopped service again; up starts them all")
+    start_parser.add_argument("service")
     actions.add_parser("down", help="remove the stack and its data")
     list_parser = actions.add_parser("list", help="the instance's stacks")
     list_parser.add_argument("--json", action="store_true")
@@ -316,7 +324,7 @@ def main(
         request: dict[str, Any] = {"action": args.action}
         if args.action == "run":
             request["suite"] = args.suite
-        elif args.action == "logs" and args.service:
+        elif args.action in ("logs", "stop", "start") and args.service:
             request["service"] = args.service
         result = call(request, env, None, connector)
     except StackError as error:

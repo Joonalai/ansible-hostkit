@@ -568,6 +568,88 @@ def test_list_shows_every_stack_and_who_asks(tmp_path: Path) -> None:
     assert stack["state"] == "running"
 
 
+def listed_stopped(front: executor_front.Front, agent: Agent) -> list[str]:
+    agent.stacks = {"runner-app-1": {"state": "running"}}
+    stopped = serve(front, request("list"))[-1]["stacks"][0]["stopped_services"]
+    assert isinstance(stopped, list)
+    return [str(service) for service in stopped]
+
+
+def test_a_caller_stops_and_starts_one_service_and_list_names_it_stopped(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+
+    stopped = serve(front, request("stop", service="db"))
+    listed = listed_stopped(front, agent)
+    started = serve(front, request("start", service="db"))
+
+    assert stopped[-1]["exit"] == started[-1]["exit"] == 0
+    assert {"action": "stop", "caller": "runner-app-1", "service": "db"} in agent.calls
+    assert agent.calls[-1] == {"action": "start", "caller": "runner-app-1", "service": "db"}
+    assert listed == ["db"]
+    assert listed_stopped(front, agent) == []
+    assert state(tmp_path)["stacks"]["runner-app-1"]["state"] == "running"
+
+
+def test_a_stack_whose_every_service_is_stopped_is_listed_running(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+    serve(front, request("stop", service="web"))
+    agent.stacks = {"runner-app-1": {"state": "stopped"}}
+
+    (listed,) = serve(front, request("list"))[-1]["stacks"]
+
+    assert listed["state"] == "running"
+    assert listed["stopped_services"] == ["web"]
+
+
+@pytest.mark.parametrize("again", ["up", "page"])
+def test_an_up_or_the_pages_start_starts_every_stopped_service(tmp_path: Path, again: str) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+    serve(front, request("stop", service="db"))
+
+    if again == "up":
+        serve(front, request("up", body=b"B"))
+    else:
+        executor_front.page_post(front, "/stacks/runner-app-1/start", "1")
+
+    assert listed_stopped(front, agent) == []
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({}, "refused: stop wants a service's name"),
+        ({"service": "--all"}, "refused: stop wants a service's name"),
+    ],
+)
+def test_a_stop_wants_one_service(tmp_path: Path, fields: dict[str, Any], message: str) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+
+    answer = serve(front, request("stop", **fields))
+
+    assert answer[-1] == {"exit": 1, "message": message}
+    assert agent.actions()[-1] == ("up", "runner-app-1")
+
+
+def test_a_service_of_a_stopped_stack_is_not_started(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+    executor_front.page_post(front, "/stacks/runner-app-1/stop", "1")
+
+    answer = serve(front, request("start", service="db"))
+
+    assert answer[-1] == {"exit": 1, "message": "refused: the stack is stopped: up again first"}
+    assert agent.actions()[-1] == ("stop", "runner-app-1")
+
+
 def test_down_forgets_the_stack(tmp_path: Path) -> None:
     register(tmp_path, "runner-app-1")
     front, agent, _ = make_front(tmp_path)

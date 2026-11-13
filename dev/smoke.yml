@@ -373,6 +373,44 @@
         or (item == 'logs extra' and 'greeting: hello from the profile' not in dev_smoke_calls.stdout + dev_smoke_calls.stderr)
       become: true
 
+    - name: Stop the page's service and find it named stopped
+      ansible.builtin.shell:
+        cmd: >-
+          set -a && . {{ dev_smoke_env }} && export STACK_SOCKET={{ dev_smoke_socket }}
+          && stack stop web && stack list
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_service_stop
+      changed_when: true
+      failed_when: >-
+        dev_smoke_service_stop.rc != 0
+        or '(stopped: web)' not in dev_smoke_service_stop.stdout
+      become: true
+
+    - name: Find the page gone with its service
+      ansible.builtin.uri:
+        url: "{{ (dev_smoke_up.stdout | from_json).local }}"
+      register: dev_smoke_page_gone
+      failed_when: dev_smoke_page_gone.status == 200
+
+    - name: Start the page's service again
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack start web
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      changed_when: true
+      become: true
+
+    - name: Ask the page after its service started again
+      ansible.builtin.uri:
+        url: "{{ (dev_smoke_up.stdout | from_json).local }}"
+        return_content: true
+      register: dev_smoke_page_back
+      retries: 10
+      delay: 2
+      until: dev_smoke_page_back.status == 200
+      failed_when: "'hostkit smoke' not in dev_smoke_page_back.content"
+
     # Up waits for every service: one that dies at start fails it, with
     # its log, and stops the stack.
     - name: Fail to bring up a stack whose service dies at start

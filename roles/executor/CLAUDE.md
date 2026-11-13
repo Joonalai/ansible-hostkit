@@ -97,6 +97,11 @@ consumer is [docs/executor.md](../../docs/executor.md).
   is one the image's non-root user cannot read; `TREE_UMASK` sets git's
   usual ones for the checkout alone. The tree sits in the exec account's
   home, which no other account enters.
+- **A service's stop and start are compose's own**, from `checked.json`
+  (`Agent.service`), for a person trying a page without one service. They
+  start nothing else and are not watched; the front keeps the stopped
+  names in `stopped_services` for `list` and the page, and an up or the
+  page's start, which start everything and watch it, clear them.
 - **An up and a start watch the stack** (`Agent.watch`), not compose's
   `--wait`, which fails a stack on any container that ends, status 0 too,
   but one another service waits for. After `up --detach` the agent polls
