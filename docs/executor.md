@@ -159,6 +159,22 @@ And for the instance's own ports:
   `ports_start + 1`, stays off the callers' hosts as it stays off a local
   job: it can stop any caller's stack.
 
+Where the stacks need a secure context, a passkey's for example, the host
+can put HTTPS in front of each caller's page and set `https_port`. Its
+proxy, which this role does not configure:
+
+- **Listens with HTTPS** on the `https_port`-th port of every caller's
+  block, on the addresses the user's devices reach, with a certificate
+  for `host`, such as a private network's own (Tailscale Serve on a
+  `*.ts.net` name).
+- **Forwards to the block's first port** on the host itself, plain HTTP.
+  The agent refuses a profile whose `page` is not 1 there, and a stack
+  that publishes the `https_port` itself, so the mapping is fixed per
+  block whatever the profile.
+
+The callers still reach the page with plain HTTP on its own port, the
+URL `stack` prints as "From here".
+
 The role also needs:
 
 - **A subordinate range of its own**, which no other account's overlaps.
@@ -251,8 +267,12 @@ command = ["pytest", "tests/e2e"]   # run in a new container of it
 `env` becomes the stack's `.env`, which compose reads for the files'
 `${...}` and which replaces the tree's own `.env`, so a service's
 `env_file: .env` reads it too: `{port1}` to `{portN}` are the caller's
-ports, `{bind}` the address to publish on and `{host}` where the user opens
-the stack. A repository whose `.env` comes from `cp .env.example .env`
+ports, `{bind}` the address to publish on, `{host}` where the user opens
+the stack, and `{url}` the page's origin as the user opens it:
+`http://{host}:{portN}` with `N` the `page`, or `https://{host}:{portN}`
+with `N` the instance's `https_port` where its host serves HTTPS in front
+of the page. A profile that uses `{url}`, for an app's public URL or a
+passkey's origin, is right on both kinds of instance. A repository whose `.env` comes from `cp .env.example .env`
 needs no change, only a profile that sets what it would. The services of a
 compose profile not in `compose_profiles` are left out, checked or run by
 nothing; a suite's service must be one of the stack's. A suite's container
@@ -367,6 +387,7 @@ The most used of the optional ones, per instance:
 | ----------------------- | --------------- | ---------------------------------------------------------------------------- |
 | `host`                  | the host's FQDN | Where the user opens a stack                                                 |
 | `ports_per_caller`      | `3`             | Ports in a caller's block                                                    |
+| `https_port`            | none            | The block's port the host serves the page on with HTTPS, 2 or more           |
 | `max_stacks`            | `3`             | Stacks running at once                                                       |
 | `waiting_reserve`       | `0`             | Places people's stacks leave to runners' jobs; `1` where they share          |
 | `memory_max`            | `4G`            | Memory of every stack and build at once                                      |

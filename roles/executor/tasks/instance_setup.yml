@@ -91,6 +91,7 @@
           'callers_ports_start': executor_instance.ports_start | int + 2,
           'ports_end': executor_instance.ports_end | int,
           'ports_per_caller': executor_instance.ports_per_caller | int,
+          'https_port': (executor_instance.https_port | int) if executor_instance.https_port | string | length else none,
           'max_stacks': executor_instance.max_stacks | int,
           'waiting_reserve': executor_instance.waiting_reserve | int,
           'queue_timeout_minutes': executor_instance.queue_timeout_minutes | int,

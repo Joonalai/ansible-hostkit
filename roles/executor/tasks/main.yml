@@ -31,6 +31,10 @@
       - item.max_stacks | int >= 1
       - item.waiting_reserve | string is match('^[0-9]+$')
       - item.waiting_reserve | int < item.max_stacks | int
+      - >-
+        item.https_port | string | length == 0
+        or (item.https_port | string is match('^[0-9]+$')
+            and item.https_port | int >= 2 and item.https_port | int <= item.ports_per_caller | int)
       - item.overrides is mapping
     fail_msg: >-
       {{ item }}: an instance wants a name of a lowercase letter and up to 15
@@ -39,8 +43,9 @@
       that keep {{ item.name | default('it') }}-exec and its range off the
       host, its LAN and its private network (this collection never changes
       the firewall), ports_start..ports_end with room for the API port,
-      the phone page and one block of ports_per_caller, and a
-      waiting_reserve below max_stacks.
+      the phone page and one block of ports_per_caller, a
+      waiting_reserve below max_stacks, and an https_port, if any, from 2
+      to ports_per_caller, since the host's proxy forwards to the first.
     quiet: true
   loop: "{{ executor_merged }}"
   loop_control:

@@ -91,6 +91,17 @@ def test_up_as_json(tmp_path: Path) -> None:
     assert printed["local_ports"]["9304"] == "http://host.containers.internal:9304/"
 
 
+def test_behind_the_hosts_https_the_user_gets_https_and_here_stays_http(tmp_path: Path) -> None:
+    path = checkout(tmp_path)
+    out = io.StringIO()
+
+    stack.main(["up", "-C", str(path), "--json"], ENV, out, Instance([UP | {"page": 1, "https_port": 3}]).connect)
+
+    printed = json.loads(out.getvalue())
+    assert printed["page"] == "https://stacks.example.ts.net:9304/"
+    assert printed["local"] == "http://host.containers.internal:9302/"
+
+
 def test_a_shallow_checkout_sends_heads_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = checkout(tmp_path)
     # As in a container that has no git identity: the parentless commit

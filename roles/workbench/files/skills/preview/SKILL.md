@@ -38,7 +38,8 @@ the checkout's HEAD, on ports of the repository's own.
    the page, 1 to 3) and `env` (the stack's `.env`, also for a service's
    `env_file: .env`, where
    `{port1}` to `{port3}` are the repository's ports, `{bind}` all
-   addresses and `{host}` the executor's host), and optionally
+   addresses, `{host}` the executor's host and `{url}` the page's origin
+   as the user opens it, `https://` where the executor has it), and optionally
    `[suites.<name>]` with `service` and `command` for `stack run`. The
    compose files publish only those ports, from variables. What the
    executor refuses (privileged containers, added capabilities, devices,
