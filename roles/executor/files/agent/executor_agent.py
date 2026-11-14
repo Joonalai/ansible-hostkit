@@ -60,6 +60,7 @@ import contextlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -104,6 +105,22 @@ FAILED_LOG_TAIL = 50
 WAIT_SECONDS = 600
 SETTLE_SECONDS = 5
 POLL_SECONDS = 1
+# Where the profile's page is published, the up is done only once the page
+# has answered too: a service with no health check that runs past
+# SETTLE_SECONDS may still die before it serves. Any HTTP status is an
+# answer. The page is asked inside its container's own network namespace,
+# never through the host's, which the host's sandbox keeps the exec account
+# and every stack off.
+PROBE_SECONDS = 2
+# How long a page that took the connection may take to send its status
+# line: a server rendering its first page can be slow.
+ANSWER_SECONDS = 15
+HTTP_ANSWER = b"HTTP/"
+# The probe's status for a page that did not answer; any other failure is
+# the probe's own, nsenter's or podman's, and fails the watch after
+# PROBE_ERRORS_MAX in a row rather than wait out WAIT_SECONDS.
+PROBE_NO_ANSWER = 3
+PROBE_ERRORS_MAX = 3
 SETTLED, PENDING, FAILED = "settled", "pending", "failed"
 # The tree is checked out with git's usual modes, whatever the agent's own
 # umask: a Dockerfile's COPY takes them into the image, where a service that
@@ -223,6 +240,69 @@ class Out:
         if status != 0:
             log_failure(self.request, self.clean(str(data.get("message") or f"exit {status}")))
         return status
+
+
+@dataclass(frozen=True)
+class Page:
+    """The profile's page: the service that publishes the caller's port,
+    and the port it listens on in its container.
+    """
+
+    service: str
+    target: int
+    port: int
+
+
+def page_of(config: dict[str, Any], port: int) -> Page | None:
+    """The page of a checked config: the service publishing the caller's
+    port, if one does, by its target port; None for a stack with no page.
+    """
+    for name, service in sorted((config.get("services") or {}).items()):
+        for entry in service.get("ports") or [] if isinstance(service, dict) else []:
+            if not isinstance(entry, dict) or entry.get("protocol", "tcp") != "tcp":
+                continue
+            try:
+                published = published_ports(entry)
+            except RefusedError:
+                continue
+            target, _, last = str(entry.get("target") or "").partition("-")
+            if port in published and target.isdigit():
+                # A range maps onto a range, port for port; onto one port, all to it.
+                return Page(service=name, target=int(target) + (published.index(port) if last else 0), port=port)
+    return None
+
+
+def probe_page(port: int) -> int:
+    """Ask the page on port of this network namespace's loopback: 0 when it
+    answered HTTP, PROBE_NO_ANSWER when nothing did.
+    """
+    for host in ("127.0.0.1", "::1"):
+        try:
+            with socket.create_connection((host, port), timeout=PROBE_SECONDS) as conn:
+                conn.settimeout(ANSWER_SECONDS)
+                conn.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                answer = b""
+                while len(answer) < len(HTTP_ANSWER):
+                    chunk = conn.recv(len(HTTP_ANSWER) - len(answer))
+                    if not chunk:
+                        break
+                    answer += chunk
+        except OSError:
+            continue
+        if answer == HTTP_ANSWER:
+            return 0
+    return PROBE_NO_ANSWER
+
+
+def service_containers(containers: list[dict[str, Any]]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """The containers of the stack's services, by service: compose run's
+    leftovers are none, nor is a container with no service's name.
+    """
+    for container in containers:
+        labels = container.get("Labels") or {}
+        service = labels.get(SERVICE_LABEL, "")
+        if labels.get(ONEOFF_LABEL) != "True" and SERVICE.fullmatch(service):
+            yield service, container
 
 
 @dataclass
@@ -956,6 +1036,7 @@ class Agent:
         with open(stack.checked, "w") as checked:
             json.dump(with_resets(cast("dict[str, Any]", relocate(config, staged.tree, stack.tree)), stack.project), checked)
         meta = {"repo": request["repo"], "commit": commit, "up_at": self.system.now(), **profile}
+        meta["page_port"] = request["ports"][profile["page"] - 1]
         meta["env"] = without_secrets(profile["env"], profile["secret_keys"])
         with open(f"{stack.meta_file}.new", "w") as meta_file:
             json.dump(meta, meta_file)
@@ -1014,10 +1095,10 @@ class Agent:
         failed services' logs passed on.
         """
         if self.emit([*stack.compose(), "up", "--detach", *flags]) != 0:
-            services, reason = self.services_in(stack, (FAILED,)), "docker-compose up failed"
+            services, reason = self.services_in(self.containers(stack.project), (FAILED,)), "docker-compose up failed"
         else:
             try:
-                failure = self.watch(stack)
+                failure = self.watch(stack, self.page(stack))
             except (subprocess.CalledProcessError, OSError, ValueError) as error:
                 detail = getattr(error, "stderr", "") or str(error)
                 failure = {}, f"the stack could not be watched: {detail.strip()}"
@@ -1027,45 +1108,102 @@ class Agent:
         self.fail(stack, services)
         return f"{reason}; the stack is stopped."
 
-    def services_in(self, stack: Stack, verdicts: tuple[str, ...], restarts: dict[str, int] | None = None) -> dict[str, str]:
-        """The stack's services whose containers are in one of verdicts, by
-        the worst verdict of their containers; with restarts, the count each
+    def services_in(
+        self,
+        containers: list[dict[str, Any]],
+        verdicts: tuple[str, ...],
+        restarts: dict[str, int] | None = None,
+    ) -> dict[str, str]:
+        """The services whose containers are in one of verdicts, by the
+        worst verdict of their containers; with restarts, the count each
         container was first seen with, one restarted since is failed.
         """
         found: dict[str, str] = {}
-        for container in self.containers(stack.project):
-            labels = container.get("Labels") or {}
-            if labels.get(ONEOFF_LABEL) == "True":
-                continue
-            service = labels.get(SERVICE_LABEL, "")
+        for service, container in service_containers(containers):
             verdict = FAILED if restarts is not None and restarted(container, restarts) else verdict_of(container)
-            if verdict in verdicts and SERVICE.fullmatch(service) and found.get(service) != FAILED:
+            if verdict in verdicts and found.get(service) != FAILED:
                 found[service] = verdict
         return found
 
-    def watch(self, stack: Stack) -> tuple[dict[str, str], str] | None:
+    def watch(self, stack: Stack, page: Page | None) -> tuple[dict[str, str], str] | None:
         """Poll the stack's containers until every one has stayed settled
-        for SETTLE_SECONDS: None; or the services that failed, at once, or
-        that had not settled by WAIT_SECONDS, and why.
+        for SETTLE_SECONDS and the page, where it has one, has answered:
+        None; or the services that failed, at once, or that had not settled,
+        or the page's service when the page had not answered, by
+        WAIT_SECONDS, and why.
         """
         deadline = self.system.clock() + WAIT_SECONDS
         settled_at = None
+        answered = page is None
+        probe_errors = 0
         restarts: dict[str, int] = {}
         while True:
-            found = self.services_in(stack, (FAILED, PENDING), restarts)
+            containers = self.containers(stack.project)
+            found = self.services_in(containers, (FAILED, PENDING), restarts)
             failed = {name: verdict for name, verdict in found.items() if verdict == FAILED}
             if failed:
                 return failed, f"{', '.join(sorted(failed))} exited with an error, restarted or is unhealthy"
             now = self.system.clock()
             if found:
                 settled_at = None
-            elif settled_at is None:
-                settled_at = now
-            elif now - settled_at >= SETTLE_SECONDS:
-                return None
+            else:
+                if not answered and page is not None:
+                    answered, probe_errors = self.ask_page(page, containers, probe_errors)
+                if settled_at is None:
+                    settled_at = now
+                elif now - settled_at >= SETTLE_SECONDS and answered:
+                    return None
             if now >= deadline:
-                return found, f"{', '.join(sorted(found)) or 'the stack'} did not run, or was not healthy, within {WAIT_SECONDS} s"
+                if found or answered or page is None:
+                    return found, f"{', '.join(sorted(found)) or 'the stack'} did not run, or was not healthy, within {WAIT_SECONDS} s"
+                return {page.service: PENDING}, f"the page on port {page.port} did not answer within {WAIT_SECONDS} s"
             self.system.sleep(POLL_SECONDS)
+
+    def page(self, stack: Stack) -> Page | None:
+        """The stack's page, from its record and its checked config; None for
+        a stack with none, or brought up by an agent before pages were asked.
+        """
+        meta = stack.meta()
+        port = meta.get("page_port") if isinstance(meta, dict) else None
+        if isinstance(port, bool) or not isinstance(port, int):
+            return None
+        with open(stack.checked) as checked:
+            return page_of(json.load(checked), port)
+
+    def ask_page(self, page: Page, containers: list[dict[str, Any]], errors: int) -> tuple[bool, int]:
+        """Whether the page answered, and the probe's failures in a row since
+        it last ran: a container gone between the listing and the probe
+        fails it once, a probe that cannot run fails it every time, and
+        raises at the PROBE_ERRORS_MAXth.
+        """
+        try:
+            return self.page_answers(page, containers), 0
+        except subprocess.CalledProcessError:
+            if errors + 1 >= PROBE_ERRORS_MAX:
+                raise
+            return False, errors + 1
+
+    def page_answers(self, page: Page, containers: list[dict[str, Any]]) -> bool:
+        """Whether the page's service answers HTTP on its port, asked from
+        inside a running container of it, in that container's network
+        namespace: the host's is the sandbox's to keep the stacks off. A
+        probe that could not run raises.
+        """
+        for service, container in service_containers(containers):
+            pid = container.get("Pid")
+            if service != page.service or container.get("State") != "running":
+                continue
+            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+                continue
+            probe = [sys.executable, "-I", os.path.abspath(__file__), "probe-page", str(page.target)]
+            try:
+                self.system.run(["podman", "unshare", "nsenter", "--target", str(pid), "--net", "--", *probe])
+            except subprocess.CalledProcessError as error:
+                if error.returncode != PROBE_NO_ANSWER:
+                    raise
+                continue
+            return True
+        return False
 
     def fail(self, stack: Stack, services: dict[str, str]) -> None:
         """After an up or a start that failed: the services' logs, then the
@@ -1369,7 +1507,11 @@ def handle(config: Config, conn: IO[bytes], out: Out, system: System) -> int:
 
 
 def main(argv: list[str]) -> int:
-    """Serve one connection on stdin and stdout, as systemd hands it over."""
+    """Serve one connection on stdin and stdout, as systemd hands it over;
+    or, in a stack's network namespace, ask its page.
+    """
+    if len(argv) == 2 and argv[0] == "probe-page" and argv[1].isdigit():  # noqa: PLR2004 -- "probe-page" and the port
+        return probe_page(int(argv[1]))
     if len(argv) != 2 or argv[0] != "serve":  # noqa: PLR2004 -- "serve" and the config
         print("usage: executor-agent serve <agent.json>", file=sys.stderr)
         return 2

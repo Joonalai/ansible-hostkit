@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import socket
 import subprocess
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, override
@@ -37,6 +39,7 @@ class Fake:
         self.after_up: list[list[dict[str, Any]]] = []
         self.config_error = ""
         self.output = ["building\n"]
+        self.page_answers: list[bool | int] = [True]
 
     def run(self, command: list[str]) -> str:
         self.calls.append(command)
@@ -55,6 +58,12 @@ class Fake:
         return ""
 
     def unshare(self, command: list[str]) -> str:
+        if command[2] == "nsenter":
+            answered = self.page_answers.pop(0) if len(self.page_answers) > 1 else self.page_answers[0]
+            if answered is True:
+                return ""
+            status = executor_agent.PROBE_NO_ANSWER if answered is False else answered
+            raise subprocess.CalledProcessError(status, command, stderr="nsenter: cannot open")
         if command[2] == "du":
             used = self.disk.pop(0) if len(self.disk) > 1 else self.disk[0]
             return f"{used}\t/x\n"
@@ -1359,3 +1368,200 @@ def test_a_tree_env_directory_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(executor_agent.RefusedError, match="directory"):
         executor_agent.write_tree_env(str(tmp_path), "")
+
+
+PAGE_CONFIG = {"name": "stack-r-1", "services": {"web": {"ports": [{"published": "9303", "target": 8080}]}, "e2e": {}}}
+
+
+def web_running(status: str = "Up 1 second") -> dict[str, Any]:
+    return exited("w1", "web", "running", 0, status) | {"Pid": 4242}
+
+
+def probes(fake: Fake) -> list[list[str]]:
+    return [call for call in fake.calls if call[:3] == ["podman", "unshare", "nsenter"]]
+
+
+def test_an_up_whose_page_answers_late_waits_for_it_and_succeeds(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [False] * 8 + [True]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    assert len(probes(fake)) == 9
+    probe = probes(fake)[0]
+    assert probe[:7] == ["podman", "unshare", "nsenter", "--target", "4242", "--net", "--"]
+    assert probe[-2:] == ["probe-page", "8080"]
+    assert json.loads((tmp_path / "stacks" / "r-1" / "stack.json").read_text())["page_port"] == 9303
+
+
+def test_a_service_that_dies_after_the_settle_time_before_its_page_answers_fails_the_up(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]] * 30 + [[exited("w1", "web", "exited", 127)]]
+    fake.page_answers = [False]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert len(probes(fake)) > executor_agent.SETTLE_SECONDS
+    assert next(call for call in fake.calls if "logs" in call)[-1] == "web"
+    assert answer[-1]["exit"] == 1
+    assert answer[-1]["message"] == "web exited with an error, restarted or is unhealthy; the stack is stopped."
+
+
+def test_a_page_that_never_answers_fails_the_up_with_its_service_s_logs(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [False]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert next(call for call in fake.calls if "logs" in call)[-1] == "web"
+    assert ["podman", "stop", "--time", "10", "w1"] in fake.calls
+    assert answer[-1]["message"] == "the page on port 9303 did not answer within 600 s; the stack is stopped."
+
+
+def test_a_stack_that_publishes_no_page_settles_without_asking_one(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake()
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [False]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+    assert probes(fake) == []
+
+
+def test_a_page_container_with_no_pid_is_not_asked_and_never_answers(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[exited("w1", "web", "running", 0, "Up 1 second")]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert probes(fake) == []
+    assert answer[-1]["message"].startswith("the page on port 9303 did not answer")
+
+
+def test_a_start_waits_for_the_page_too(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config = make_config(tmp_path)
+    serve(config, Fake(compose_config=PAGE_CONFIG), up_request(bundle_of(checkout)))
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [False]
+
+    answer = serve(config, fake, json.dumps({"action": "start", "caller": "r-1"}).encode() + b"\n")
+
+    assert answer[-1] == {"exit": 1, "message": "the page on port 9303 did not answer within 600 s; the stack is stopped."}
+
+
+def test_a_stack_recorded_before_pages_were_asked_keeps_the_settle_rule(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    config = make_config(tmp_path)
+    serve(config, Fake(compose_config=PAGE_CONFIG), up_request(bundle_of(checkout)))
+    meta_file = tmp_path / "stacks" / "r-1" / "stack.json"
+    meta = json.loads(meta_file.read_text())
+    del meta["page_port"]
+    meta_file.write_text(json.dumps(meta))
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [False]
+
+    answer = serve(config, fake, json.dumps({"action": "start", "caller": "r-1"}).encode() + b"\n")
+
+    assert answer[-1] == {"exit": 0}
+    assert probes(fake) == []
+
+
+@pytest.mark.parametrize(
+    ("ports", "expected"),
+    [
+        ([{"published": "9303", "target": 8080}], executor_agent.Page(service="web", target=8080, port=9303)),
+        ([{"published": "9302-9304", "target": "8000-8002"}], executor_agent.Page(service="web", target=8001, port=9303)),
+        ([{"published": "9302-9304", "target": 8080}], executor_agent.Page(service="web", target=8080, port=9303)),
+        ([{"published": "9303", "target": 8080, "protocol": "udp"}], None),
+        ([{"published": "9302", "target": 8080}], None),
+        ([{"published": "9303"}], None),
+        (["9303:8080"], None),
+    ],
+)
+def test_page_of_a_config_with_ports_is_the_service_publishing_the_page_port(
+    ports: list[object],
+    expected: executor_agent.Page | None,
+) -> None:
+    assert executor_agent.page_of({"services": {"web": {"ports": ports}}}, 9303) == expected
+
+
+def serve_once(answer: bytes) -> int:
+    server = socket.create_server(("127.0.0.1", 0))
+    port = int(server.getsockname()[1])
+
+    def reply() -> None:
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(1024)
+            conn.sendall(answer)
+        server.close()
+
+    threading.Thread(target=reply, daemon=True).start()
+    return port
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (b"HTTP/1.1 500 Internal Server Error\r\n\r\n", 0),
+        (b"SSH-2.0-x\r\n", executor_agent.PROBE_NO_ANSWER),
+        (b"", executor_agent.PROBE_NO_ANSWER),
+    ],
+)
+def test_probe_page_with_an_answer_is_0_for_any_http_status_else_1(answer: bytes, expected: int) -> None:
+    assert executor_agent.main(["probe-page", str(serve_once(answer))]) == expected
+
+
+def test_probe_page_with_nothing_listening_is_no_answer() -> None:
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        port = int(held.getsockname()[1])
+
+        assert executor_agent.probe_page(port) == executor_agent.PROBE_NO_ANSWER
+
+
+def test_a_probe_that_cannot_run_fails_the_up_at_once_with_its_error(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [1]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert len(probes(fake)) == executor_agent.PROBE_ERRORS_MAX
+    assert ["podman", "stop", "--time", "10", "w1"] in fake.calls
+    assert answer[-1]["message"] == "the stack could not be watched: nsenter: cannot open; the stack is stopped."
+
+
+def test_a_probe_that_fails_once_is_asked_again(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()]]
+    fake.page_answers = [1, True]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert answer[-1]["exit"] == 0
+
+
+def test_a_stack_whose_page_answered_but_never_settled_names_the_services_not_the_page(tmp_path: Path) -> None:
+    checkout = repository(tmp_path, {"stack.toml": PROFILE, "compose.yaml": "services: {}\n"})
+    fake = Fake(compose_config=PAGE_CONFIG)
+    fake.after_up = [[web_running()], [web_running(), exited("m1", "mail", "running", 0, "Up 1 second (starting)")]]
+
+    answer = serve(make_config(tmp_path), fake, up_request(bundle_of(checkout)))
+
+    assert len(probes(fake)) == 1
+    assert answer[-1]["message"] == "mail did not run, or was not healthy, within 600 s; the stack is stopped."

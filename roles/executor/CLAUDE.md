@@ -127,13 +127,23 @@ consumer is [docs/executor.md](../../docs/executor.md).
   but one another service waits for. After `up --detach` the agent polls
   the containers until every one runs, healthy where it has a check, or
   ended with 0, and has stayed so `SETTLE_SECONDS`, up to `WAIT_SECONDS`,
-  on a monotonic clock. A restart policy brings a dying service back
+  on a monotonic clock, and until the page answers HTTP, where a service
+  publishes the profile's `page` port (`page_of`, `page_answers`): a
+  service with no health check can run past the settle time and still die
+  before it serves. The agent asks the page inside its container's network
+  namespace (`podman unshare nsenter --net`, then its own `probe-page`),
+  never on the host's loopback, which the host's sandbox keeps the exec
+  account off, as it must: a port open to the account is open to every
+  stack's pasta. The probe's own failure, other than `PROBE_NO_ANSWER`,
+  fails the watch after `PROBE_ERRORS_MAX` in a row, so a host where
+  nsenter cannot join says so rather than wait out `WAIT_SECONDS`. A
+  stack recorded before `page_port` keeps the settle rule alone. A restart policy brings a dying service back
   before a poll may see it ended, so a container whose `Restarts` grew
   during the watch has failed, and podman's `stopped` is judged by its
   exit code. `compose run`'s leftovers (`ONEOFF_LABEL`) are no service. On
   a failure, the watch's own included, it answers with the failed
   services' log tail and stops the stack, even when the logs cannot be
-  read. The smoke test's `app`, its `broken` profile and the one-shot
+  read. The smoke test's `app`, its `broken` and `late` profiles and the one-shot
   `seed` and `job` prove it.
 - **Builds run one at a time** (`COMPOSE_PARALLEL_LIMIT=1` in the agent's
   unit): the legacy builder shares nothing between builds running at once,

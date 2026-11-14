@@ -92,8 +92,14 @@ flowchart LR
   which (`volumes`: `kept` or `new`); a down gives a clean start any time.
 - **An up waits for its stack.** It returns once every service runs,
   healthy where it has a healthcheck, or has ended with status 0, and has
-  stayed so a few seconds, up to ten minutes. A service that exits with
-  another status, restarts, is unhealthy or is not ready in time fails the
+  stayed so a few seconds, and the page has answered, up to ten minutes.
+  The page is the service that publishes the profile's `page` port over
+  TCP: the agent asks it with a plain HTTP request on the container's own
+  loopback, and any status is an answer, the application's errors being
+  its own. A stack that publishes nothing on that port has no page, and
+  the services alone decide. A service that exits with another status, restarts, is
+  unhealthy or is not ready in time, or a page that has not answered by
+  then (`the page on port <n> did not answer`), fails the
   up, which answers with the tail of that service's log and leaves the
   stack stopped and shown as failed, never as running while its page does
   not answer. A start from the phone page waits the same way, and starts a
@@ -256,7 +262,7 @@ At the repository's root, it says how the checkout comes up:
 [profiles.default]
 compose = ["compose.yaml"]          # the compose files, in the repository
 compose_profiles = ["seed"]         # optional: compose profiles to turn on
-page = 1                            # which of the caller's ports is the page
+page = 1                            # which of the caller's ports is the page, which an up waits for
 env = { WEB_PORT = "{port1}", API_PORT = "{port2}", BIND = "{bind}" }
 
 [suites.e2e]                        # `stack run e2e`
@@ -276,7 +282,14 @@ passkey's origin, is right on both kinds of instance. A repository whose `.env` 
 needs no change, only a profile that sets what it would. The services of a
 compose profile not in `compose_profiles` are left out, checked or run by
 nothing; a suite's service must be one of the stack's. A suite's container
-reaches the stack's services by their names.
+reaches the stack's services by their names. An up waits for the page to
+answer HTTP, so a service that migrates before it serves needs nothing
+more. A healthcheck still helps a service the page's answer says nothing
+about: one the page does not depend on, or the app behind a proxy that is
+the page, whose `502` is an answer too. The page must answer plain HTTP
+on `localhost` or every address of its container, within 15 seconds of
+the request; one that does not, a TLS-only server or one bound to the
+container's own address alone, fails the up after ten minutes.
 The checkout has git's usual modes whatever the agent's umask, files
 `0644` and executables `0755`, so an image's `COPY` of them stays readable
 by a service that does not run as root.
