@@ -1,0 +1,62 @@
+---
+# workbench_try checked, and laid out as workbench_try_entries: each
+# instance with its repositories by name and their instructions by name.
+# A repository is owner/name, or {repo: owner/name, instructions: |} for
+# what the try skill should know of it that only the person does.
+- name: Assert every try names its instance once, and its repositories
+  ansible.builtin.assert:
+    that:
+      - item.instance | default('') is match('^[a-z][a-z0-9]{0,15}$')
+      - item.repos | default([]) is not string
+      - item.repos | default([]) is not mapping
+      - item.repos | default([]) | length > 0
+      - workbench_try_bad_repos | length == 0
+      - workbench_try | selectattr('instance', 'defined') | selectattr('instance', 'equalto', item.instance) | list | length == 1
+    fail_msg: >-
+      {{ item.instance | default(item) }}: a try wants an executor instance's name, once in
+      workbench_try, and its repos, each owner/name or {repo: owner/name, instructions:
+      <text>}{{ ('; not ' ~ workbench_try_bad_repos | join(', ')) if workbench_try_bad_repos else '' }}.
+    quiet: true
+  vars:
+    workbench_try_bad_repos: >-
+      {%- set bad = [] -%}
+      {%- for repo in (item.repos if item.repos | default([]) is sequence and item.repos is not string else []) -%}
+      {%- if repo is string -%}
+      {%- set ok = repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') -%}
+      {%- elif repo is mapping -%}
+      {%- set ok = repo.repo | default('') is string
+                   and repo.repo | default('') is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
+                   and repo.instructions | default('') is string
+                   and repo.keys() | difference(['repo', 'instructions']) | length == 0 -%}
+      {%- else -%}
+      {%- set ok = false -%}
+      {%- endif -%}
+      {%- if not ok -%}
+      {%- set _ = bad.append(repo.repo | default(repo) if repo is mapping else repo) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ bad }}
+  loop: "{{ workbench_try }}"
+  loop_control:
+    label: "{{ item.instance | default(item) }}"
+
+- name: Lay out the tries, their repositories by name and their instructions
+  ansible.builtin.set_fact:
+    workbench_try_entries: >-
+      {%- set tries = [] -%}
+      {%- for entry in workbench_try -%}
+      {%- set names = [] -%}
+      {%- set instructions = {} -%}
+      {%- for repo in entry.repos -%}
+      {%- if repo is mapping -%}
+      {%- set _ = names.append(repo.repo) -%}
+      {%- if repo.instructions | default('') | trim | length > 0 -%}
+      {%- set _ = instructions.update({repo.repo: repo.instructions}) -%}
+      {%- endif -%}
+      {%- else -%}
+      {%- set _ = names.append(repo) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _ = tries.append({'instance': entry.instance, 'repos': names, 'instructions': instructions}) -%}
+      {%- endfor -%}
+      {{ tries }}

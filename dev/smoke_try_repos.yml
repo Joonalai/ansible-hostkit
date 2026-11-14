@@ -1,0 +1,21 @@
+---
+# One pass of smoke.yml's try check: workbench_try as item, which the
+# workbench role's check must refuse.
+- name: Check a try that should be refused
+  block:
+    - name: Check workbench_try {{ item }}
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.workbench
+        tasks_from: try_repos
+      vars:
+        workbench_try: "{{ item }}"
+
+    - name: Fail, since the check let the try through
+      ansible.builtin.fail:
+        msg: "workbench_try {{ item }} was not refused."
+  rescue:
+    - name: Find the refusal was the check's
+      ansible.builtin.assert:
+        that: ansible_failed_task.name is not search('let the try through')
+        fail_msg: "{{ ansible_failed_result.msg }}"
+        quiet: true

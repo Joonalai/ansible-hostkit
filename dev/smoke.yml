@@ -695,6 +695,45 @@
       changed_when: false
       failed_when: dev_remote_stalled.rc != 0 or 'timed out' not in dev_remote_stalled.stdout
 
+# The workbench's tries take a repository by name or with the person's
+# instructions for it, and refuse anything else.
+- name: Check the shapes of the workbench's tries
+  hosts: hostkit-dev
+  gather_facts: false
+  tasks:
+    - name: Lay out a try with both shapes of a repository
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.workbench
+        tasks_from: try_repos
+      vars:
+        workbench_try:
+          - instance: stacks
+            repos:
+              - example/app
+              - repo: example/site
+                instructions: |
+                  Log in as demo.
+              - repo: example/lib
+
+    - name: Find each repository by name, and the instructions of the one that has them
+      ansible.builtin.assert:
+        that:
+          - workbench_try_entries | length == 1
+          - workbench_try_entries[0].repos == ['example/app', 'example/site', 'example/lib']
+          - workbench_try_entries[0].instructions | list == ['example/site']
+          - workbench_try_entries[0].instructions['example/site'] | trim == 'Log in as demo.'
+        fail_msg: "{{ workbench_try_entries | to_json }}"
+        quiet: true
+
+    - name: Refuse a try whose repository has no repo, instructions that are not text, or more
+      ansible.builtin.include_tasks: smoke_try_repos.yml
+      loop:
+        - [{instance: stacks, repos: [{instructions: Log in as demo.}]}]
+        - [{instance: stacks, repos: [{repo: example/site, instructions: [Log in]}]}]
+        - [{instance: stacks, repos: [{repo: example/site, branch: main}]}]
+        - [{instance: stacks, repos: [{repo: not a repository}]}]
+        - [{instance: stacks, repos: [42]}]
+
 # What a consumer's real host showed: a lowered cap that the reload left
 # out of the live cgroup. An account of its own, given one cap and then a
 # lower one, so every run raises it and lowers it again.

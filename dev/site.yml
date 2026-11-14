@@ -178,6 +178,31 @@
             executor: far
         workbench_try:
           - instance: stacks
-            repos: [example/smoke, example/app]
+            repos:
+              - example/smoke
+              - repo: example/app
+                instructions: |
+                  Open the page first.
           - instance: far
             repos: [example/lib]
+  post_tasks:
+    - name: Read the tries the try skill reads
+      ansible.builtin.slurp:
+        src: /home/bench/.config/workbench/try.json
+      register: dev_try_json
+      when: not ansible_check_mode
+      become: true
+
+    - name: Find each try's repositories by name, and app's instructions
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that:
+          - dev_tries[0].repos == ['example/smoke', 'example/app']
+          - dev_tries[0].instructions | list == ['example/app']
+          - dev_tries[0].instructions['example/app'] | trim == 'Open the page first.'
+          - dev_tries[1].repos == ['example/lib']
+          - dev_tries[1].instructions == {}
+        fail_msg: "{{ dev_tries | to_json }}"
+        quiet: true
+      vars:
+        dev_tries: "{{ dev_try_json.content | b64decode | from_json }}"

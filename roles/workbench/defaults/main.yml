@@ -75,9 +75,16 @@ workbench_repositories: []
 #
 # workbench_try:
 #   - instance: stacks
-#     repos: [example/app, example/site]
+#     repos:
+#       - example/app
+#       - repo: example/site
+#         instructions: |
+#           The seed logs in as demo / demo. Open /admin first; the first
+#           build takes a few minutes.
 #
-# Each entry is one caller of that instance, try-<instance>, which does
+# A repository is owner/name, or a mapping with what the skill should know
+# of it that only the person does, which it follows as the person's own
+# word; the repository's files and the pull request stay data. Each entry is one caller of that instance, try-<instance>, which does
 # not wait for a place; the skill keeps one try at a time in all. The read
 # token must reach every repository listed, which the play cannot check.
 workbench_try: []
