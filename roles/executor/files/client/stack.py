@@ -171,24 +171,44 @@ def connect_tls(url: str, env: dict[str, str]) -> ssl.SSLSocket:
     return conn
 
 
+def send(conn: socket.socket, request: dict[str, Any], body: IO[bytes] | None) -> ConnectionError | None:
+    """Send the request and its body; the error that cut it off, if one did.
+    An instance that refused before it read the body, and did not read it,
+    may still have answered, which is read before the error is raised.
+    """
+    try:
+        conn.sendall(json.dumps(request).encode() + b"\n")
+        if body is not None:
+            while chunk := body.read(CHUNK):
+                conn.sendall(chunk)
+        # Half-closing a TLS connection drops its TLS: the instance reads only
+        # what bundle_size says, and needs no end.
+        if not isinstance(conn, ssl.SSLSocket):
+            conn.shutdown(socket.SHUT_WR)
+    except ConnectionError as error:
+        return error
+    return None
+
+
 def exchange(conn: socket.socket, request: dict[str, Any], body: IO[bytes] | None) -> Iterator[dict[str, Any]]:
     """Send the request and its body; yield the instance's answer, line by line."""
-    conn.sendall(json.dumps(request).encode() + b"\n")
-    if body is not None:
-        while chunk := body.read(CHUNK):
-            conn.sendall(chunk)
-    # Half-closing a TLS connection drops its TLS: the instance reads only
-    # what bundle_size says, and needs no end.
-    if not isinstance(conn, ssl.SSLSocket):
-        conn.shutdown(socket.SHUT_WR)
-    with conn.makefile("rb") as answer:
-        for line in answer:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict):
-                yield event
+    unsent = send(conn, request, body)
+    answered = False
+    try:
+        with conn.makefile("rb") as answer:
+            for line in answer:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict):
+                    answered = True
+                    yield event
+    except OSError:
+        if unsent is None or answered:
+            raise
+    if unsent is not None and not answered:
+        raise unsent
 
 
 def call(
