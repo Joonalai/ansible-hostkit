@@ -24,7 +24,8 @@
 # file with the key and what `stack` needs, for the caller's unit to hand
 # its container. The instance keeps only the key's SHA-256. A caller of
 # the prefix that is no longer listed loses its registration and its key,
-# on every instance of the host, and the reaper takes its stack.
+# on every instance of the host, and the instance's reaper takes its stack
+# down at once, running or stopped, volumes and tree with it.
 #
 # An instance in executor_remote_instances is on another host: its
 # callers' keys are made and kept here all the same, and the play prints
@@ -242,4 +243,35 @@
   loop: "{{ executor_callers_found.files | default([]) }}"
   loop_control:
     label: "{{ item.path }}"
+  register: executor_callers_removed
   become: true
+
+# A caller that moved to another instance, or went, may leave a stack
+# here, running or stopped, that nothing could take down any more. The
+# reaper takes it now, with its volumes and tree, and frees its ports,
+# rather than at its next quarter hour; until then `list` and the page
+# already leave it out.
+- name: Take down the stacks of the callers removed
+  when: executor_callers_pruned | length > 0
+  vars:
+    executor_callers_pruned: >-
+      {{ executor_callers_removed.results | default([]) | selectattr('changed')
+         | map(attribute='item.path') | select('search', '/callers/[^/]+[.]json$')
+         | map('dirname') | map('dirname') | map('basename') | unique | list }}
+  ansible.builtin.systemd_service:
+    name: "executor-{{ item }}-reap.service"
+    state: started
+  loop: "{{ executor_callers_pruned }}"
+  become: true
+
+- name: Say which callers were removed, with their stacks
+  when: executor_callers_gone | length > 0
+  vars:
+    executor_callers_gone: >-
+      {{ executor_callers_removed.results | default([]) | selectattr('changed')
+         | map(attribute='item.path') | select('search', '/callers/[^/]+[.]json$')
+         | map('regex_replace', '^.*/([^/]+)/callers/([^/]+)[.]json$', '\g<1>/\g<2>') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      Removed {{ executor_callers_gone | join(', ') }}: no longer listed, each
+      with its stack, its volumes and its tree, and its ports freed.

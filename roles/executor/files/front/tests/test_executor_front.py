@@ -583,6 +583,19 @@ def test_list_shows_every_stack_and_who_asks(tmp_path: Path) -> None:
     assert stack["state"] == "running"
 
 
+def test_list_leaves_out_a_caller_no_longer_registered(tmp_path: Path) -> None:
+    register(tmp_path, "runner-app-1")
+    register(tmp_path, "runner-app-2", key="k2")
+    front, agent, _ = make_front(tmp_path)
+    serve(front, request("up", body=b"B"))
+    (tmp_path / "callers" / "runner-app-1.json").unlink()
+    agent.stacks = {"runner-app-1": {"state": "running"}}
+
+    answer = serve(front, request("list", key="k2"))
+
+    assert answer[-1]["stacks"] == []
+
+
 def listed_stopped(front: executor_front.Front, agent: Agent) -> list[str]:
     agent.stacks = {"runner-app-1": {"state": "running"}}
     stopped = serve(front, request("list"))[-1]["stacks"][0]["stopped_services"]
@@ -716,6 +729,43 @@ def test_the_reaper_stops_idle_stacks_and_removes_old_and_orphaned_ones(tmp_path
     assert state(tmp_path)["ports"] == {"idle": 1, "old": 2}
     assert set(state(tmp_path)["stacks"]) == {"idle", "busy"}
     assert agent.actions()[-1] == ("prune", "")
+
+
+@pytest.mark.parametrize(
+    ("stacks", "live"),
+    [
+        ({"moved": {"state": "running"}}, {"moved": {"state": "running"}}),
+        ({"moved": {"state": "stopped"}}, {"moved": {"state": "stopped"}}),
+        ({"moved": {"state": "failed"}}, {}),
+        ({}, {"moved": {"state": "running"}}),
+    ],
+)
+def test_the_reaper_takes_down_a_pruned_callers_stack_and_frees_its_ports(
+    tmp_path: Path, stacks: dict[str, Any], live: dict[str, Any],
+) -> None:
+    register(tmp_path, "kept")
+    front, agent, _ = make_front(tmp_path)
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"moved": 9302, "kept": 9305}, "stacks": stacks}))
+    agent.stacks = live
+
+    done = front.reap()
+
+    assert done == ["removed moved"]
+    assert ("down", "moved") in agent.actions()
+    assert state(tmp_path)["ports"] == {"kept": 9305}
+    assert state(tmp_path)["stacks"] == {}
+
+
+def test_the_reaper_frees_the_ports_of_a_pruned_caller_with_no_stack(tmp_path: Path) -> None:
+    register(tmp_path, "kept")
+    front, agent, _ = make_front(tmp_path)
+    (tmp_path / "state" / "state.json").write_text(json.dumps({"ports": {"moved": 9302, "kept": 9305}}))
+
+    done = front.reap()
+
+    assert done == []
+    assert ("down", "moved") not in agent.actions()
+    assert state(tmp_path)["ports"] == {"kept": 9305}
 
 
 def test_the_reaper_leaves_an_up_in_progress(tmp_path: Path) -> None:

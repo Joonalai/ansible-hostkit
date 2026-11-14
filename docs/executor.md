@@ -248,6 +248,30 @@ reads `STACK_URL` and `STACK_TLS_SHA256`, or `STACK_TLS_CA` for a
 certificate a CA signed, in place of `STACK_SOCKET`, and checks the
 certificate before it sends a byte.
 
+### Moving callers between instances
+
+A group of callers moves between a local instance and a remote one by
+the instance its repositories name, and back again the same way. A
+caller that leaves an instance leaves its stack there, running, stopped
+or none. The play that removes it takes that stack down on that host, at
+once:
+
+- **A local caller** goes when the callers' play no longer lists it for
+  that instance. The play removes its registration and its key, runs the
+  instance's reaper, which takes the stack down with its volumes and tree
+  and frees its ports, and prints the callers it removed.
+- **A remote caller** goes when the instance's play no longer finds it in
+  `remote_callers`, with the same reaper run and the same line. The
+  callers' play removes only the key on its own host, so the stack stays
+  until the instance's play runs or its `idle_hours` stop it: run the
+  instance's play after the callers'.
+
+`list` and the page show no caller that is no longer registered, and the
+reaper's quarter-hourly run removes a stack of one that slipped past both,
+since a reaper already running when the play asks finishes its own run
+first. The caller starts empty on its new instance: its volumes stay
+behind with the stack they belonged to.
+
 ## Pausing
 
 While `/etc/hostkit-executor/<name>/paused` exists, the instance takes no
