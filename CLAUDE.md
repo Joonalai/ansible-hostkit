@@ -83,13 +83,15 @@ uv sync --locked                    # the venv: ansible, ansible-lint, prek, pyt
 .venv/bin/ty check                  # every ty rule, as errors
 make dev-up                         # the dev container (compose.yml, dev/)
 make converge TAGS=<play>           # the roles on it, dev/site.yml's plays
-make idempotence                    # a second run, which must change nothing
+make idempotence TAGS=<play>        # a second run, which must change nothing
 make smoke                          # an executor stack, end to end
 ```
 
 A change to a role is tried on the dev container before it is committed:
-`make converge` and `make idempotence` for the plays it touches, and
-`make smoke` for the executor and its clients. A play that cannot run
+`make converge` and `make idempotence` with `TAGS` for the plays it
+touches, not every play, and `make smoke` for the executor and its
+clients. A run is mostly the connection's time, so a play left out is
+minutes saved; CI runs every play. A play that cannot run
 there says why in `dev/site.yml`, with the flag that turns its part off.
 `.github/workflows/dev-container.yml` runs every play on pull requests.
 
