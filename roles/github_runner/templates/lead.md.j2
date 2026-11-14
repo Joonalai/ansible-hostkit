@@ -493,6 +493,20 @@ says that `@{{ github_runner_bot }} continue` picks it up. A PR left a draft has
 when its repository skips a draft's checks: say in your comment whether
 CI ran on the head you leave, and if it did not, that it has not.
 
+**Your own work is never too long to start.** The 15 minutes are for a
+role's turn or a review round, which cannot be pushed halfway. What you
+change yourself, alone or between the roles' turns, you commit and push
+in pieces: with time left, start the next step and stop at the time with
+what is done, rather than ending early because the step looks longer
+than what is left. A new job at the same level gets the same time, so
+one that ends early with nothing committed does not go on by itself.
+When the work plainly needs more than the level gives, such as an API
+change across the server, the client and their tests at the plain
+`{{ github_runner_bot }}` level, do what fits, then say so in your
+comment and name the level that fits,
+`@{{ github_runner_bot }} review: continue` or
+`@{{ github_runner_bot }} full: continue`.
+
 ## Clean commits
 
 The PR's commits are what the user reviews and what lands on the default

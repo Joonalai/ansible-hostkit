@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 import time
@@ -938,3 +939,75 @@ def test_a_job_that_waits_says_it_stopped(checkout: Path) -> None:
 
     (note,) = [call[-1] for call in gh.called("gh", "pr", "comment")]
     assert note.startswith("Stopped (failure). The work so far is on this PR")
+
+
+def committed_before(checkout: Path, minutes_ago: int) -> None:
+    """HEAD as a commit from before the job started, as on a job that committed nothing."""
+    when = f"@{int(time.time()) - minutes_ago * 60} +0000"
+    subprocess.run(
+        ["git", "-C", str(checkout), "-c", "user.name=u", "-c", "user.email=u@x", "commit", "-q", "--amend", "--allow-empty", "--no-edit"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when}, check=True,
+    )
+
+
+def test_a_lead_that_ended_early_with_nothing_committed_waits(checkout: Path) -> None:
+    committed_before(checkout, 120)
+    gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY)
+
+    job_finish.main(going_on("success", minutes_ago=1, minutes=40), run=gh)
+
+    (edit,) = gh.called("gh", "pr", "edit", PR_URL)
+    assert "Status: stopped: ended early with nothing committed" in edit[edit.index("--body") + 1]
+    (note,) = gh.called("gh", "pr", "comment", PR_URL)
+    assert job_finish.AUTO not in note[-1]
+    assert "@claude full: continue" in note[-1] and "40 minutes" in note[-1]
+
+
+@pytest.mark.parametrize(("minutes_ago", "before"), [(25, 120), (1, 0)])
+def test_a_lead_that_ended_late_or_committed_goes_on(checkout: Path, minutes_ago: int, before: int) -> None:
+    if before:
+        committed_before(checkout, before)
+    gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY)
+
+    job_finish.main(going_on("success", minutes_ago=minutes_ago, minutes=40), run=gh)
+
+    assert job_finish.AUTO in gh.called("gh", "pr", "comment", PR_URL)[-1][-1]
+
+
+@pytest.mark.parametrize("minutes", [40, 60, 100])
+def test_an_idle_note_names_only_the_levels_that_give_more_time(checkout: Path, minutes: int) -> None:
+    committed_before(checkout, 120)
+    gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY)
+
+    job_finish.main(going_on("success", minutes_ago=1, minutes=minutes), run=gh)
+
+    (note,) = gh.called("gh", "pr", "comment", PR_URL)
+    assert ("@claude review: continue" in note[-1]) == (minutes < 60)
+    assert ("@claude full: continue" in note[-1]) == (minutes < 100)
+    assert ("split what is left into parts" in note[-1]) == (minutes >= 100)
+
+
+@pytest.mark.parametrize("left", ["committed", "uncommitted"])
+def test_a_lead_that_worked_only_in_a_related_repository_goes_on(checkout: Path, sibling: Path, left: str) -> None:
+    committed_before(checkout, 120)
+    committed_before(sibling, 120)
+    (sibling / "new.py").write_text("x = 1\n")
+    if left == "committed":
+        subprocess.run(["git", "add", "new.py"], cwd=sibling, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "new"], cwd=sibling, check=True)
+    gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY)
+    env = {**going_on("success", minutes_ago=1, minutes=40), "CLAUDE_RELATED_REPOS": "blog", "GITHUB_WORKSPACE": str(checkout)}
+
+    job_finish.main(env, run=gh)
+
+    assert job_finish.AUTO in gh.called("gh", "pr", "comment", PR_URL)[0][-1]
+
+
+def test_a_lead_idle_in_every_related_repository_too_waits(checkout: Path, sibling: Path) -> None:
+    committed_before(checkout, 120)
+    gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY)
+    env = {**going_on("success", minutes_ago=1, minutes=40), "CLAUDE_RELATED_REPOS": "blog", "GITHUB_WORKSPACE": str(checkout)}
+
+    assert not job_finish.idle(gh, env, time.time())
+    committed_before(sibling, 120)
+    assert job_finish.idle(gh, env, time.time())

@@ -38,9 +38,14 @@ the work goes on by itself: this comments `@<bot> continue` on the PR,
 marked as the workflow's own, which the workflow takes from the App's bot
 as from a person. A lead that ended well with work left goes on whenever it
 stopped, since one stopped its first part 23 minutes early without asking
-for the next. A failed one goes on only after at least half the job's
-time, a part cut off at its limit, so that a crash or a usage limit early
-on does not go round again. A cancelled one goes on when it was cut off at
+for the next, but not one that ended before half the job's time with no
+commit of the job's on HEAD, nor one or work left uncommitted in a related
+repository: it judged the next step too long for its time, and four jobs
+of the same level in a row each did the same in under a minute, so the PR
+names the levels that give more time, or, past the longest, how to split
+the work. A failed one goes on only after at least half the job's time, a
+part cut off at its limit, so that a crash or a usage limit early on does
+not go round again. A cancelled one goes on when it was cut off at
 its part's limit, which GitHub ends as cancelled, or when GitHub gave up on
 the runner, which a wifi stall on the box does to every job at once and
 GitHub says in the job's annotation, never when someone cancelled the
@@ -225,6 +230,12 @@ AUTO = f"<!-- {BOT}:auto-continue -->"
 # round short.
 ROUNDS = 4
 SPENT = -1
+# go_on's word for a lead that ended well, early, with nothing committed:
+# the next job would get the same time and stop the same way.
+IDLE = -2
+# The levels a comment can ask for that give more time, with their minutes,
+# as claude-job-level has them.
+LONGER = (("review", 60), ("full", 100))
 
 
 def rounds(run: Run, pr: str, env: Env) -> int:
@@ -274,14 +285,38 @@ def part_ends(env: Env) -> float:
         return int(env["STARTED"]) + min(int(env["MINUTES"]), PART_MINUTES) * 60
 
 
+def idle(run: Run, env: Env, now: float) -> bool:
+    """Whether the lead ended before half the job's time with nothing of
+    this job's committed on HEAD, a rebase's included, in the checkout or
+    a related repository, nor left uncommitted in one: one that judged the
+    next step too long for its time, which a new job of the same level
+    would judge the same. The checkout's own uncommitted work is committed
+    before this is asked; a related repository's only after.
+    """
+    started = int(env["STARTED"])
+    if now - started >= int(env["MINUTES"]) * 60 / 2:
+        return False
+    try:
+        related = [("git", "-C", path) for _, path in siblings(env)]
+        for git in [("git",), *related]:
+            if int(run(*git, "log", "-1", "--format=%ct", "HEAD") or "0") >= started:
+                return False
+        return not any(run(*git, "status", "--porcelain") for git in related)
+    except (KeyError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
 def go_on(run: Run, pr: str, outcome: str, env: Env, now: float) -> int:
-    """The round the work goes on in by itself, 0 when it waits, or SPENT
-    when it would go on but has gone on ROUNDS times already.
+    """The round the work goes on in by itself, 0 when it waits, SPENT
+    when it would go on but has gone on ROUNDS times already, or IDLE when
+    the lead ended early having done nothing.
     """
     if outcome not in ("success", "failure", "cancelled") or not env.get("STARTED", "") or not env.get("MINUTES", ""):
         return 0
     if outcome == "failure" and now - int(env["STARTED"]) < int(env["MINUTES"]) * 60 / 2:
         return 0
+    if outcome == "success" and idle(run, env, now):
+        return IDLE
     if outcome == "cancelled" and abs(now - part_ends(env)) > CUT_OFF_SLACK and not lost(run, env):
         return 0
     try:
@@ -435,14 +470,37 @@ def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) 
     reason = "the job's time ran out" if outcome == "success" else outcome
     if again == SPENT:
         reason = f"not done after {ROUNDS} jobs in a row"
+    if again == IDLE:
+        reason = "ended early with nothing committed"
     run("gh", "pr", "edit", pr, "--body", WORKING.sub(rf"\1stopped: {reason}", text, count=1))
-    if again == SPENT:
-        run("gh", "pr", "comment", pr, "--body", spent_note(url))
+    if again in (IDLE, SPENT):
+        run("gh", "pr", "comment", pr, "--body", idle_note(env, url) if again == IDLE else spent_note(url))
         return True
     if outcome == "success":
         note = f"Stopped with work left: the job's time ran out. Comment `@{BOT} continue` to go on. [Job run]({url})"
         run("gh", "pr", "comment", pr, "--body", note)
     return False
+
+
+def idle_note(env: Env, url: str) -> str:
+    """What the PR is told when the lead ended early with nothing committed:
+    the levels that give more time, or, at the longest, how to split the work.
+    """
+    minutes = int(env["MINUTES"])
+    asks = [f"`@{BOT} {name}: continue`" for name, level_minutes in LONGER if level_minutes > minutes]
+    said = (
+        f"Stopped with work left: this job ended early and committed nothing, so it does not go on by itself, "
+        f"since a new job at the same level would get the same {minutes} minutes."
+    )
+    if asks:
+        return (
+            f"{said} Comment {' or '.join(asks)} for more time, or add that level's label to the PR, "
+            f"or `@{BOT} continue` as it is. [Job run]({url})"
+        )
+    return (
+        f"{said} No level gives more: comment `@{BOT}` asking to split what is left into parts, each a PR of "
+        f"its own, or `@{BOT} continue` as it is. [Job run]({url})"
+    )
 
 
 def spent_note(url: str) -> str:

@@ -326,7 +326,12 @@ account is set up by `rootless_account`.
       the job says, and fewer than four did so since someone on the
       allow-list last commented. Otherwise it turns it into `stopped`,
       after the four with a note of what the user can do with work that
-      large.
+      large. A lead that ended well before half the job's time with
+      nothing of the job's committed, on HEAD or in a related repository,
+      is stopped too, with a note naming the levels that give more time,
+      or at the longest how to split the work: four such jobs once ran in
+      a row on one PR, each in under a minute, since each new one got the
+      same time.
     - It hides as outdated, never deletes, what the bot left on the thread
       and the PR before this job that says nothing now: stopped notes,
       marked `@<bot>` comments and the action's tracking comments
