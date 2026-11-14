@@ -113,6 +113,28 @@
             repo: example/app
             port_base: 9100
             executor: stacks
+  post_tasks:
+    # The preview is the roles' alone: nothing a job writes on GitHub names
+    # its address, the PR's "Try it" and the tester's line included.
+    - name: Read the slot's rendered rules, lead text and preview skill
+      when: not ansible_check_mode
+      ansible.builtin.slurp:
+        src: /home/coder/claude/app-1/{{ item }}
+      loop: [CLAUDE.md, lead.md, skills/preview/SKILL.md]
+      register: dev_runner_rules
+      become: true
+
+    - name: Find no ask for the preview's address in the PR
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that: dev_runner_rules_text is not search('preview at http|preview.s address|Say where it is|user the\\s+other|exception, since they are how the user')
+        fail_msg: "{{ item.item }} still asks for the preview's address in the PR."
+        quiet: true
+      vars:
+        dev_runner_rules_text: "{{ item.content | b64decode }}"
+      loop: "{{ dev_runner_rules.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
 - name: The workbench
   hosts: hostkit-dev

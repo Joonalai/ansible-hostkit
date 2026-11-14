@@ -99,10 +99,14 @@ A job's preview is the slot's stack on an [`executor`](executor.md)
 instance on the same host, which the repository's entry names. `stack up`
 in the job sends the checkout's HEAD as a git bundle; the instance builds
 it from the repository's `stack.toml` and starts it on the slot's ports of
-its own range, and prints the URL the user opens. The stack stays up until
-the slot's next `stack up`, or until nobody has used it for the instance's
-idle hours; its phone page starts a stopped one again. A repository with
-no executor has no preview.
+its own range. The preview is for the job's roles, `tester`, `ui-tester`
+and `ux-designer`, which reach it from inside the job. The PR names no
+address of it: that would tell GitHub the host's name and ports, and go
+stale once the slot's next `stack up` replaces it. A person tries a pull
+request from a workbench session instead, with its `try` skill
+([`workbench`](workbench.md)). The stack stays up until the slot's next
+`stack up`, or until nobody has used it for the instance's idle hours. A
+repository with no executor has no preview.
 
 The jobs keep coder's podman socket for the test services they start
 themselves, on the slot's own ports, which only the job reaches.
