@@ -8,6 +8,20 @@ carry.
 
 <!-- version list -->
 
+## v0.5.0 (2026-11-14)
+
+### Bug Fixes
+
+- Show a remote up its refusal, not a connection reset
+  ([#7](https://github.com/Joonalai/ansible-hostkit/pull/7),
+  [`519a305`](https://github.com/Joonalai/ansible-hostkit/commit/519a305942b03df35870d5ab82fbcefe8a5215fb))
+
+### Features
+
+- Let workbench repositories opt into the gpu-models skill
+  ([`d30ebc7`](https://github.com/Joonalai/ansible-hostkit/commit/d30ebc7cfa71cc72261c9f780f42ca0b0c17991b))
+
+
 ## v0.4.1 (2026-11-14)
 
 ### Bug Fixes
