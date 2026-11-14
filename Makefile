@@ -8,6 +8,7 @@
 #     make converge TAGS=executor   # only the plays tagged so
 #     make dry-run                  # apply in check mode, changing nothing
 #     make idempotence              # apply again; fail if anything changed
+#     make idempotence TAGS=executor # the same, for those plays alone
 #     make smoke                    # an executor stack up and down, end to end
 #     make dev-shell                # a root shell in the container
 #     make dev-down                 # stop it, keeping the accounts' homes
@@ -26,6 +27,9 @@ COLLECTIONS ?= $(HOME)/.cache/hostkit-dev/collections
 export ANSIBLE_COLLECTIONS_PATH := $(COLLECTIONS)
 export ANSIBLE_STDOUT_CALLBACK := default
 export ANSIBLE_CALLBACK_RESULT_FORMAT := yaml
+# Each module goes in on podman exec's stdin rather than as a file copied
+# in first: a run with nothing to change takes half the time.
+export ANSIBLE_PIPELINING := True
 PLAYBOOK = $(VENV)/bin/ansible-playbook -i dev/inventory.yml $(if $(TAGS),--tags $(TAGS)) $(ANSIBLE_ARGS)
 
 .PHONY: check test dev-up dev-down dev-clean dev-shell converge dry-run idempotence smoke collection
