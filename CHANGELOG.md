@@ -8,6 +8,14 @@ carry.
 
 <!-- version list -->
 
+## v0.4.1 (2026-11-14)
+
+### Bug Fixes
+
+- Read an account's cpu quota without a backreference
+  ([`44ee279`](https://github.com/Joonalai/ansible-hostkit/commit/44ee27962520eb277d7536abe5a1025001a96799))
+
+
 ## v0.4.0 (2026-11-14)
 
 ### Bug Fixes
