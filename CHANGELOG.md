@@ -8,6 +8,14 @@ carry.
 
 <!-- version list -->
 
+## v0.5.1 (2026-11-14)
+
+### Bug Fixes
+
+- Keep a job that ended early with no commit from going on
+  ([`c12a5c8`](https://github.com/Joonalai/ansible-hostkit/commit/c12a5c889e12373a5d4c0e16103a84f5d1c4fa2b))
+
+
 ## v0.5.0 (2026-11-14)
 
 ### Bug Fixes
