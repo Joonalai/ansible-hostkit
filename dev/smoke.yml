@@ -137,6 +137,13 @@
             services:
               app:
                 command: ["sh", "-c", "echo smoke app broken at start; exit 3"]
+        # Runs past the settle time, as an entrypoint that migrates first
+        # does, and dies before its page ever answers.
+        - name: compose.late.yaml
+          content: |
+            services:
+              web:
+                command: ["sh", "-c", "echo smoke web migrating; sleep 8; echo smoke web gone; exit 3"]
         - name: compose.foreign.yaml
           content: |
             services:
@@ -178,7 +185,7 @@
             SMOKE_KEY = "{secret:smoke_key}"
             SMOKE_OTHER = "{secret:smoke_other}"
 
-            {% for name in ['privileged', 'profiled', 'writable', 'home', 'foreign', 'broken'] %}
+            {% for name in ['privileged', 'profiled', 'writable', 'home', 'foreign', 'broken', 'late'] %}
             [profiles.{{ name }}]
             compose = ["compose.yaml", "compose.{{ name }}.yaml"]
             compose_profiles = {{ '["later"]' if name == 'profiled' else '[]' }}
@@ -503,6 +510,21 @@
       register: dev_smoke_volume_kept
       changed_when: false
       failed_when: dev_smoke_volume_kept.rc != 0 or dev_smoke_volume_kept.stdout != dev_smoke_volume.stdout
+      become: true
+
+    # An up is done when its page answers: a service that outlives the
+    # settle time and dies before it serves still fails it.
+    - name: Fail to bring up a stack whose page dies before it answers
+      ansible.builtin.shell:
+        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack up --profile late
+        chdir: "{{ dev_smoke_repo }}"
+        executable: /bin/bash
+      register: dev_smoke_late
+      changed_when: true
+      failed_when: >-
+        dev_smoke_late.rc == 0
+        or 'smoke web gone' not in dev_smoke_late.stdout + dev_smoke_late.stderr
+        or 'web exited with an error' not in dev_smoke_late.stderr
       become: true
 
     # A rewritten commit, as after a rebase, is another branch's: its
