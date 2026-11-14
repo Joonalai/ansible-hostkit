@@ -46,12 +46,13 @@
 
       The role's CLAUDE.md has the rest.
 
-# The skills a repository may opt into, each a files/repo_skills/<name>/SKILL.md.
+# The skills a repository may opt into, each a <name>/SKILL.md in
+# claude_team's files/repo_skills/, which the workbench offers too.
 # filetree rather than fileglob, which takes no wildcard in a directory.
 - name: List the skills a repository may opt into
   ansible.builtin.set_fact:
     github_runner_repo_skills: >-
-      {{ lookup('community.general.filetree', role_path ~ '/files/repo_skills', wantlist=True)
+      {{ lookup('community.general.filetree', role_path ~ '/../claude_team/files/repo_skills', wantlist=True)
          | selectattr('state', 'equalto', 'file') | map(attribute='path')
          | select('match', '^[^/]+/SKILL[.]md$') | map('dirname') | list }}
 
@@ -502,7 +503,7 @@
 
 - name: Give each slot the skills its repository opted into
   ansible.builtin.copy:
-    src: "repo_skills/{{ item.1 }}/"
+    src: "{{ role_path }}/../claude_team/files/repo_skills/{{ item.1 }}/"
     dest: "{{ github_runner_home }}/claude/{{ item.0.id }}/skills/{{ item.1 }}/"
     owner: root
     group: root

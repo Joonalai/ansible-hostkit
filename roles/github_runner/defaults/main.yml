@@ -66,7 +66,7 @@ github_runner_app_private_key: ""
 #       runners: 3          # optional, github_runner_runners otherwise
 #       instructions: |     # optional, Markdown for everyone in its jobs
 #         - How its preview wants starting, what it may not touch here.
-#       skills: [gpu-models]  # optional, from files/repo_skills/
+#       skills: [gpu-models]  # optional, from claude_team's files/repo_skills/
 #       executor: stacks    # optional, the executor instance its stacks run on
 #       rebase_runner: true # optional: one more slot, for rebases alone
 #
@@ -75,7 +75,7 @@ github_runner_app_private_key: ""
 # lead and every role. How the repository itself works, its tests and its
 # conventions, belongs in its own CLAUDE.md, which the jobs read too.
 #
-# skills are the ones in files/repo_skills/ the repository opts into, beside
+# skills are the ones in claude_team's files/repo_skills/ the repository opts into, beside
 # the team's that every job has. gpu-models also puts a GPU model server's
 # address and key, github_runner_gpu_models_*, into the environment of the
 # repository's jobs; a repository without it has neither.

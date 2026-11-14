@@ -52,6 +52,16 @@
       and the same for workbench_write_token. The role's CLAUDE.md has the
       rest.
 
+# The skills a repository may opt into, each a <name>/SKILL.md in
+# claude_team's files/repo_skills/, as the runner lists them.
+- name: List the skills a repository may opt into
+  ansible.builtin.set_fact:
+    workbench_repo_skills_dir: "{{ role_path }}/../claude_team/files/repo_skills"
+    workbench_repo_skills: >-
+      {{ lookup('community.general.filetree', role_path ~ '/../claude_team/files/repo_skills', wantlist=True)
+         | selectattr('state', 'equalto', 'file') | map(attribute='path')
+         | select('match', '^[^/]+/SKILL[.]md$') | map('dirname') | list }}
+
 # The name is a directory under projects/, a unit, a socket and the gate's
 # mirror, so keep it to what all of them take. Packages go to apt-get in
 # the image build, so they are package names and nothing else.
@@ -62,11 +72,14 @@
       - item.repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
       - item.packages | default([]) | reject('match', '^[a-z0-9][a-z0-9+.-]+$') | list | length == 0
       - item.executor | default('') is match('^([a-z][a-z0-9]{0,15})?$')
+      - item.skills | default([]) is not string
+      - item.skills | default([]) | difference(workbench_repo_skills) | length == 0
     fail_msg: >-
       {{ item }}: a repository wants a name of lowercase letters, digits and
       dashes, which becomes its container's and checkout's name, a
       repository as owner/name, and optionally packages, a list of Debian
-      package names, and an executor instance's name.
+      package names, an executor instance's name, and skills, a list from
+      {{ workbench_repo_skills }}.
     quiet: true
   loop: "{{ workbench_repositories }}"
   loop_control:
@@ -340,6 +353,28 @@
     claude_team_directory_mode: "0700"
     claude_team_skill_sources: ["{{ workbench_skills_dir }}"]
 
+# The home is shared, so an opted-in skill is everyone's once any
+# repository takes it; what makes it work, such as gpu-models' key, is
+# in the opted-in containers' environment alone.
+- name: Install the skills a repository opted into
+  ansible.builtin.copy:
+    src: "{{ workbench_repo_skills_dir }}/{{ item }}/"
+    dest: "{{ workbench_home }}/.claude/skills/{{ item }}/"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0644"
+    directory_mode: "0700"
+  loop: "{{ workbench_repositories | map(attribute='skills', default=[]) | flatten | unique }}"
+  become: true
+
+- name: Remove the opt-in skills no repository lists
+  ansible.builtin.file:
+    path: "{{ workbench_home }}/.claude/skills/{{ item }}"
+    state: absent
+  loop: "{{ workbench_repo_skills
+            | difference(workbench_repositories | map(attribute='skills', default=[]) | flatten) }}"
+  become: true
+
 - name: Write the workbench's rules
   ansible.builtin.template:
     src: CLAUDE.md.j2
@@ -546,6 +581,52 @@
     label: "{{ item.name }}"
   no_log: true
   notify: Restart the workbench sessions
+  become: true
+
+# The GPU model server's address and key, for the repositories that opted
+# into gpu-models: an env file of bench's beside the read token's, which
+# the container's unit hands the sessions. A test box has no key and
+# writes an empty one, which the server answers with 401.
+- name: Assert the model server has a key where a repository wants it
+  when:
+    - workbench_can_run | bool
+    - workbench_repositories | selectattr('skills', 'defined') | selectattr('skills', 'contains', 'gpu-models') | list | length > 0
+  ansible.builtin.assert:
+    that:
+      - workbench_gpu_models_api_key | length > 0
+      - workbench_gpu_models_url | length > 0
+    fail_msg: >-
+      A repository opted into gpu-models, and workbench_gpu_models_url or
+      workbench_gpu_models_api_key is empty: the key belongs in the
+      inventory's vault, from the model server's owner.
+    quiet: true
+
+- name: Write the model server's environment for the repositories that opted in
+  ansible.builtin.copy:
+    content: |
+      MODEL_URL={{ workbench_gpu_models_url }}
+      MODEL_INFO_URL={{ workbench_gpu_models_info_url }}
+      MODEL_API_KEY={{ workbench_gpu_models_api_key }}
+    dest: "{{ workbench_home }}/.config/workbench/{{ item.name }}-gpu-models.env"
+    owner: "{{ workbench_user }}"
+    group: "{{ workbench_user }}"
+    mode: "0600"
+  loop: "{{ workbench_repositories | selectattr('skills', 'defined') | selectattr('skills', 'contains', 'gpu-models') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart the workbench sessions
+  become: true
+
+- name: Remove the model server's environment from the repositories that did not
+  ansible.builtin.file:
+    path: "{{ workbench_home }}/.config/workbench/{{ item.name }}-gpu-models.env"
+    state: absent
+  loop: "{{ workbench_repositories | rejectattr('name', 'in', workbench_repositories
+            | selectattr('skills', 'defined') | selectattr('skills', 'contains', 'gpu-models')
+            | map(attribute='name') | list) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
   become: true
 
 # A repository with an executor is its caller: a key and a block of its

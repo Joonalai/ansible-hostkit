@@ -169,10 +169,16 @@
         workbench_git_name: Example User
         workbench_git_email: 1234567+example@users.noreply.github.com
         workbench_tokens_required: false
+        # app opts into gpu-models and lib does not. No model server here:
+        # the env file is checked, not a call.
+        workbench_gpu_models_url: http://192.0.2.1:9180/v1
+        workbench_gpu_models_info_url: http://192.0.2.1:9181/manifest
+        workbench_gpu_models_api_key: dev-key
         workbench_repositories:
           - name: app
             repo: example/app
             executor: stacks
+            skills: [gpu-models]
           - name: lib
             repo: example/lib
             executor: far
@@ -186,6 +192,37 @@
           - instance: far
             repos: [example/lib]
   post_tasks:
+    - name: Look for the gpu-models files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /home/bench/.claude/skills/gpu-models/SKILL.md
+        - /home/bench/.config/workbench/app-gpu-models.env
+        - /home/bench/.config/workbench/lib-gpu-models.env
+      register: dev_gpu_files
+      when: not ansible_check_mode
+      become: true
+
+    - name: Read the containers' units
+      ansible.builtin.slurp:
+        src: /home/bench/.config/containers/systemd/workbench-{{ item }}.container
+      loop: [app, lib]
+      register: dev_gpu_units
+      when: not ansible_check_mode
+      become: true
+
+    - name: Give the gpu-models skill to all, and its key to app alone
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that:
+          - dev_gpu_files.results[0].stat.exists
+          - dev_gpu_files.results[1].stat.exists
+          - dev_gpu_files.results[1].stat.mode == '0600'
+          - not dev_gpu_files.results[2].stat.exists
+          - "'app-gpu-models.env' in (dev_gpu_units.results[0].content | b64decode)"
+          - "'gpu-models.env' not in (dev_gpu_units.results[1].content | b64decode)"
+        quiet: true
+
     - name: Read the tries the try skill reads
       ansible.builtin.slurp:
         src: /home/bench/.config/workbench/try.json

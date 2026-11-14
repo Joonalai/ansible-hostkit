@@ -31,6 +31,10 @@ Environment=HOME={{ workbench_home }}
 Environment=PATH={{ workbench_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # The read token, for git's credential helper and gh.
 EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}.env
+{% if 'gpu-models' in item.skills | default([]) %}
+# The GPU model server's address and key, for the gpu-models skill.
+EnvironmentFile={{ workbench_home }}/.config/workbench/{{ item.name }}-gpu-models.env
+{% endif %}
 # This repository's gate, and no other's: the gate takes the repository
 # from the socket.
 Volume=/run/workbench-gate/{{ item.name }}.sock:/run/workbench-gate.sock

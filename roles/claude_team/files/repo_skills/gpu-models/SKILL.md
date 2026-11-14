@@ -1,15 +1,16 @@
 ---
 name: gpu-models
-description: Use the shared GPU model server over HTTP from a job on the home server, for chat, JSON schema, tools, embeddings, reranking and token counts with llama.cpp models. Use when code or a test needs a local model, when an AI feature of the repository needs trying against a real model, or when asked which models exist, what context they have or why a model call fails.
+description: Use the shared GPU model server over HTTP from a runner's job or a workbench session, for chat, JSON schema, tools, embeddings, reranking and token counts with llama.cpp models. Use when code or a test needs a local model, when an AI feature of the repository needs trying against a real model, or when asked which models exist, what context they have or why a model call fails.
 ---
 
 # GPU models
 
 A llama.cpp router on another machine on the host's private network serves
 an OpenAI-compatible API. You get HTTP and nothing else: no shell, no way to
-add a model, and no other port on that machine. The firewall lets a job reach
-the API and the manifest there, and nothing else off this box, as the rules
-say.
+add a model, and no other port on that machine. The firewall lets a job or a
+session reach the API and the manifest there, and nothing else off this box,
+as the rules say. Where this says to report something, a job says it in its
+PR and a session tells the user.
 
 ## Rules
 
@@ -29,10 +30,10 @@ say.
 
 ## Setup
 
-A job of a repository that has this skill finds `MODEL_URL` (ends in `/v1`),
-`MODEL_API_KEY` and `MODEL_INFO_URL` in its environment already; there is
-nothing to source. If `MODEL_URL` is unset, this repository has no access: say
-so in the PR and stop. See what is served, without printing the key:
+A job or a session of a repository that opted into this skill finds
+`MODEL_URL` (ends in `/v1`), `MODEL_API_KEY` and `MODEL_INFO_URL` in its
+environment already; there is nothing to source. If `MODEL_URL` is unset, this
+repository has no access: report it and stop. See what is served, without printing the key:
 
 ```sh
 curl -s "$MODEL_INFO_URL"
@@ -76,7 +77,7 @@ The list above is the truth. As of 2026-11-05:
 A setting is chosen by the model's name. Each name loads on its own, so changing
 name reloads the model, which takes from seconds to about a minute, and only one
 model is loaded at a time. Group your calls by model. A setting no name offers
-needs the owner, who runs the server: ask for it in the PR. `max_tokens` works
+needs the owner, who runs the server: ask for it in your report. `max_tokens` works
 per request.
 
 ## Calls
@@ -142,7 +143,7 @@ From the owner's measurements, November 2026:
 
 | Sign                          | Meaning                                                                                                                                                               |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 401                           | The key is missing or was taken away. Say so in the PR; the owner rotates it                                                                                          |
+| 401                           | The key is missing or was taken away. Report it; the owner rotates it                                                                                                 |
 | Connection refused or timeout | The server is outside its window, or down. Check `/health` on the root, which needs no key. A refused connection to any other address is the firewall, not the server |
 | Long wait, then an answer     | A model load, or another client in the queue                                                                                                                          |
 | An error about the context    | The prompt is too long. Count tokens, or take a `-32k` name                                                                                                           |
@@ -151,4 +152,4 @@ From the owner's measurements, November 2026:
 | 500 on a tool call            | Poro writes a form the server refuses                                                                                                                                 |
 
 Do not retry in a tight loop, and report what the server said. Fixes to the
-server belong to the owner: say in the PR what it answered.
+server belong to the owner: report what it answered.

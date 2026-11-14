@@ -161,6 +161,19 @@ runner it shares a preview range with is
   bind mount of one file keeps the old inode when the play replaces it, so
   the sessions would read the rules the container started with. A new
   session reads the shared file as it is now.
+- **A repository opts into a skill as on the runner, but the skill is
+  everyone's.** `skills:` names skills from `claude_team`'s
+  `files/repo_skills/`, the runner's list. The home is shared, so the
+  play installs an opted-in skill into `~/.claude/skills/` once any
+  repository takes it and removes it when none does. What makes it
+  work is per container: `gpu-models` writes the model server's
+  address and key, `workbench_gpu_models_*`, to
+  `~/.config/workbench/<name>-gpu-models.env`, which the unit of an
+  opted-in repository's container hands its sessions. As on the runner,
+  that is a convenience and not a boundary: every container sees
+  `~/.config`, read-only, so a session of any repository can read the
+  file. The host's sandbox lets `bench` reach the model server's two
+  ports, as it lets `coder`.
 - **Parallel sessions are worktrees, so nothing a session needs may live
   only in the checkout.** The server runs `--spawn worktree`, and a
   worktree gets the tracked files and nothing else. So the settings are

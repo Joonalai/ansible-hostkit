@@ -224,7 +224,7 @@ account is set up by `rootless_account`.
   skill" does the right thing in both. `propose-issue` beside it is the
   runner's other skill; the shared ones are `claude_team`'s.
 - **Each slot mounts a skills directory of its own, so a repository can
-  opt into a skill.** `files/repo_skills/<name>/` holds the skills a
+  opt into a skill.** `claude_team`'s `files/repo_skills/<name>/` holds the skills a
   repository takes with `skills:` on its entry; `files/skills/` the ones
   every job has. The play fills `~coder/claude/skills/` through
   `claude_team`, copies it into every slot's `~coder/claude/<id>/skills/`,

@@ -55,6 +55,7 @@ workbench_git_email: ""
 #       instructions: |        # optional, Markdown for its sessions
 #         - What its dev server needs here, what it may not touch.
 #       executor: stacks       # optional, the executor instance its stacks run on
+#       skills: [gpu-models]   # optional, from claude_team's files/repo_skills/
 #
 # instructions are how this box treats the repository, and go in the rules
 # every session reads, under the repository's own heading: the containers
@@ -68,6 +69,18 @@ workbench_git_email: ""
 # up there with `stack up`, the preview the `preview` skill starts. A
 # repository without one previews on its own dev server, below.
 workbench_repositories: []
+
+# skills are the ones in claude_team's files/repo_skills/ a repository
+# opts into, as in github_runner. The containers share one home, so an
+# opted-in skill is installed for all of them when any repository opts
+# in, and removed when none does. gpu-models also puts the GPU model
+# server's address and key, workbench_gpu_models_*, into the environment
+# of the opted-in repositories' containers, and no other's. The host's
+# sandbox must let the workbench's account reach that server. Empty, the
+# skill cannot be opted into.
+workbench_gpu_models_url: ""
+workbench_gpu_models_info_url: ""
+workbench_gpu_models_api_key: ""
 
 # The repositories a person may try from any session with the `try` skill,
 # a pull request or a branch of theirs, apart from every repository's own
