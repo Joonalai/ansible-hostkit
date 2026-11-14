@@ -36,6 +36,8 @@
         or (item.https_port | string is match('^[0-9]+$')
             and item.https_port | int >= 2 and item.https_port | int <= item.ports_per_caller | int)
       - item.overrides is mapping
+      - item.remote_timeout_seconds | string is match('^[0-9]+$')
+      - item.remote_timeout_seconds | int >= 1 and item.remote_timeout_seconds | int <= 600
     fail_msg: >-
       {{ item }}: an instance wants a name of a lowercase letter and up to 15
       letters and digits, exec_uid and exec_subuid_start, which the host's
@@ -44,8 +46,9 @@
       host, its LAN and its private network (this collection never changes
       the firewall), ports_start..ports_end with room for the API port,
       the phone page and one block of ports_per_caller, a
-      waiting_reserve below max_stacks, and an https_port, if any, from 2
-      to ports_per_caller, since the host's proxy forwards to the first.
+      waiting_reserve below max_stacks, an https_port, if any, from 2
+      to ports_per_caller, since the host's proxy forwards to the first,
+      and a remote_timeout_seconds from 1 to 600.
     quiet: true
   loop: "{{ executor_merged }}"
   loop_control:

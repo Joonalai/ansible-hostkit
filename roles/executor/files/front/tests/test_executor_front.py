@@ -968,8 +968,8 @@ def test_a_remote_request_that_stalls_times_out_and_leaves_no_spool(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     register_remote(tmp_path)
-    front, agent, _ = make_front(tmp_path)
-    monkeypatch.setattr(executor_front, "REMOTE_TIMEOUT_S", 0.5)
+    front, agent, _ = make_front(tmp_path, remote_timeout_seconds=0.5)
+    monkeypatch.setattr(executor_front, "REMOTE_TIMEOUT_S", 600)
     header = {"key": REMOTE_KEY, "action": "up", "repo": "example/app", "bundle_size": 1000}
     ours, theirs = socket.socketpair()
     status: list[int] = []
@@ -983,6 +983,13 @@ def test_a_remote_request_that_stalls_times_out_and_leaves_no_spool(
     assert agent.calls == []
     assert list((tmp_path / "state" / "spool").iterdir()) == []
     assert "up for remote-app: exit 1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, 60.0), (5, 5.0)])
+def test_remote_timeout_with_the_play_s_value_or_none_is_it_or_the_default(tmp_path: Path, value: int | None, expected: float) -> None:
+    front, _, _ = make_front(tmp_path, remote_timeout_seconds=value)
+
+    assert front.instance.remote_timeout_s() == expected
 
 
 def test_a_peer_that_speaks_no_tls_is_logged_and_dropped(

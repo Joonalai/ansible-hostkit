@@ -64,6 +64,8 @@
             waiting_reserve: 2
             # The caller container, and an address no container has.
             remote: true
+            # The smoke test's stalled request is cut off in seconds.
+            remote_timeout_seconds: 5
             remote_callers:
               - name: remote-smoke
                 key_sha256: "{{ dev_remote_key | hash('sha256') }}"

@@ -23,7 +23,7 @@ consumer is [docs/executor.md](../../docs/executor.md).
   over TLS, and one without only on the socket, so a local key that leaks
   to another host is useless there and the other way round. The front
   wraps the connection itself and bounds each read by
-  `REMOTE_TIMEOUT_S`; a bundle cut off leaves no spool. The certificate
+  `remote_timeout_seconds`, `REMOTE_TIMEOUT_S` by default; a bundle cut off leaves no spool. The certificate
   is pinned by the callers, so `stack` checks its hash before it sends the
   key, and never connects with neither a pin nor a CA. Its key is
   `root:<name>-executor`, the front's to read and no one else's.
