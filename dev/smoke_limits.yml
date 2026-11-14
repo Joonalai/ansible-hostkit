@@ -10,16 +10,30 @@
     rootless_account_subuid_start: 64000
     rootless_account_subuid_count: 1000
     rootless_account_memory_max: "{{ item }}"
+    # A quota too, which the live comparison reads from systemd's time
+    # per second.
+    rootless_account_cpu_quota: "{{ '150%' if item == '1G' else '50%' }}"
     rootless_account_sandbox_units: ["{{ dev_sandbox_unit }}"]
 
-- name: Read the limits account's memory.max
+- name: Read the limits account's memory.max and cpu.max
   ansible.builtin.slurp:
-    src: /sys/fs/cgroup/user.slice/user-2301.slice/user@2301.service/memory.max
-  register: dev_smoke_limits_max
+    src: /sys/fs/cgroup/user.slice/user-2301.slice/user@2301.service/{{ dev_smoke_limits_file }}
+  loop: [memory.max, cpu.max]
+  loop_control:
+    loop_var: dev_smoke_limits_file
+  register: dev_smoke_limits_read
   become: true
 
-- name: Find the cap of {{ item }} in the live cgroup
+- name: Find the cap of {{ item }} and its quota in the live cgroup
+  vars:
+    dev_smoke_limits_max: "{{ dev_smoke_limits_read.results[0].content | b64decode | trim }}"
+    dev_smoke_limits_cpu: "{{ dev_smoke_limits_read.results[1].content | b64decode | trim }}"
+    dev_smoke_limits_quota: "{{ '150000 100000' if item == '1G' else '50000 100000' }}"
   ansible.builtin.assert:
-    that: dev_smoke_limits_max.content | b64decode | trim | int == item | human_to_bytes
-    fail_msg: memory.max is {{ dev_smoke_limits_max.content | b64decode | trim }}, not {{ item | human_to_bytes }}.
+    that:
+      - dev_smoke_limits_max | int == item | human_to_bytes
+      - dev_smoke_limits_cpu == dev_smoke_limits_quota
+    fail_msg: >-
+      memory.max is {{ dev_smoke_limits_max }}, not {{ item | human_to_bytes }};
+      cpu.max is {{ dev_smoke_limits_cpu }}, not {{ dev_smoke_limits_quota }}.
     quiet: true
