@@ -8,6 +8,65 @@ carry.
 
 <!-- version list -->
 
+## v0.4.0 (2026-11-14)
+
+### Bug Fixes
+
+- Carry a changed memory cap to an account's live cgroup
+  ([`42903d7`](https://github.com/Joonalai/ansible-hostkit/commit/42903d78e06772c93e14e17e34bd972dc4c8b399))
+
+- Finish an up only once its page answers
+  ([`d916857`](https://github.com/Joonalai/ansible-hostkit/commit/d916857b7044d1f30dd9ec58dd1d019c58962acb))
+
+- Take down a removed caller's stack when the play removes it
+  ([`c30bfd5`](https://github.com/Joonalai/ansible-hostkit/commit/c30bfd5b70f98f10caeddac8d3363f9f630379ae))
+
+### Chores
+
+- Pipeline the dev container's runs and scope idempotence to a play
+  ([`1143740`](https://github.com/Joonalai/ansible-hostkit/commit/1143740b73a2214cd2b2710ee4b271e5aa26ff14))
+
+### Documentation
+
+- Keep cheap lines at the end of the runner's containerfile
+  ([`8a1c625`](https://github.com/Joonalai/ansible-hostkit/commit/8a1c6258712ef9a3e31c3ecc36160b776a0012b5))
+
+### Features
+
+- Give an instance's secrets to the stacks of chosen repositories
+  ([`b278355`](https://github.com/Joonalai/ansible-hostkit/commit/b2783558f01ed284c00a009046bff1949582f277))
+
+- Leave the preview's address out of a runner's pull requests
+  ([`e12be85`](https://github.com/Joonalai/ansible-hostkit/commit/e12be85bf6c6acb8cdb34d41b8b4d4a335f25479))
+
+- Let a caller stop and start one service of its stack
+  ([`9ba2d58`](https://github.com/Joonalai/ansible-hostkit/commit/9ba2d582061bc6a5846809f0135b68905e927c69))
+
+- Let a person try a pull request from any workbench session
+  ([`3637b7b`](https://github.com/Joonalai/ansible-hostkit/commit/3637b7b24af59dda559b38c6a7a4bf043d61d4da))
+
+- Let a try follow the person's instructions for a repository
+  ([`9ed75f3`](https://github.com/Joonalai/ansible-hostkit/commit/9ed75f358fdeb3300d362d5c483a32aa53e2fe86))
+
+- Let an account yield the cpu to the host's other accounts
+  ([`7afa880`](https://github.com/Joonalai/ansible-hostkit/commit/7afa88086c807961f0b03523da8ddcc921fe4044))
+
+- Let an instance set how long its tls port waits for a caller
+  ([`7d7b838`](https://github.com/Joonalai/ansible-hostkit/commit/7d7b83845d204a8356b70d3ff7d9ff4b0fd51789))
+
+- Let callers on another host use an executor instance
+  ([`3dd1866`](https://github.com/Joonalai/ansible-hostkit/commit/3dd18663d18d5062c35a9088fb3b81cf25cad22a))
+
+- Never stop a person's stack to make room for another
+  ([`49cc199`](https://github.com/Joonalai/ansible-hostkit/commit/49cc1990487ebcae7ffacd43b98bb3947d311083))
+
+- Tell a stack its page's https origin where the host serves one
+  ([`ad99f93`](https://github.com/Joonalai/ansible-hostkit/commit/ad99f93ebb5b8388fe08424a1c557192506205d8))
+
+- Tie a request's answer to its journal lines by an id
+  ([`205b4ec`](https://github.com/Joonalai/ansible-hostkit/commit/205b4ec0a4cd3e3b8207bd35292469b033b96baf))
+
+
 ## v0.3.1 (2026-11-13)
 
 ### Bug Fixes
