@@ -147,7 +147,11 @@ runner it shares a preview range with is
   skill runs `stack` with `env -i` and that file alone, so the
   container's own `STACK_URL` cannot send a try to the wrong instance,
   and refuses a fork's pull request, which would run with what the
-  instance gives the repository.
+  instance gives the repository. A repository's `instructions` in
+  `try.json` are the one text of a try the skill follows, since the
+  person wrote them in the inventory: `try_repos.yml` checks the two
+  shapes and lays them out, and nothing in a repository or a pull request
+  can add to them.
 - **A repository's `instructions:` are a section of the one CLAUDE.md.**
   Every container shares the home and its rules, so a repository's
   instructions from the inventory go in under

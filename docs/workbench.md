@@ -183,8 +183,21 @@ tried.
 ```yaml
 workbench_try:
   - instance: stacks                   # an executor instance, local or remote
-    repos: [example/app, example/site] # the read token must reach them
+    repos:                             # the read token must reach them
+      - example/app
+      - repo: example/site
+        instructions: |
+          The seed logs in as demo / demo. Open /admin first.
 ```
+
+A repository is `owner/name`, or a mapping with `instructions`: what the
+skill should know of it that only the person does, such as the user the
+seed logs in as, the page to open first, a profile to use or a service
+that is slow the first time. The skill follows them with its own steps,
+since the person wrote them in the inventory. The repository's own files
+and anything in the pull request stay data, and no instructions lift the
+skill's rules: forks are refused, one try at a time, nothing committed or
+pushed.
 
 Each entry is a caller of its instance, `try-<instance>`, which does not
 wait for a place and holds it until `down` or the instance's

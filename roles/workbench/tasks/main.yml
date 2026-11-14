@@ -582,21 +582,8 @@
 # A person's tries, apart from every repository's own preview: a caller
 # per instance, try-<instance>, whose env file every container sees in the
 # read-only config, with the instance's socket mounted beside its own.
-- name: Assert every try names its instance once, and its repositories
-  ansible.builtin.assert:
-    that:
-      - item.instance | default('') is match('^[a-z][a-z0-9]{0,15}$')
-      - item.repos | default([]) is not string
-      - item.repos | default([]) | length > 0
-      - item.repos | default([]) | reject('match', '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') | list | length == 0
-      - workbench_try | selectattr('instance', 'defined') | selectattr('instance', 'equalto', item.instance) | list | length == 1
-    fail_msg: >-
-      {{ item }}: a try wants an executor instance's name, once in
-      workbench_try, and its repos, a list of owner/name.
-    quiet: true
-  loop: "{{ workbench_try }}"
-  loop_control:
-    label: "{{ item.instance | default(item) }}"
+- name: Check the tries and lay them out
+  ansible.builtin.include_tasks: try_repos.yml
 
 - name: Make the directory of the tries' environments
   ansible.builtin.file:
@@ -615,7 +602,7 @@
     executor_callers_prefix: try-
     executor_callers: >-
       {%- set callers = [] -%}
-      {%- for entry in workbench_try -%}
+      {%- for entry in workbench_try_entries -%}
       {%- set _ = callers.append({'instance': entry.instance, 'name': 'try-' ~ entry.instance,
                                   'uid': workbench_uid, 'repos': entry.repos, 'waits': false,
                                   'env_file': workbench_home ~ '/.config/workbench/try/' ~ entry.instance ~ '.env',
@@ -629,8 +616,9 @@
   ansible.builtin.copy:
     content: >-
       {%- set tries = [] -%}
-      {%- for entry in workbench_try -%}
+      {%- for entry in workbench_try_entries -%}
       {%- set _ = tries.append({'instance': entry.instance, 'repos': entry.repos,
+                                'instructions': entry.instructions,
                                 'env': workbench_home ~ '/.config/workbench/try/' ~ entry.instance ~ '.env'}) -%}
       {%- endfor -%}
       {{- tries | to_nice_json -}}
