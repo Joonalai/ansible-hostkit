@@ -41,13 +41,17 @@ used is in [github_runner](../github_runner/CLAUDE.md) and
   in `claude_team_skill_sources`. A skill of the same name in both is how
   a role's instructions can say "the `preview` skill" and mean the runner's
   compose procedure in a job and the dev server on the workbench.
-- **The runner adds a fourth place, per repository.** Its
-  `files/repo_skills/` holds skills a repository opts into with `skills:`
-  on its inventory entry; the runner copies this role's result into a
+- **A fourth place, per repository:** this role's `files/repo_skills/`
+  holds skills a repository opts into with `skills:` on its inventory
+  entry, in the runner's list and in the workbench's. This role never
+  installs them itself. The runner copies this role's result into a
   directory per slot and adds those, and each job mounts its slot's. So
   what this role installs under `~coder/claude/skills/` is read by no job
-  directly; it is the source of every slot's copy. The workbench has no
-  such step: its sessions read this role's directory as it is.
+  directly; it is the source of every slot's copy. The workbench's
+  sessions read this role's directory as it is, so the workbench adds an
+  opted-in skill there when any of its repositories opts in, and what
+  else the skill needs, such as gpu-models' key, only to those
+  repositories' containers.
 - **A workstation may read these files in place.** A Claude Code plugin
   can link `files/agents` and `files/skills` from an installed copy of this
   collection, for the user's own sessions, with no play and no copy. So a
