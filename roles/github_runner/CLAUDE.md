@@ -252,8 +252,10 @@ account is set up by `rootless_account`.
   `workbench_repositories`.
 - **The rules name the host only through variables.**
   `github_runner_host_name` and `github_runner_host_description` are how
-  the jobs' rules say where they run, and the executor's `host` where a
-  preview is opened. Nothing in the templates names a particular host.
+  the jobs' rules say where they run. Nothing in the templates names a
+  particular host, and nothing a job writes on GitHub names the preview's
+  address: the preview is the roles', and a person tries a pull request
+  from the workbench's `try` skill.
 - **Slots, not repositories, are the unit.** Every repository has
   `runners` slots, and everything per job is per slot: the unit, the
   registration's name, the rules with the slot's ports, and the

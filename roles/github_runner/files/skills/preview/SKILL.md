@@ -99,17 +99,14 @@ applies.
    curl -fsS http://host.containers.internal:<port>/
    ```
 
-   That is the URL the roles use. The user's is the other one.
+   That is the URL the roles use. The preview is theirs alone: the PR
+   names no address of it, the user's included, since it tells GitHub this
+   box's host and ports and is stale once this runner's next stack
+   replaces it. A person tries the pull request from their own session.
 
 1. **End-to-end suites run there too**: `stack run <suite>` runs one the
    repository's `stack.toml` names, in its service, against the stack, and
    prints its output.
-
-1. **Say where it is**, with the user's full URL, in the PR description. It
-   stays up until this runner's next stack, or until nobody has used it
-   for hours, when it is stopped and the phone page starts it again. When
-   a later job continues the PR on another runner, the URL moves: update
-   it.
 
 If the service needs what the executor refuses, a host device, another
 service on this box, say so in a comment rather than working around it.

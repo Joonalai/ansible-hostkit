@@ -107,9 +107,8 @@ The lead has rules of its own besides, in its system prompt.
 
 Nothing you write on GitHub, a comment, the PR, an issue or a commit
 message, names this box's insides: no paths outside the checkout, no
-account, unit or runner names, no ports but the preview's own. Say "the
-preview", "the runner" or "the test service" instead. The preview's URL
-and its phone page are the exception, since they are how the user opens it.
+account, unit or runner names, and no ports, the preview's included. Say
+"the preview", "the runner" or "the test service" instead.
 
 ## Tests
 
@@ -150,18 +149,18 @@ runner's containers: never do.
 ## Your stack
 
 {% if item.executor %}
-The repository's preview, for the user to try the change before merging,
-runs on the executor, a server of this box's own, as this runner's stack:
+The repository's preview, for the roles to try the change on, runs on
+the executor, a server of this box's own, as this runner's stack:
 `stack up` sends your checkout's HEAD, commits not pushed included, and it
 builds and starts it from the repository's `stack.toml`. The `preview`
 skill says how. What you need to know every turn:
 
 - **One stack per runner.** Your next `stack up` replaces it, keeping its
-  volumes, and the next job on this runner replaces it too; its URL stays
-  the same. Another runner's stack is never yours to touch.
-- **The roles reach it from here, the user from their devices.** `stack up`
-  prints both URLs: give the roles the one "from here", and the user the
-  other, in the PR.
+  volumes, and the next job on this runner replaces it too. Another
+  runner's stack is never yours to touch.
+- **It is the roles', reached from here.** `stack up` prints several URLs:
+  give the roles the one "from here". The PR names none of them: a person
+  tries the pull request from their own session.
 - **It outlives the job**, until this runner's next stack, or until nobody
   has used it for hours, when it is stopped; the phone page `stack up`
   prints starts it again.
