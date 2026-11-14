@@ -285,3 +285,51 @@
 # facts still name this account.
 - name: Migrate and reload for {{ rootless_account_user }} now
   ansible.builtin.meta: flush_handlers
+
+# A reload does not carry a changed limit to the manager's live cgroup,
+# a lowered one least of all, so the account would run on under the old
+# one until something else realizes it. set-property does it now; its
+# runtime drop-in would then outrank the one above, so it goes again.
+- name: Apply {{ rootless_account_user }}'s limits to its live cgroup
+  when:
+    - not ansible_check_mode
+    - (rootless_account_memory_max ~ rootless_account_memory_swap_max ~ rootless_account_cpu_quota) | length > 0
+  block:
+    - name: Compare {{ rootless_account_user }}'s live limits with systemd's
+      ansible.builtin.include_tasks: live_limits_read.yml
+
+    - name: Write {{ rootless_account_user }}'s limits to its live cgroup
+      when: rootless_account_live_drift | length > 0
+      ansible.builtin.command:
+        argv: >-
+          {{ ['systemctl', 'set-property', '--runtime',
+              'user@' ~ ansible_facts.getent_passwd[rootless_account_user][1] ~ '.service']
+             + rootless_account_live_drift | map(attribute='property') | list }}
+      changed_when: true
+      become: true
+
+    - name: Drop the runtime drop-in set-property left for {{ rootless_account_user }}
+      when: rootless_account_live_drift | length > 0
+      ansible.builtin.file:
+        path: "/run/systemd/system.control/user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service.d"
+        state: absent
+      become: true
+
+    - name: Reload systemd without the runtime drop-in for {{ rootless_account_user }}
+      when: rootless_account_live_drift | length > 0
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      become: true
+
+    - name: Read {{ rootless_account_user }}'s live limits again
+      when: rootless_account_live_drift | length > 0
+      ansible.builtin.include_tasks: live_limits_read.yml
+
+    - name: Assert {{ rootless_account_user }}'s live cgroup has systemd's limits
+      ansible.builtin.assert:
+        that: rootless_account_live_drift | length == 0
+        fail_msg: >-
+          user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service's cgroup did not take
+          its limits: {% for d in rootless_account_live_drift %}{{ d.file }} is {{ d.cgroup }} where
+          systemd holds {{ d.systemd }}{{ '; ' if not loop.last }}{% endfor %}.
+        quiet: true

@@ -1,0 +1,69 @@
+---
+# What systemd holds for the account's manager against what its live cgroup
+# has, as rootless_account_live_drift: one item for each limit that differs.
+# A controller the kernel does not give the cgroup has no file and is left
+# out.
+- name: Read the limits systemd holds for {{ rootless_account_user }}'s manager
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - "user@{{ ansible_facts.getent_passwd[rootless_account_user][1] }}.service"
+      - --property=ActiveState,ControlGroup,MemoryMax,MemorySwapMax,CPUQuotaPerSecUSec
+  register: rootless_account_manager_show
+  changed_when: false
+  become: true
+
+- name: Read the limits of {{ rootless_account_user }}'s live cgroup
+  when: rootless_account_manager.ActiveState == 'active'
+  vars:
+    rootless_account_manager: "{{ dict(rootless_account_manager_show.stdout_lines | map('split', '=', 1)) }}"
+  ansible.builtin.slurp:
+    src: "/sys/fs/cgroup{{ rootless_account_manager.ControlGroup }}/{{ item }}"
+  loop: [memory.max, memory.swap.max, cpu.max]
+  register: rootless_account_cgroup_read
+  failed_when: false
+  become: true
+
+# systemd shows bytes or "infinity", the cgroup bytes or "max"; the quota
+# is a time per second in systemd ("1.500000s", "330ms") and a time per
+# period in cpu.max ("150000 100000").
+- name: Compare {{ rootless_account_user }}'s live limits with systemd's
+  vars:
+    rootless_account_manager: "{{ dict(rootless_account_manager_show.stdout_lines | map('split', '=', 1)) }}"
+    rootless_account_cgroup: >-
+      {{ dict((rootless_account_cgroup_read.results | default([]))
+         | selectattr('content', 'defined')
+         | map(attribute='item')
+         | zip((rootless_account_cgroup_read.results | default([]))
+               | selectattr('content', 'defined')
+               | map(attribute='content') | map('b64decode') | map('trim'))) }}
+    rootless_account_quota_usec: >-
+      {%- set ns = namespace(usec=0) -%}
+      {%- for part in rootless_account_manager.CPUQuotaPerSecUSec.split() if part != 'infinity' -%}
+      {%- set m = part | regex_search('^([0-9.]+)(min|ms|us|s)$', '\1', '\2') -%}
+      {%- set ns.usec = ns.usec + (m[0] | float) * {'min': 60000000, 's': 1000000, 'ms': 1000, 'us': 1}[m[1]] -%}
+      {%- endfor -%}
+      {{ ns.usec | round | int }}
+    rootless_account_quota_cgroup: >-
+      {%- set cpu = (rootless_account_cgroup['cpu.max'] | default('max 100000')).split() -%}
+      {{ cpu[0] if cpu[0] == 'max' else ((cpu[0] | int) * 1000000 / (cpu[1] | int)) | round | int }}
+    rootless_account_live: >-
+      {%- set items = [] -%}
+      {%- for prop, file in [('MemoryMax', 'memory.max'), ('MemorySwapMax', 'memory.swap.max')] if file in rootless_account_cgroup -%}
+      {%- set held = rootless_account_manager[prop] | replace('infinity', 'max') -%}
+      {%- if held != rootless_account_cgroup[file] -%}
+      {%- set _ = items.append({'file': file, 'systemd': held, 'cgroup': rootless_account_cgroup[file],
+                                'property': prop ~ '=' ~ rootless_account_manager[prop]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if 'cpu.max' in rootless_account_cgroup -%}
+      {%- set held = 'max' if rootless_account_manager.CPUQuotaPerSecUSec == 'infinity' else rootless_account_quota_usec | string -%}
+      {%- if held != rootless_account_quota_cgroup | string -%}
+      {%- set _ = items.append({'file': 'cpu.max', 'systemd': held, 'cgroup': rootless_account_cgroup['cpu.max'],
+                                'property': 'CPUQuota=' ~ ('' if held == 'max' else '%g%%' | format((held | int) / 10000))}) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {{ items }}
+  ansible.builtin.set_fact:
+    rootless_account_live_drift: "{{ rootless_account_live if rootless_account_manager.ActiveState == 'active' else [] }}"

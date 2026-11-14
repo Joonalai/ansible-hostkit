@@ -695,6 +695,17 @@
       changed_when: false
       failed_when: dev_remote_stalled.rc != 0 or 'timed out' not in dev_remote_stalled.stdout
 
+# What a consumer's real host showed: a lowered cap that the reload left
+# out of the live cgroup. An account of its own, given one cap and then a
+# lower one, so every run raises it and lowers it again.
+- name: Carry a changed memory cap to an account's live cgroup
+  hosts: hostkit-dev
+  gather_facts: false
+  tasks:
+    - name: Give the account a cap of {{ item }} and read it from the cgroup
+      ansible.builtin.include_tasks: smoke_limits.yml
+      loop: [1G, 768M]
+
 # After every request above, the remote ones' refusals included: an
 # answered request leaves no failed unit, so none is left at all.
 - name: Find no failed unit of the executor's
