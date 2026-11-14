@@ -99,6 +99,7 @@
           'idle_hours': executor_instance.idle_hours | float,
           'max_age_hours': executor_instance.max_age_hours | float,
           'bundle_max_mb': executor_instance.bundle_max_mb | int,
+          'remote_timeout_seconds': executor_instance.remote_timeout_seconds | int,
           'overrides': executor_instance.overrides,
           'secrets_file': executor_instance_config_dir ~ '/secrets.json',
           'tls_cert': executor_instance.tls_cert or executor_instance_config_dir ~ '/tls.crt',

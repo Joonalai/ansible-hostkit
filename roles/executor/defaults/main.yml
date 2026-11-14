@@ -107,6 +107,10 @@ executor_instance_defaults:
   # `from` is the second check. See docs/executor.md, "A remote instance".
   remote: false
   remote_callers: []
+  # How long the TLS port waits for a caller's handshake and for each of
+  # its reads, 1 to 600 seconds, before it cuts the connection: a caller
+  # that stalls holds a front's process until then.
+  remote_timeout_seconds: 60
   # The TLS port's certificate and key, paths on the host the front's
   # account can read; empty, the play makes a self-signed pair of ten
   # years and prints its SHA-256 for the callers to pin.

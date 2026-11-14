@@ -649,7 +649,8 @@
       changed_when: false
       failed_when: dev_remote_elsewhere.rc == 0 or '192.0.2.20 may not use this key' not in dev_remote_elsewhere.stderr
 
-    # The front waits a minute for each read, then cuts the connection.
+    # The front waits remote_timeout_seconds for each read, five on the dev
+    # container (site.yml), then cuts the connection.
     - name: Stall a request, which the front cuts off
       ansible.builtin.command:
         argv:

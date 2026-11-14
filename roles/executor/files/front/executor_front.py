@@ -188,6 +188,12 @@ class Instance:
             raise RefusedError("the instance's secrets do not read: tell its host")
         return {str(name): str(value) for name, value in granted.items()}
 
+    def remote_timeout_s(self) -> float:
+        """How long the TLS port waits for a handshake and for each read,
+        REMOTE_TIMEOUT_S unless the play set another.
+        """
+        return float(self.raw.get("remote_timeout_seconds") or REMOTE_TIMEOUT_S)
+
     def paused(self) -> bool:
         """Whether the host has paused the instance."""
         return os.path.exists(self["pause_file"])
@@ -852,9 +858,10 @@ def tls_context(instance: Instance) -> ssl.SSLContext:
 
 def serve_tls(front: Front, raw: socket.socket, context: ssl.SSLContext, address: str) -> int:
     """One connection on the TLS port, from address: the handshake and
-    every read bounded by REMOTE_TIMEOUT_S, then served as the socket's.
+    every read bounded by the instance's remote timeout, then served as
+    the socket's.
     """
-    raw.settimeout(REMOTE_TIMEOUT_S)
+    raw.settimeout(front.instance.remote_timeout_s())
     try:
         conn = context.wrap_socket(raw, server_side=True)
     except (ssl.SSLError, OSError) as error:
