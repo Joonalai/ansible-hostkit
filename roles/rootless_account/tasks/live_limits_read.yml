@@ -27,7 +27,8 @@
 
 # systemd shows bytes or "infinity", the cgroup bytes or "max"; the quota
 # is a time per second in systemd ("1.500000s", "330ms") and a time per
-# period in cpu.max ("150000 100000").
+# period in cpu.max ("150000 100000"). No backreference in a {% %} block:
+# Jinja reads '\1' there as the character \x01.
 - name: Compare {{ rootless_account_user }}'s live limits with systemd's
   vars:
     rootless_account_manager: "{{ dict(rootless_account_manager_show.stdout_lines | map('split', '=', 1)) }}"
@@ -41,7 +42,7 @@
     rootless_account_quota_usec: >-
       {%- set ns = namespace(usec=0) -%}
       {%- for part in rootless_account_manager.CPUQuotaPerSecUSec.split() if part != 'infinity' -%}
-      {%- set m = part | regex_search('^([0-9.]+)(min|ms|us|s)$', '\1', '\2') -%}
+      {%- set m = part | regex_findall('^([0-9.]+)(min|ms|us|s)$') | first -%}
       {%- set ns.usec = ns.usec + (m[0] | float) * {'min': 60000000, 's': 1000000, 'ms': 1000, 'us': 1}[m[1]] -%}
       {%- endfor -%}
       {{ ns.usec | round | int }}
