@@ -218,6 +218,16 @@ def test_a_bundle_past_the_limit_is_refused_unread(tmp_path: Path) -> None:
     assert agent.calls == []
 
 
+def test_an_up_refused_before_its_bundle_is_spooled_reads_the_bundle_to_its_end(tmp_path: Path) -> None:
+    front, agent, _ = make_front(tmp_path)
+    header = {"key": "no one's", "action": "up", "repo": "example/app", "bundle_size": 70000}
+    conn = io.BytesIO(json.dumps(header).encode() + b"\n" + b"B" * 70000 + b"after")
+
+    assert serve(front, conn)[-1]["message"] == "refused: the key is no caller's"
+    assert conn.read() == b"after"
+    assert agent.calls == []
+
+
 # ---------------------------------------------------------------------
 # up, and the places
 # ---------------------------------------------------------------------
@@ -1009,6 +1019,21 @@ def test_a_remote_up_over_tls_reaches_the_agent(tmp_path: Path, tls_pair: tuple[
     assert answer[-1]["exit"] == 0
     assert agent.calls[0]["caller"] == "remote-app"
     assert agent.bundles == [b"BUNDLE"]
+
+
+def test_a_remote_up_refused_before_its_bundle_is_read_gets_its_refusal(
+    tmp_path: Path,
+    tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    front, agent, _ = make_front(tmp_path)
+    size = 900 * 1024
+    header = {"key": "no one's", "action": "up", "repo": "example/app", "bundle_size": size}
+
+    status, answer = serve_over_tls(front, *tls_pair, "192.0.2.7", json.dumps(header).encode() + b"\n" + b"B" * size)
+
+    assert status == 0
+    assert answer[-1]["message"] == "refused: the key is no caller's"
+    assert agent.calls == []
 
 
 def test_a_remote_request_that_stalls_times_out_and_leaves_no_spool(

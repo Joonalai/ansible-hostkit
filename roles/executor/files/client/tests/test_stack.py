@@ -7,7 +7,7 @@ import ssl
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 import stack
@@ -261,6 +261,31 @@ def test_list_names_the_stopped_services() -> None:
 
 def test_an_instance_that_ends_without_an_answer_is_a_failure() -> None:
     assert stack.main(["down"], ENV, io.StringIO(), Instance([{"out": "x"}]).connect) == 1
+
+
+class RefusingInstance(Instance):
+    """Refuses after the header and closes with the body unread."""
+
+    @override
+    def serve(self, conn: socket.socket) -> None:
+        with conn, conn.makefile("rb") as incoming:
+            self.header = json.loads(incoming.readline())
+            for event in self.answer:
+                conn.sendall(json.dumps(event).encode() + b"\n")
+
+
+def test_a_refusal_before_the_body_is_read_is_still_the_answer() -> None:
+    refusal = {"exit": 1, "message": "refused: the key is no caller's", "request": "r-1"}
+    body = io.BytesIO(b"x" * 8 * 1024**2)
+
+    assert stack.call({"action": "up"}, ENV, body, RefusingInstance([refusal]).connect) == refusal
+
+
+def test_a_connection_cut_off_with_no_answer_is_its_error() -> None:
+    body = io.BytesIO(b"x" * 8 * 1024**2)
+
+    with pytest.raises(stack.StackError, match="the connection to the executor failed"):
+        stack.call({"action": "up"}, ENV, body, RefusingInstance([]).connect)
 
 
 def test_an_unreachable_instance_is_said(capsys: pytest.CaptureFixture[str]) -> None:

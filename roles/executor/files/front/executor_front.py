@@ -726,6 +726,26 @@ def spool_bundle(instance: Instance, conn: IO[bytes], size: object) -> str:
     return path
 
 
+def unread_bundle(instance: Instance, request: dict[str, Any]) -> int:
+    """What an up says it sends after its header, up to the instance's limit:
+    the bytes to drop when it is refused before its bundle is spooled.
+    """
+    size = request.get("bundle_size")
+    if request.get("action") != "up" or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        return 0
+    return min(size, int(instance["bundle_max_mb"]) * 1024**2)
+
+
+def drain(conn: IO[bytes], size: int) -> None:
+    """Read and drop up to size bytes the caller still sends: a connection
+    closed with them unread is reset, and the reset loses the answer the
+    caller has not read yet. Each read is bounded as the request's were.
+    """
+    with contextlib.suppress(OSError):
+        while size > 0 and (chunk := conn.read(min(CHUNK, size))):
+            size -= len(chunk)
+
+
 def copy_exactly(conn: IO[bytes], bundle: IO[bytes], size: int) -> None:
     """Copy exactly size bytes from conn into bundle, refused when conn ends first."""
     remaining = size
@@ -813,6 +833,7 @@ def serve_request(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None
         reply({"out": text})
 
     bundle = None
+    unread = 0
     result: dict[str, Any]
     action: object = None
     caller: Caller | None = None
@@ -820,6 +841,7 @@ def serve_request(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None
         request = read_header(conn)
         read = True
         action = request.get("action")
+        unread = unread_bundle(front.instance, request)
         caller = authenticate(front.instance, request.get("key"), uid, address)
         if action not in ACTIONS:
             result = {"exit": 1, "message": f"refused: the action is one of {', '.join(ACTIONS)}"}
@@ -827,6 +849,7 @@ def serve_request(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None
             result = {"exit": 0, "stacks": front.stacks(), "caller": caller.name}
         elif action == "up":
             with caller_lock(front.instance, caller.name, wait=False):
+                unread = 0
                 bundle = spool_bundle(front.instance, conn, request.get("bundle_size"))
                 result = front.up(caller, request, bundle, say)
         else:
@@ -843,6 +866,8 @@ def serve_request(front: Front, conn: IO[bytes], out: IO[bytes], uid: int | None
         if bundle is not None and os.path.exists(bundle):
             os.unlink(bundle)
     reply(result)
+    # Refused before its bundle was read: take it, so the answer is not lost.
+    drain(conn, 0 if reply.gone else unread)
     log_failure(caller, action, address or f"uid {uid}", result)
     if reply.gone and read:
         journal("the answer could not be written: the caller is gone")
