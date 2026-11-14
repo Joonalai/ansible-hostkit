@@ -11,8 +11,8 @@
   become: true
   become_user: "{{ rootless_account_current_user }}"
 
-# The limits apply to the live cgroup on reload, and the sandbox's
-# Requires= from then on; nothing restarts.
+# The sandbox's Requires= applies from then on; nothing restarts. The
+# limits reach the live cgroup only through the tasks after the flush.
 - name: Reload systemd for rootless_account
   ansible.builtin.systemd_service:
     daemon_reload: true

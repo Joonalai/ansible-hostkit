@@ -106,6 +106,16 @@ accounts. The host's system services are in `system.slice`, beside
 `user.slice`, and no account's weight moves them; that is the host's own
 setting.
 
+A changed memory cap or CPU quota applies at once, a lowered one too,
+with nothing restarted. A daemon reload does not carry it to the live
+cgroup of a running manager, so the role compares `memory.max`,
+`memory.swap.max` and `cpu.max` with what systemd holds after the
+reload, writes those that differ with `systemctl set-property --runtime`,
+and fails with both values if they still differ. The runtime drop-in
+`set-property` leaves is removed again, so the role's own drop-in stays
+the one that holds; any other runtime property of the account's
+`user@<uid>.service` goes with it.
+
 Two flags are read from the play: `install_dependencies`, `false` to skip
 the `apt` task, and `is_container_environment`, `true` in a test container,
 which switches podman to the userspace overlay driver.
