@@ -550,13 +550,65 @@
       failed_when: dev_smoke_volume_new.rc != 0 or dev_smoke_volume_new.stdout == dev_smoke_volume.stdout
       become: true
 
-    - name: Take the stack down
+    # A caller that moves to another instance leaves this one's callers
+    # while its stack runs: the play takes the stack down with it. The
+    # remote caller below takes its own down with `stack down`.
+    - name: Move dev-smoke off the instance with its stack running
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.executor
+        tasks_from: callers
+      vars:
+        executor_callers_prefix: dev-
+        executor_callers:
+          - instance: stacks
+            name: dev-person
+            uid: 0
+            repos: [example/smoke]
+            waits: false
+            env_file: "{{ dev_smoke_person_env }}"
+            env_mode: "0600"
+
+    - name: Find dev-smoke in no list, with no container, volume or port left
       ansible.builtin.shell:
-        cmd: set -a && . {{ dev_smoke_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack down
-        chdir: "{{ dev_smoke_repo }}"
+        cmd: >-
+          set -a && . {{ dev_smoke_person_env }} && STACK_SOCKET={{ dev_smoke_socket }} stack list --json
+          && runuser -u stacks-exec -- env XDG_RUNTIME_DIR=/run/user/$(id -u stacks-exec)
+          podman ps --all --quiet --filter label=com.docker.compose.project=stack-dev-smoke
+          && runuser -u stacks-exec -- env XDG_RUNTIME_DIR=/run/user/$(id -u stacks-exec)
+          podman volume ls --quiet --filter label=com.docker.compose.project=stack-dev-smoke
+          && python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["ports"])'
+          /var/lib/hostkit-executor/stacks/state.json
         executable: /bin/bash
-      changed_when: true
+      register: dev_smoke_moved
+      changed_when: false
+      failed_when: >-
+        dev_smoke_moved.rc != 0
+        or dev_smoke_moved.stdout_lines | length != 2
+        or 'dev-smoke' in dev_smoke_moved.stdout
       become: true
+
+    - name: Move dev-smoke back
+      ansible.builtin.include_role:
+        name: joonalai.hostkit.executor
+        tasks_from: callers
+      vars:
+        executor_callers_prefix: dev-
+        executor_callers:
+          - instance: stacks
+            name: dev-smoke
+            uid: 0
+            repos: [example/smoke]
+            waits: false
+            env_file: "{{ dev_smoke_env }}"
+            env_mode: "0600"
+            local_host: 127.0.0.1
+          - instance: stacks
+            name: dev-person
+            uid: 0
+            repos: [example/smoke]
+            waits: false
+            env_file: "{{ dev_smoke_person_env }}"
+            env_mode: "0600"
 
     # The workbench's try is a caller of its own, with its env file in
     # bench's config; the socket is the container's path, so swap it here.

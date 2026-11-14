@@ -551,16 +551,19 @@ class Front:
         return result
 
     def stacks(self) -> list[dict[str, Any]]:
-        """Every stack of the instance, as the state and the agent see it."""
+        """Every stack of the instance's registered callers, as the state and
+        the agent see it; a caller no longer registered is the reaper's.
+        """
         live = self.finish(self.agent({"action": "ps"}, None)).get("stacks") or {}
         with locked_state(self.instance) as state:
             recorded = dict(state.stacks)
             ports = dict(state.ports)
+        callers = self.instance.callers()
         now = self.now()
         https = self.https().get("https_port")
         scheme = "https" if https is not None else "http"
         items = []
-        for name in sorted(set(recorded) | set(live)):
+        for name in sorted((set(recorded) | set(live)) & set(callers)):
             stack, seen = recorded.get(name, {}), live.get(name, {})
             state_now = seen.get("state", "none")
             if stack.get("state") in ("starting", "failed") and state_now != "running":

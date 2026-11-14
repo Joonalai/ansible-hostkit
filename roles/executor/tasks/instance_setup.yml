@@ -313,6 +313,7 @@
   loop: "{{ executor_remote_found.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
+  register: executor_remote_removed
   become: true
 
 # ---------------------------------------------------------------------
@@ -352,6 +353,28 @@
     state: started
   loop: [front.socket, page.service, reap.timer]
   become: true
+
+# As callers.yml does for a local caller: a remote caller no longer listed
+# leaves no stack behind until the next quarter hour.
+- name: Take down the stacks of the remote callers of {{ executor_instance.name }} removed
+  when: executor_remote_gone | length > 0
+  vars:
+    executor_remote_gone: "{{ executor_remote_removed.results | selectattr('changed') | map(attribute='item.path') | map('basename') | list }}"
+  ansible.builtin.systemd_service:
+    name: "{{ executor_unit }}-reap.service"
+    state: started
+  become: true
+
+- name: Say which remote callers of {{ executor_instance.name }} were removed, with their stacks
+  when: executor_remote_gone | length > 0
+  vars:
+    executor_remote_gone: >-
+      {{ executor_remote_removed.results | selectattr('changed') | map(attribute='item.path')
+         | map('basename') | map('splitext') | map('first') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      Removed {{ executor_remote_gone | join(', ') }} from {{ executor_instance.name }}: no longer
+      in remote_callers, each with its stack, its volumes and its tree, and its ports freed.
 
 # Off, nothing listens on ports_start.
 - name: Start or stop the TLS port of {{ executor_instance.name }}

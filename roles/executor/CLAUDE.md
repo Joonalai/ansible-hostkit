@@ -159,6 +159,11 @@ consumer is [docs/executor.md](../../docs/executor.md).
   the key itself into the caller's env file, which its unit reads. It
   removes its prefix's callers no longer listed, so each client role passes
   a prefix of its own (`runner-`, `bench-`, `try-`) and never removes another's.
+  A removed caller's stack is the reaper's at once: the play starts
+  `executor-<name>-reap.service`, as `instance_setup.yml` does for a
+  remote caller dropped from `remote_callers`, and `list` and the page
+  leave out a caller no longer registered. A caller moved to another
+  instance never leaves a stack with no one to take it down.
 - **State is the front's `state.json`, under a lock.** Port blocks, stacks
   and their states. A caller's own lock is taken without waiting before
   its bundle is spooled, so a second request of the same caller is refused
