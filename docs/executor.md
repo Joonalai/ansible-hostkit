@@ -53,7 +53,8 @@ flowchart LR
   made on the host, which only root and the caller's own unit read, and
   the uid that may present it, checked with `SO_PEERCRED`. A caller has one
   stack and a block of ports that stays its own for as long as it is a
-  caller, so its URL does not change between ups. As long as callers
+  caller, so its URL does not change between ups, until the instance's
+  blocks change size or range. As long as callers
   share an account and its podman socket, as a runner's slots share
   `coder`'s, the key tells them apart but does not protect them from each
   other: the boundary is the account.
@@ -423,7 +424,7 @@ The most used of the optional ones, per instance:
 | Key                      | Default         | What it is                                                                   |
 | ------------------------ | --------------- | ---------------------------------------------------------------------------- |
 | `host`                   | the host's FQDN | Where the user opens a stack                                                 |
-| `ports_per_caller`       | `3`             | Ports in a caller's block                                                    |
+| `ports_per_caller`       | `3`             | Ports in a caller's block; changed on a running instance, see below          |
 | `https_port`             | none            | The block's port the host serves the page on with HTTPS, 2 or more           |
 | `max_stacks`             | `3`             | Stacks running at once                                                       |
 | `waiting_reserve`        | `0`             | Places people's stacks leave to runners' jobs; `1` where they share          |
@@ -441,6 +442,12 @@ The most used of the optional ones, per instance:
 | `max_age_hours`          | `72`            | Up this long, a stack is removed                                             |
 | `overrides`              | none            | Profiles per repository, from the inventory                                  |
 | `secrets`                | none            | Values the stacks of chosen repositories get                                 |
+
+Changing `ports_per_caller`, `ports_start` or `ports_end` on a running
+instance moves the callers' blocks, and their URLs with them, each on
+the caller's next up. Until then a stack keeps running on its old ports,
+which may overlap a block given since: lay out the host's proxy for the
+new blocks, and bring the stacks up again, or down, soon after.
 
 Every variable is described in
 [`roles/executor/defaults/main.yml`](../roles/executor/defaults/main.yml).

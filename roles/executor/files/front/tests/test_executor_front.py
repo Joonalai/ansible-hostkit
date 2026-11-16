@@ -349,6 +349,48 @@ def test_a_callers_ports_stay_its_own_across_ups_and_downs(tmp_path: Path) -> No
     assert again[-1]["ports"] == [9302, 9303, 9304]
 
 
+def ports_after(tmp_path: Path, stored: dict[str, int], caller: str, **changes: object) -> tuple[list[int], dict[str, int]]:
+    """The caller's ports, and what the state then holds, with the blocks stored before."""
+    front, _, _ = make_front(tmp_path, None, **changes)
+    held = executor_front.State(ports=dict(stored), stacks={})
+    return executor_front.ports_of(front.instance, held, caller), held.ports
+
+
+def test_a_stored_port_still_a_block_is_kept(tmp_path: Path) -> None:
+    ports, stored = ports_after(tmp_path, {"a": 9302, "b": 9306}, "b", ports_per_caller=4)
+    assert ports == [9306, 9307, 9308, 9309]
+    assert stored == {"a": 9302, "b": 9306}
+
+
+def test_a_stored_port_no_longer_a_block_is_given_anew(tmp_path: Path) -> None:
+    ports, stored = ports_after(tmp_path, {"a": 9302, "b": 9305}, "b", ports_per_caller=4)
+    assert ports == [9306, 9307, 9308, 9309]
+    assert stored == {"a": 9302, "b": 9306}
+
+
+def test_two_callers_with_stale_ports_get_two_blocks(tmp_path: Path) -> None:
+    front, _, _ = make_front(tmp_path, ports_per_caller=4)
+    held = executor_front.State(ports={"a": 9303, "b": 9305}, stacks={})
+    first = executor_front.ports_of(front.instance, held, "a")
+    second = executor_front.ports_of(front.instance, held, "b")
+    assert first == [9302, 9303, 9304, 9305]
+    assert second == [9306, 9307, 9308, 9309]
+    assert held.ports == {"a": 9302, "b": 9306}
+
+
+def test_a_stale_port_never_counts_as_a_taken_block(tmp_path: Path) -> None:
+    # The blocks of 4 are 9302, 9306 and 9310; 9305 and 9308 are a size of 3's.
+    ports, stored = ports_after(tmp_path, {"a": 9302, "b": 9306, "c": 9305, "d": 9308}, "e", ports_per_caller=4)
+    assert ports == [9310, 9311, 9312, 9313]
+    assert stored == {"a": 9302, "b": 9306, "e": 9310}
+
+
+def test_a_moved_range_gives_every_caller_a_block_in_it(tmp_path: Path) -> None:
+    ports, stored = ports_after(tmp_path, {"a": 9302, "b": 9305}, "a", callers_ports_start=9402, ports_end=9413)
+    assert ports == [9402, 9403, 9404]
+    assert stored == {"a": 9402}
+
+
 def test_a_failed_up_takes_no_place(tmp_path: Path) -> None:
     register(tmp_path, "runner-app-1")
     agent = Agent()
