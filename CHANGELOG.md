@@ -8,6 +8,28 @@ carry.
 
 <!-- version list -->
 
+## v0.7.0 (2026-11-16)
+
+### Bug Fixes
+
+- Give a caller a new port block when the instance's size changes
+  ([`e1bd30e`](https://github.com/Joonalai/ansible-hostkit/commit/e1bd30e1b39ba4430731b9f93c5ddc91c2dc2edd))
+
+- Run the gpu-models skill's scripts from a file, not a heredoc
+  ([`b279322`](https://github.com/Joonalai/ansible-hostkit/commit/b2793221a9d67b3788f6f98ef7d10a4ff95db92f))
+
+### Features
+
+- Cap the bot's drafts in work at the repository's runners
+  ([`1444f5b`](https://github.com/Joonalai/ansible-hostkit/commit/1444f5bf5fae6fa0b3aa9e7444fde835627d4b76))
+
+- Let the browser skill connect to a browser the stack serves
+  ([`f28a024`](https://github.com/Joonalai/ansible-hostkit/commit/f28a024d059f7af20b47d0ca16102547a87bcdbf))
+
+- Try each change last with one tester, on the issue's own lines
+  ([`8bce893`](https://github.com/Joonalai/ansible-hostkit/commit/8bce89387543b3fc56fa6c17b1247d6205f3e0cc))
+
+
 ## v0.6.0 (2026-11-16)
 
 ### Features
