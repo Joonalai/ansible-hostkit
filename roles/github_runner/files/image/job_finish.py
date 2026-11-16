@@ -2,6 +2,7 @@
 """Push what a Claude job left behind, for the workflow's step after Claude.
 
     claude-job-finish
+    claude-job-finish spent <number>    claude-job-queue's, for a draft past its rounds
 
 Whatever stopped Claude, a usage limit, the time limit or a crash, nothing
 it did is lost: uncommitted work is committed, the branch pushed, and a
@@ -66,7 +67,14 @@ session of their own with the labels off. claude-job-queue continues a
 stopped draft by itself, and never an asked one, so none of these is
 stopped: that is the lead's word alone, for a job out of turns or
 context. The draft it opens for work left without a PR says asked too.
-A PR the lead marked ready is left alone.
+A PR the lead marked ready is done: a Progress it left at working says
+done, with no note, since nothing waits.
+
+`spent <number>` is the same end for a stopped draft that claude-job-queue
+continued ROUNDS times and would continue again: Progress says asked, by
+the same edit, and the PR gets the same note, once, since an asked draft
+is never the queue's again. It reads GITHUB_REPOSITORY, and RUN_URL or
+the run's own URL from GITHUB_SERVER_URL and GITHUB_RUN_ID.
 
 Then it hides as outdated the bot's comments that earlier jobs left on
 the thread and the PR and that say nothing now: a stopped note, a marked
@@ -225,6 +233,8 @@ Next: read the commits on this branch and {primary}#{number}, and carry on.
 
 
 WORKING = re.compile(r"(Status: )working\b[^\n<]*")
+# A Progress that says work is left, which an end of the workflow's rewrites.
+LEFT = re.compile(r"(Status: )(?:working|stopped)\b[^\n<]*")
 # What marks the workflow's own "@<bot> continue", which the workflow
 # takes from the App's bot. The lead's commands may not carry it: see
 # claude-job-vouch --hook.
@@ -444,14 +454,19 @@ def rescued_note(branch: str, rescue: str, url: str, midway: bool = False) -> st
     )
 
 
+def with_status(text: str, status: str) -> str:
+    """The PR's body with its Progress at status, where it said work is left."""
+    return LEFT.sub(lambda found: found[1] + status, text, count=1)
+
+
 def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) -> bool:
     """A Progress left at working, now that this job is done with it: the
     next job goes on, or it says the work waits. Whether it went on. A PR
-    the lead marked ready is done, whatever its Progress still says: that
-    only the lead forgot to update it, and a note that it stopped would be
-    false. Whether it said on the PR what comes next: that the work goes
-    on, or, when it went on ROUNDS times and is still not done, what the
-    user can do with work that large.
+    the lead marked ready is done, whatever its Progress still says: only
+    the lead forgot to update it, so it says done, with no note, since a
+    note that it stopped would be false. Whether it said on the PR what
+    comes next: that the work goes on, or, when it went on ROUNDS times
+    and is still not done, what the user can do with work that large.
     """
     if env.get("WAITING", ""):
         # Stopped at the usage limit: claude-job-retry starts it again once
@@ -459,10 +474,11 @@ def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) 
         return False
     url = env["RUN_URL"]
     found = json.loads(run("gh", "pr", "view", pr, "--json", "body,isDraft") or "{}")
-    if not found.get("isDraft", True):
-        return False
     text = found.get("body") or ""
     if not WORKING.search(text):
+        return False
+    if not found.get("isDraft", True):
+        run("gh", "pr", "edit", pr, "--body", with_status(text, "done"))
         return False
     again = go_on(run, pr, outcome, env, time.time() if now is None else now)
     if again > 0:
@@ -479,7 +495,7 @@ def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) 
         status = f"asked: not done after {ROUNDS} jobs in a row"
     if again == IDLE:
         status = "asked: ended early with nothing committed"
-    run("gh", "pr", "edit", pr, "--body", WORKING.sub(rf"\1{status}", text, count=1))
+    run("gh", "pr", "edit", pr, "--body", with_status(text, status))
     if again in (IDLE, SPENT):
         run("gh", "pr", "comment", pr, "--body", idle_note(env, url) if again == IDLE else spent_note(url))
         return True
@@ -519,6 +535,21 @@ def spent_note(url: str) -> str:
         "parts, each a PR of its own; or take it to a session on your own machine, after removing the working "
         f"labels from this PR and its issue. [Job run]({url})"
     )
+
+
+def spent(number: str, env: Env, run: Run = sh) -> int:
+    """claude-job-queue's end for a draft it continued ROUNDS times: asked,
+    and the note of what the owner can do, once. 0 always: the queue goes on.
+    """
+    repo = env["GITHUB_REPOSITORY"]
+    found = json.loads(run("gh", "pr", "view", number, "-R", repo, "--json", "body") or "{}")
+    text = found.get("body") or ""
+    if not LEFT.search(text):
+        return 0
+    url = env.get("RUN_URL") or f"{env['GITHUB_SERVER_URL']}/{repo}/actions/runs/{env['GITHUB_RUN_ID']}"
+    run("gh", "pr", "edit", number, "-R", repo, "--body", with_status(text, f"asked: not continued after {ROUNDS} jobs in a row"))
+    run("gh", "pr", "comment", number, "-R", repo, "--body", spent_note(url))
+    return 0
 
 
 def siblings(env: Env) -> list[tuple[str, str]]:
@@ -699,5 +730,15 @@ def finish_checkout(env: Env, run: Run) -> str:  # noqa: C901
     return pr
 
 
+def cli(argv: list[str], env: Env = os.environ, run: Run = sh) -> int:
+    """`spent <number>` for the queue, or the job's end with no arguments."""
+    if len(argv) == 2 and argv[0] == "spent" and argv[1].isdigit():  # noqa: PLR2004  (the command and its number)
+        return spent(argv[1], env, run)
+    if argv:
+        print("usage: claude-job-finish [spent <number>]", file=sys.stderr)
+        return 2
+    return main(env, run)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli(sys.argv[1:]))

@@ -647,13 +647,70 @@ def test_a_done_progress_is_left_as_it_is(checkout: Path) -> None:
 
 
 def test_a_pr_marked_ready_is_done_whatever_progress_still_says(checkout: Path) -> None:
-    gh = Gh(checkout, pr=PR_URL, body="Level: claude · Status: working\n", draft=False)
+    gh = Gh(checkout, pr=PR_URL, body="Level: claude · Status: working: tester next\nNext: none\n", draft=False)
+
+    job_finish.main(env("success"), run=gh)
+
+    assert gh.called("gh", "pr", "edit") == [
+        ("gh", "pr", "edit", PR_URL, "--body", "Level: claude · Status: done\nNext: none\n"),
+    ]
+    assert not gh.called("gh", "pr", "comment")
+    assert not gh.called("gh", "pr", "ready")
+
+
+@pytest.mark.parametrize("status", ["asked: a choice", "done", "stopped: out of turns"])
+def test_a_ready_pr_not_at_working_is_left_as_it_is(checkout: Path, status: str) -> None:
+    gh = Gh(checkout, pr=PR_URL, body=f"Level: claude · Status: {status}\n", draft=False)
 
     job_finish.main(env("success"), run=gh)
 
     assert not gh.called("gh", "pr", "edit")
     assert not gh.called("gh", "pr", "comment")
-    assert not gh.called("gh", "pr", "ready")
+
+
+SPENT_ENV = {"GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "42"}
+
+
+def test_spent_asks_the_owner_of_a_stopped_draft_once(checkout: Path) -> None:
+    gh = Gh(checkout, body="Closes #3\n\nLevel: claude:full · Status: stopped: out of turns\nNext: tester")
+
+    assert job_finish.cli(["spent", "7"], SPENT_ENV, run=gh) == 0
+
+    edit = gh.called("gh", "pr", "edit")
+    assert edit == [(
+        "gh", "pr", "edit", "7", "-R", "o/r", "--body",
+        "Closes #3\n\nLevel: claude:full · Status: asked: not continued after 4 jobs in a row\nNext: tester",
+    )]
+    comments = gh.called("gh", "pr", "comment")
+    assert len(comments) == 1
+    assert comments[0][:5] == ("gh", "pr", "comment", "7", "-R")
+    assert comments[0][-1] == job_finish.spent_note("https://github.com/o/r/actions/runs/42")
+
+
+@pytest.mark.parametrize("status", ["asked: not continued after 4 jobs in a row", "done"])
+def test_spent_leaves_a_draft_no_longer_left_alone(checkout: Path, status: str) -> None:
+    gh = Gh(checkout, body=f"Level: claude:full · Status: {status}")
+
+    assert job_finish.cli(["spent", "7"], SPENT_ENV, run=gh) == 0
+
+    assert not gh.called("gh", "pr", "edit")
+    assert not gh.called("gh", "pr", "comment")
+
+
+def test_spent_links_the_run_url_it_is_given(checkout: Path) -> None:
+    gh = Gh(checkout, body="Status: working")
+
+    job_finish.cli(["spent", "7"], {**SPENT_ENV, "RUN_URL": "https://example.com/run"}, run=gh)
+
+    assert "(https://example.com/run)" in gh.called("gh", "pr", "comment")[0][-1]
+
+
+@pytest.mark.parametrize("argv", [["spent"], ["spent", "x"], ["other", "7"]])
+def test_finish_refuses_arguments_it_does_not_know(checkout: Path, argv: list[str]) -> None:
+    gh = Gh(checkout)
+
+    assert job_finish.cli(argv, SPENT_ENV, run=gh) == 2
+    assert list(gh) == []
 
 
 ALLOWED, BOT = "11", "99"
@@ -792,14 +849,14 @@ def test_a_runner_it_cannot_find_among_the_jobs_is_not_lost(checkout: Path, tmp_
 
 @pytest.mark.parametrize(
     "why",
-    ["early", "cancelled", "done", "ready", "unset"],
+    ["early", "cancelled", "done", "unset"],
 )
 def test_the_work_does_not_go_on_by_itself(checkout: Path, why: str) -> None:
     settings = going_on("cancelled" if why == "cancelled" else "failure", minutes_ago=20 if why == "early" else 90)
     if why == "unset":
         del settings["STARTED"]
     body = WORKING_BODY.replace("working", "done") if why == "done" else WORKING_BODY
-    gh = Gh(checkout, pr=PR_URL, body=body, draft=why != "ready")
+    gh = Gh(checkout, pr=PR_URL, body=body)
 
     job_finish.main(settings, run=gh)
 

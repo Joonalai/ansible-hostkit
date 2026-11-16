@@ -45,8 +45,10 @@ class Gh(list[tuple[str, ...]]):
         self.queued = [(number, list(labels), minutes) for number, labels, minutes in queued]
         self.comments = comments or {}
 
-    def __call__(self, *argv: str) -> str:
+    def __call__(self, *argv: str) -> str:  # noqa: PLR0911  (a fake that answers each call)
         self.append(argv)
+        if argv[0] == "claude-job-finish":
+            return ""
         path = argv[2] if argv[2] != "--method" else argv[4]
         if "-f" in argv or "DELETE" in argv:
             return ""
@@ -276,6 +278,27 @@ def test_next_leaves_a_draft_that_went_on_its_rounds_to_the_owner(env: dict[str,
     job_queue.main(["", "next"], env, run=gh, now=NOW)
 
     assert list(gh.posted()) == [9]
+    assert ("claude-job-finish", "spent", "3") in gh
+
+
+def test_a_draft_past_its_rounds_is_asked_once_and_then_never_touched(env: dict[str, str]) -> None:
+    env["CLAUDE_WORK_RUNNERS"] = "1"
+    rounds: list[tuple[str, bool, float]] = [(ME, False, 600)] + [(BOT, True, 500 - each) for each in range(job_queue.ROUNDS)]
+    first = Gh(prs=[pr(3, "stopped: out of turns")], comments={3: rounds})
+
+    job_queue.main(["", "next"], env, run=first, now=NOW)
+
+    assert [call for call in first if call[0] == "claude-job-finish"] == [("claude-job-finish", "spent", "3")]
+    assert first.posted() == {}
+
+    # What spent left: the draft at asked, which no next takes again.
+    second = Gh(prs=[pr(3, "asked: not continued after 4 jobs in a row")], comments={3: rounds})
+
+    job_queue.main(["", "next"], env, run=second, now=NOW)
+
+    assert [call for call in second if call[0] == "claude-job-finish"] == []
+    assert second.posted() == {}
+    assert not [call for call in second if any("/issues/3/comments" in part for part in call)]
 
 
 def test_next_counts_a_draft_it_just_continued_as_in_work(env: dict[str, str]) -> None:

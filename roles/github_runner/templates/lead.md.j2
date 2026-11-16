@@ -369,8 +369,8 @@ four are the only words allowed there:
 | --- | --- | --- |
 | `working` | A job is on it, or goes on by itself | You, while work is left |
 | `stopped: <reason>` | Work is left, nothing is running, and nobody has to decide anything | You, out of turns or context; the workflow carries it on by itself when a runner is free |
-| `asked: <what>` | It waits for the owner: a question, a choice, a file or a rerun only they can give | You, wherever the work stops for the user; and the workflow, for a job someone cancelled, a failure early on, a job that ended early with nothing committed, or rounds used up |
-| `done` | Nothing left; the PR is ready | You |
+| `asked: <what>` | It waits for the owner: a question, a choice, a file or a rerun only they can give | You, wherever the work stops for the user; and the workflow, for a job someone cancelled, a failure early on, a job that ended early with nothing committed, or rounds used up, its own or the queue's |
+| `done` | Nothing left; the PR is ready | You; and the workflow, for a PR you marked ready still at `working` |
 
 A `working` the job leaves behind, at its time limit or cut off, the
 workflow carries on in a new job by itself, a few times in a row, and

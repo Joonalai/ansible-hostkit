@@ -31,7 +31,8 @@ and a stopped draft whose last comment is the bot's marked continue.
   a stale working draft, then the stopped drafts, oldest opened first,
   each with a marked "@<bot> continue" that claude-job-finish counts
   among its ROUNDS, so a draft that never finishes ends at asked; a draft
-  that went on ROUNDS times already is left to the owner. Then the
+  that went on ROUNDS times already is turned to asked by
+  `claude-job-finish spent`, with its note to the owner. Then the
   queued issues, by the earliest of CLAUDE_PRIORITY_LABELS they carry,
   then by when they were queued: the label comes off and a marked
   "@<bot> continue" starts the issue at its labels' level.
@@ -292,7 +293,10 @@ def go_on(run: Run, env: Env, pr: Pull, why: str, now: float) -> bool:
         print(f"#{pr.number}: continued already, starting")
         return True
     if rounds(env, comments) >= ROUNDS:
-        print(f"#{pr.number}: went on {ROUNDS} times already, left to the owner")
+        # Left as it is, it would read as work that goes on by itself and
+        # never does: finish's own edit and note, so there is one of each.
+        run("claude-job-finish", "spent", str(pr.number))
+        print(f"#{pr.number}: went on {ROUNDS} times already, asked the owner")
         return False
     body = f"@{BOT} continue\n\n{CONTINUE}\n{why}, and a runner is free, so the work goes on by itself."
     comment(run, env, pr.number, body)

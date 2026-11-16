@@ -331,7 +331,9 @@ account is set up by `rootless_account`.
       itself and never an asked one, so `stopped` is the lead's alone,
       for a job out of turns or context, and what the workflow ends on
       waits for the owner. The draft it opens for work left without a PR
-      says `asked` too. A lead that ended well before half the job's time
+      says `asked` too. A PR the lead marked ready but left at `working`
+      says `done`, with no note: two were seen so. A
+      lead that ended well before half the job's time
       with nothing of the job's committed, on HEAD or in a related
       repository, is asked too, with a note naming the levels that give
       more time,
@@ -376,8 +378,10 @@ account is set up by `rootless_account`.
     `working` untouched for longer than any job, then the stopped drafts,
     which only a lead out of turns or context leaves,
     oldest first, with `claude-job-finish`'s `auto-continue` mark, so its
-    `ROUNDS` bound this too and a draft past them is left to the owner,
-    then the queued issues, by priority label and then by when the label
+    `ROUNDS` bound this too. A draft past them it turns to `asked`
+    through `claude-job-finish spent <n>`, with finish's own edit and
+    note, since one left `stopped` read as going on by itself for hours;
+    an asked draft is never a candidate again. Then the queued issues, by priority label and then by when the label
     went on, with an `auto-queue` comment that starts the issue at its
     labels' level. What was started in the last half hour and has no
     `working` draft yet counts as in work, or a second `next` before the
