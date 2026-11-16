@@ -318,10 +318,20 @@ def caller_lock(instance: Instance, caller: str, *, wait: bool = True) -> Genera
 
 
 def ports_of(instance: Instance, state: State, caller: str) -> list[int]:
-    """The caller's block of ports, given it the first time it asks."""
+    """The caller's block of ports, given it the first time it asks, and
+    again once ports_per_caller or the range moved the blocks.
+
+    A first port that is no longer a block is dropped, every caller's at
+    once before any is given, or one caller's new block could overlap
+    another's old one. A caller whose block moved keeps its stack on the
+    old ports until its next up, which replaces the stack anyway.
+    """
+    blocks = instance.caller_blocks()
+    for name in [name for name, first in state.ports.items() if first not in blocks]:
+        del state.ports[name]
     if caller not in state.ports:
         taken = set(state.ports.values())
-        free = [first for first in instance.caller_blocks() if first not in taken]
+        free = [first for first in blocks if first not in taken]
         if not free:
             raise RefusedError(f"the instance has no ports left for another caller: {len(state.ports)} hold them all")
         state.ports[caller] = free[0]

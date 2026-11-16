@@ -168,7 +168,12 @@ consumer is [docs/executor.md](../../docs/executor.md).
   leave out a caller no longer registered. A caller moved to another
   instance never leaves a stack with no one to take it down.
 - **State is the front's `state.json`, under a lock.** Port blocks, stacks
-  and their states. A caller's own lock is taken without waiting before
+  and their states. A block is stored by its first port, so after
+  `ports_per_caller` or the range changes, `ports_of` drops every stored
+  first port that is no longer one of `caller_blocks()`, all callers' at
+  once before it gives any, and the caller gets a block anew. No stack is
+  stopped for it: the old one runs on its old ports until the caller's
+  next up replaces it. A caller's own lock is taken without waiting before
   its bundle is spooled, so a second request of the same caller is refused
   at once rather than piling up connections and disk; the page and the
   reaper wait for it. A
