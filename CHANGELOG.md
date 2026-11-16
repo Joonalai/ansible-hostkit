@@ -8,6 +8,14 @@ carry.
 
 <!-- version list -->
 
+## v0.6.0 (2026-11-16)
+
+### Features
+
+- Add the gatus role
+  ([`b0e3753`](https://github.com/Joonalai/ansible-hostkit/commit/b0e3753076afb7419bea5f7b2636c73586cee57e))
+
+
 ## v0.5.1 (2026-11-14)
 
 ### Bug Fixes
