@@ -23,6 +23,30 @@ chromium --headless --no-sandbox --disable-gpu --hide-scrollbars \
 The lead on the workbench has the `browser` MCP tools, which do the same
 through a tab; a role has the binary.
 
+## A browser the stack serves
+
+When the lead or the repository's instructions give the address of a
+browser the stack serves, connect to it rather than launch one:
+
+```python
+browser = p.chromium.connect("<address>", expose_network="*")
+```
+
+It runs beside the service, so it spares this box the memory of its own
+Chromium. `expose_network="*"` fetches every page through this process,
+over the route it already has to the preview: the served browser's own
+network may not reach the preview's URL. The screenshots are then
+`page.screenshot` at each width, as below, not the `chromium` commands
+above.
+
+Playwright refuses a server whose major.minor differs from the client's.
+The instructions that give the address name the server's version too; run
+the script with that one, `uv run --with "playwright==<version>" python /tmp/ui/walk.py`.
+
+When the connect fails, on the version or anything else, say so in your
+answer with the error text, and launch this box's Chromium as below
+instead: never stop there. Launch it too when no address is given.
+
 ## Driving
 
 Playwright for Python through `uv`, on that same Chromium. One script per
