@@ -616,14 +616,14 @@ def test_a_branch_moved_after_the_jobs_own_push_is_not_pushed_over(checkout: Pat
     assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing-job-9"
 
 
-def test_a_progress_left_working_reads_stopped_when_the_time_ran_out(checkout: Path) -> None:
+def test_a_progress_left_working_reads_asked_when_the_time_ran_out(checkout: Path) -> None:
     gh = Gh(checkout, pr=PR_URL, body="Closes #3\n\nLevel: claude:full · Status: working, reviewer next\nNext: tester")
 
     job_finish.main(env("success"), run=gh)
 
     (edit,) = gh.called("gh", "pr", "edit", PR_URL)
     new = edit[edit.index("--body") + 1]
-    assert "Status: stopped: the job's time ran out\n" in new
+    assert "Status: asked: the job's time ran out\n" in new
     assert "Next: tester" in new
     (comment,) = gh.called("gh", "pr", "comment", PR_URL)
     assert "@claude continue" in comment[-1]
@@ -635,7 +635,7 @@ def test_a_progress_left_working_names_what_cut_the_job_off(checkout: Path) -> N
     job_finish.main(env("cancelled"), run=gh)
 
     (edit,) = gh.called("gh", "pr", "edit", PR_URL)
-    assert "Status: stopped: cancelled" in edit[edit.index("--body") + 1]
+    assert "Status: asked: cancelled" in edit[edit.index("--body") + 1]
 
 
 def test_a_done_progress_is_left_as_it_is(checkout: Path) -> None:
@@ -699,13 +699,13 @@ def test_the_rounds_count_since_someone_allowed_last_commented(checkout: Path) -
     assert "4 of 4" in gh.called("gh", "pr", "comment", PR_URL)[-1][-1]
 
 
-def test_after_its_rounds_the_work_waits_for_someone(checkout: Path) -> None:
+def test_after_its_rounds_the_work_is_asked_of_someone(checkout: Path) -> None:
     gh = Gh(checkout, pr=PR_URL, body=WORKING_BODY, comments=[f"{ALLOWED} false", *auto(4)])
 
     job_finish.main(going_on(), run=gh)
 
     (edit,) = gh.called("gh", "pr", "edit", PR_URL)
-    assert "Status: stopped: not done after 4 jobs in a row" in edit[edit.index("--body") + 1]
+    assert "Status: asked: not done after 4 jobs in a row" in edit[edit.index("--body") + 1]
     (note,) = gh.called("gh", "pr", "comment", PR_URL)
     assert job_finish.AUTO not in note[-1]
     assert "parts" in note[-1] and "removing the working labels" in note[-1]
@@ -804,6 +804,8 @@ def test_the_work_does_not_go_on_by_itself(checkout: Path, why: str) -> None:
     job_finish.main(settings, run=gh)
 
     assert all(job_finish.AUTO not in call[-1] for call in gh.called("gh", "pr", "comment"))
+    for edit in gh.called("gh", "pr", "edit", PR_URL):
+        assert "Status: asked: " in edit[edit.index("--body") + 1]
 
 
 def test_a_count_that_fails_leaves_the_work_waiting(checkout: Path) -> None:
@@ -957,7 +959,7 @@ def test_a_lead_that_ended_early_with_nothing_committed_waits(checkout: Path) ->
     job_finish.main(going_on("success", minutes_ago=1, minutes=40), run=gh)
 
     (edit,) = gh.called("gh", "pr", "edit", PR_URL)
-    assert "Status: stopped: ended early with nothing committed" in edit[edit.index("--body") + 1]
+    assert "Status: asked: ended early with nothing committed" in edit[edit.index("--body") + 1]
     (note,) = gh.called("gh", "pr", "comment", PR_URL)
     assert job_finish.AUTO not in note[-1]
     assert "@claude full: continue" in note[-1] and "40 minutes" in note[-1]

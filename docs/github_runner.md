@@ -56,6 +56,13 @@ flowchart LR
   restart kills the job in progress.
 - **Slots, not repositories, are the unit.** Every repository has `runners`
   slots, and each slot has its own unit, registration, ports and rules.
+- **The work runners are a cap on work in progress.** Past as many of the
+  bot's drafts in work as the repository has work runners, a newly
+  labelled issue is labelled `<bot>:queued` and waits. When a job ends, or
+  on the shared workflow's schedule, a stopped draft goes on, or the next
+  queued issue starts: those with the entry's `priority_labels` first,
+  then in the order they were queued. A comment on work that exists is
+  never held.
 - **The preview is the executor's.** A repository whose entry names an
   [`executor`](executor.md) instance has each slot registered as its
   caller, and a job brings the checkout up there with `stack up`.
@@ -174,6 +181,7 @@ github_runner_repos:
     skills: [gpu-models]  # optional
     executor: stacks      # optional: the executor instance of its previews
     rebase_runner: true   # optional: one more slot, for rebases alone
+    priority_labels: [urgent, bug]  # optional: queued issues with these first
 ```
 
 The most used of the optional ones:

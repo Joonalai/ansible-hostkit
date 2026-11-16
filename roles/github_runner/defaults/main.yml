@@ -69,11 +69,18 @@ github_runner_app_private_key: ""
 #       skills: [gpu-models]  # optional, from claude_team's files/repo_skills/
 #       executor: stacks    # optional, the executor instance its stacks run on
 #       rebase_runner: true # optional: one more slot, for rebases alone
+#       priority_labels: [urgent, bug]  # optional: queued issues with these go first
 #
 # instructions are how this box treats the repository: appended to the
 # CLAUDE.md its jobs read, under a heading of their own, so they reach the
 # lead and every role. How the repository itself works, its tests and its
 # conventions, belongs in its own CLAUDE.md, which the jobs read too.
+#
+# runners is also the cap on the bot's drafts in work: past it, a newly
+# labelled issue is labelled <bot>:queued and waits for a free runner, and
+# priority_labels, the most urgent first, decide which queued issue starts
+# first; the rest go in the order they were queued. The shared workflow's
+# claude-job-queue steps do it.
 #
 # skills are the ones in claude_team's files/repo_skills/ the repository opts into, beside
 # the team's that every job has. gpu-models also puts a GPU model server's

@@ -56,12 +56,17 @@ make false.
 A job whose Claude stopped at the usage limit, which WAITING says, is left
 at working, with no note that it stopped: claude-job-retry says when it
 starts again, once the limit resets.
-Otherwise it says in Progress, stopped, and on the PR, that the work waits
-for someone, so no PR reads as being worked on when nothing is. When it
-waits because it went on ROUNDS times and is still not done, the note says
-what the user can do with work that large: another round, the rest in
-parts, or a session of their own with the labels off. A PR the
-lead marked ready is left alone.
+Otherwise it says in Progress, asked, and on the PR, that the work waits
+for someone, so no PR reads as being worked on when nothing is: a job
+someone cancelled, a failure early on, a lead that ended early with
+nothing committed, rounds it could not count, and work that went on
+ROUNDS times and is still not done, where the note says what the owner
+can do with work that large: another round, the rest in parts, or a
+session of their own with the labels off. claude-job-queue continues a
+stopped draft by itself, and never an asked one, so none of these is
+stopped: that is the lead's word alone, for a job out of turns or
+context. The draft it opens for work left without a PR says asked too.
+A PR the lead marked ready is left alone.
 
 Then it hides as outdated the bot's comments that earlier jobs left on
 the thread and the PR and that say nothing now: a stopped note, a marked
@@ -198,7 +203,7 @@ Comment `@{BOT} continue` here to pick the work up.
 
 <details><summary>Progress</summary>
 
-Level: {level} · Status: stopped: {outcome}
+Level: {level} · Status: asked: {outcome}
 Next: read the commits on this branch and the issue, and carry on.
 </details>
 """
@@ -213,7 +218,7 @@ Comment `@{BOT} continue` on {primary}#{number} or its PR to pick the work up.
 
 <details><summary>Progress</summary>
 
-Level: {level} · Status: stopped: {outcome}
+Level: {level} · Status: asked: {outcome}
 Next: read the commits on this branch and {primary}#{number}, and carry on.
 </details>
 """
@@ -467,12 +472,14 @@ def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) 
         )
         run("gh", "pr", "comment", pr, "--body", note)
         return True
-    reason = "the job's time ran out" if outcome == "success" else outcome
+    # Work that does not go on by itself waits for the owner, so asked, which
+    # claude-job-queue leaves alone: stopped is the lead's word alone.
+    status = "asked: " + ("the job's time ran out" if outcome == "success" else outcome)
     if again == SPENT:
-        reason = f"not done after {ROUNDS} jobs in a row"
+        status = f"asked: not done after {ROUNDS} jobs in a row"
     if again == IDLE:
-        reason = "ended early with nothing committed"
-    run("gh", "pr", "edit", pr, "--body", WORKING.sub(rf"\1stopped: {reason}", text, count=1))
+        status = "asked: ended early with nothing committed"
+    run("gh", "pr", "edit", pr, "--body", WORKING.sub(rf"\1{status}", text, count=1))
     if again in (IDLE, SPENT):
         run("gh", "pr", "comment", pr, "--body", idle_note(env, url) if again == IDLE else spent_note(url))
         return True
