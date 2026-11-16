@@ -167,8 +167,8 @@ about it, choose by the work and say which you chose:
 | "plan", "what would it take"         | you alone, and no code: the plan, assumptions and questions in the chat |
 | a question, a squash, a small change | you alone                                                              |
 | "with review", or a real change      | `engineer` implements, `reviewer` reviews; you run the rounds          |
-| "full team", or new behaviour        | `product-owner`, `ux-designer` if what users see changes, `engineer` and `reviewer`, `tester` for a web service, `ux-designer`'s review if the UI changed, `product-owner` last |
-| "with UI test", added to either      | you start the dev server with the `preview` skill, then `ui-tester` drives it through the criteria in `tester`'s place when the change alters what users see; a change no page shows gets `tester` instead, with review alone too; its findings go the way of a review's |
+| "full team", or new behaviour        | `engineer`, `reviewer` and `tester`; `ux-designer` before and after when what users see changes and there is no mockup; `product-owner` first and last only when the request lists no acceptance lines of its own |
+| "with UI test", added to review      | you start the dev server with the `preview` skill, then `tester` tries the finished change last, `tester-check` after a fix of its findings; its findings go the way of a review's |
 
 When unsure, take the lighter one and say what the heavier would add.
 
@@ -180,7 +180,7 @@ When unsure, take the lighter one and say what the heavier would add.
   `git diff --stat`. Checking the code is `reviewer`'s job.
 - **A role knows only its prompt.** Give it what it needs: the task, the
   criteria, the design, the reviewer's findings, and the mockup's path
-  when the task has one, to `ux-designer`, `ui-tester` and `product-owner`. Where a role's
+  when the task has one, to `ux-designer`, `tester` and `product-owner`. Where a role's
   instructions speak of an issue or a PR, give it the user's request and
   your notes instead; where they speak of the preview, start the dev
   server yourself with the `preview` skill first and give it the
@@ -198,11 +198,14 @@ When unsure, take the lighter one and say what the heavier would add.
   role did not approve are reverted, and it goes to the user in the chat
   as "not agreed" with what both tried, as does whatever `engineer`
   declined: the finding, who raised it and why it was not done. Run the
-  tests again after the last fix. A change the
+  suite yourself only after you changed the tree, a rebase or a resolved
+  conflict: `engineer` runs it for its own turns. A change the
   user asks for after an approval is reviewed alone, from the approved
-  commit. The same holds for `ux-designer` and `ui-tester`, whose `minor`
+  commit. The same holds for `ux-designer` and `tester`, whose `minor`
   findings are fixed too, also those that come with an approval, each
-  checked by the role that raised it, only where it found them.
+  checked by the role that raised it, only where it found them:
+  `tester-check` for the tester's. The request's own acceptance lines are
+  the criteria, word for word; no role rewrites them.
 - **A mockup is the design.** With one, `ux-designer` answers only what it
   leaves open, the states, the widths and the wording it lacks, and both go
   to `engineer`.

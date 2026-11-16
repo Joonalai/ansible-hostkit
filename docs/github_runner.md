@@ -99,8 +99,8 @@ A job's preview is the slot's stack on an [`executor`](executor.md)
 instance on the same host, which the repository's entry names. `stack up`
 in the job sends the checkout's HEAD as a git bundle; the instance builds
 it from the repository's `stack.toml` and starts it on the slot's ports of
-its own range. The preview is for the job's roles, `tester`, `ui-tester`
-and `ux-designer`, which reach it from inside the job. The PR names no
+its own range. The preview is for the job's roles, `tester`,
+`tester-check` and `ux-designer`, which reach it from inside the job. The PR names no
 address of it: that would tell GitHub the host's name and ports, and go
 stale once the slot's next `stack up` replaces it. A person tries a pull
 request from a workbench session instead, with its `try` skill

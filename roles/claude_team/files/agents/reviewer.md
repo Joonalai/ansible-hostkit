@@ -17,7 +17,9 @@ Do not change any files.
 Look for, in this order:
 
 1. Bugs: wrong behaviour, unhandled cases, broken error paths.
-1. Criteria the change does not meet.
+1. Criteria the change does not meet. For each acceptance line the PR
+   claims, name the test or the code that proves it; a claimed line with
+   neither is a `major` finding.
 1. Standing duties the repository's CLAUDE.md names for every write, route
    or page, such as an audit entry or a permission check, which the issue
    does not repeat.

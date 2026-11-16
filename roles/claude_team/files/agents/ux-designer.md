@@ -1,6 +1,6 @@
 ---
 name: ux-designer
-description: Service and UX designer. Designs what users will see before the engineer starts, and reviews the result from screenshots of the running preview. Use on full-level issues that change the UI, and on plan-level issues for a design to agree on.
+description: Service and UX designer. Designs what users will see before the engineer starts, and reviews the result from screenshots of the running preview. Use on full-level issues that change what users see and have no mockup, before the engineer and again after the tester, and on plan-level issues for a design to agree on.
 tools: Read, Grep, Glob, Bash, Skill
 model: sonnet
 ---
@@ -61,7 +61,7 @@ when the design depends on something only the user knows.
 ## Reviewing
 
 You get the issue, the criteria, your design and the preview's URL, which
-the lead has started, and, when `ui-tester` walked it, its screenshots:
+the lead has started, and the tester's screenshots:
 start from those, and take your own only for what they miss. Check: does it follow your design, and the mockup when
 there is one, at both widths, or depart from them for a reason the design named; does the flow do what the issue needs, with no extra steps; is the
 wording clear, in the service's language, and the agreed one, from these

@@ -381,7 +381,16 @@ account is set up by `rootless_account`.
     asked on the PR, a `@<bot>` comment, review or review comment,
     since the job's run was created: that comment's job waits behind this
     one, and a rebase job that started late must not mark ready a PR the
-    user has since asked more of. `--waiting <n>` asks the same as a step,
+    user has since asked more of. On a PR labelled `<bot>:full`, or
+    `<bot>:review` with `<bot>:ui`, it also wants the description's
+    "Tried" summary to start `Tried: ✅ passed, at <sha>`, and GitHub's
+    compare of that sha with the head to change nothing outside
+    `UNTRIED`, `docs/` and Markdown: the rule that says so in the lead's
+    rules was once passed over by a lead, which marked an earlier PR
+    ready after a rebase that changed a test. It compares on GitHub, not
+    in the checkout, since a linked PR's checkout is not the hook's, and
+    a sha a fold took off GitHub is a refusal. `--waiting <n>` asks
+    whether anyone asked since, as a step,
     and the workflow skips a rebase the bot asked for, the `quickrebase`
     job's and an `auto-escalate` one's, when the answer is yes; when it
     cannot read, the rebase runs.
@@ -412,13 +421,16 @@ account is set up by `rootless_account`.
   merges into the same file, changes nothing.
 - **`<bot>:ui` is a modifier `claude-job-level` reads with the level.** It
   is not in the workflow's trigger list, so adding it starts nothing; with
-  `<bot>:review` or `<bot>:full` the script adds twenty minutes and
+  `<bot>:review` or `<bot>:full` the script adds twenty minutes, the
+  tester's, which runs on every `<bot>:full` job and on `<bot>:review`
+  only with the label, and
   a phrase to the lead's prompt, through the same `note` output, so the
   workflow needed no new output. The sum has to stay under the shared
   workflow's `timeout-minutes`, or the finishing steps never run.
-  `ui-tester` drives the preview with Playwright for Python through `uv`
-  and the image's Chromium, so the image needed nothing new; the first run
-  downloads the wheel into the repository's uv cache.
+  `tester` drives the preview with Playwright for Python through `uv`
+  and the image's Chromium, or a browser the stack serves when the
+  repository's instructions name one, so the image needed nothing new;
+  the first run downloads the wheel into the repository's uv cache.
 - **The cleaner keeps the layers builds use, and the caches jobs use.**
   `clean-runners` (`files/clean/`), on coder's daily timer, removes the
   strays first: a container in no compose project, no systemd unit's and

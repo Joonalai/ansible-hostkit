@@ -1,6 +1,6 @@
 ---
 name: preview
-description: Starts the repository's dev server on the workbench's preview port, where the user opens it from their phone and the roles reach it on localhost, and stops it when done. Use when the user would want to try what was built or asks to, and before the tester, the UX designer or the UI tester needs a running service.
+description: Starts the repository's dev server on the workbench's preview port, where the user opens it from their phone and the roles reach it on localhost, and stops it when done. Use when the user would want to try what was built or asks to, and before the tester, its check or the UX designer needs a running service.
 ---
 
 # The workbench's preview
