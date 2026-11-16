@@ -12,6 +12,7 @@ servers. Each role is configured entirely from the consumer's inventory.
 | [`workbench`](docs/workbench.md)               | A container per repository with a Remote Control session, writing to GitHub only through a gate    | The host's own sandbox units, a pinned uid and subordinate ID range, a Claude login, a read and a write token, repositories |
 | [`claude_code`](docs/claude_code.md)           | Claude Code as a Remote Control server, driven from the Claude app                                 | A Claude subscription login, done once by a person                                                                          |
 | [`claude_team`](docs/claude_team.md)           | The subagent roles and skills the runner's jobs and the workbench's sessions share                 | A directory to install into                                                                                                 |
+| [`gatus`](docs/gatus.md)                       | Gatus, health checks and heartbeats, in a rootless account of its own                              | A subordinate ID range, the consumer's config files, and the host's firewall opening its port where heartbeats come from    |
 
 All roles need Debian with systemd, and Ansible 2.18 or newer with
 `community.general` on the controller.

@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        play: [executor, ci_runner, github_runner, workbench]
+        play: [executor, ci_runner, github_runner, workbench, gatus]
     env:
       # docker compose, the runner's own, against podman's API, so the
       # container is the runner user's rootless podman's, which the plays

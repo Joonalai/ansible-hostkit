@@ -1,0 +1,71 @@
+---
+# Gatus, a health checker with a dead man's switch, as a rootless container
+# in an account of its own. Everything it checks and where it alerts comes
+# from the consumer's inventory as config files; the role adds only where
+# Gatus listens and keeps its history.
+#
+# The account. Gatus runs as root in its container, which is this account on
+# the host, and starts nothing else, so it needs no range beyond podman's
+# own. Pin the uid where the host's firewall names the account.
+gatus_user: gatus
+gatus_uid: ""
+gatus_home: /home/{{ gatus_user }}
+gatus_subuid_start: ""
+gatus_subuid_count: 65536
+
+# The units of the host's own hardening that the account's manager
+# Requires=, as rootless_account takes them. Gatus runs no untrusted code,
+# so none is required: an empty list ties it to nothing.
+gatus_sandbox_units: []
+
+# Pinned by digest (Renovate moves it).
+gatus_image: ghcr.io/twin/gatus:v5.38.0@sha256:085ed63da963728965d00a3c78aa6167e3bf135218485b893201758e079e8415
+
+# Where the host publishes Gatus's port. Loopback alone by default: a
+# heartbeat from another machine needs an address it reaches, such as the
+# host's LAN or tailnet address, and the host's firewall opening
+# gatus_port there, which this role never does.
+gatus_listen_addresses: [127.0.0.1]
+gatus_port: 8080
+
+# The consumer's config, one file per entry: name -> the YAML as a mapping.
+# Gatus merges every file in its config directory, appending lists such as
+# endpoints and external-endpoints, so each concern can keep its own file:
+#
+#   gatus_config_files:
+#     alerting:
+#       alerting:
+#         homeassistant:
+#           url: http://192.0.2.5:8123
+#           token: ${HA_TOKEN}
+#     app:
+#       external-endpoints:
+#         - name: deploy-runner
+#           group: app
+#           token: ${APP_DEPLOY_HEARTBEAT_TOKEN}
+#           heartbeat: {interval: 15m}
+#
+# The files are diffed like any other, so a secret goes in as ${NAME},
+# which Gatus fills from gatus_environment when it starts.
+gatus_config_files: {}
+
+# The secrets the config names as ${NAME}: NAME -> value, from the
+# consumer's vault. Written to a file only the account reads, never logged
+# or diffed. A name the config uses and this leaves empty fails the play.
+gatus_environment: {}
+
+# What the role itself sets, in a file of its own beside the consumer's.
+# The port inside the container is fixed; gatus_port is the host's.
+gatus_base_config:
+  web:
+    port: 8080
+  storage:
+    type: sqlite
+    path: /data/data.db
+
+# A cap on the container's memory, as systemd's MemoryMax.
+gatus_memory_max: 256M
+
+# False writes everything and leaves the container stopped, with no boot
+# start.
+gatus_start: true

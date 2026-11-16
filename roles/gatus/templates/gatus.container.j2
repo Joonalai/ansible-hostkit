@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Gatus, health checks and heartbeats
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Container]
+ContainerName=gatus
+Image={{ gatus_image }}
+Environment=GATUS_CONFIG_PATH=/config
+# The secrets the config names as ${NAME}, the account's alone.
+EnvironmentFile={{ gatus_home }}/gatus.env
+Volume={{ gatus_config_dir }}:/config:ro
+Volume={{ gatus_home }}/data:/data
+{% for address in gatus_listen_addresses %}
+PublishPort={{ ('[' ~ address ~ ']') if ':' in address else address }}:{{ gatus_port }}:8080
+{% endfor %}
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+RestartSec=10
+MemoryMax={{ gatus_memory_max }}
+
+{% if gatus_start | bool %}
+[Install]
+WantedBy=default.target
+{% endif %}
