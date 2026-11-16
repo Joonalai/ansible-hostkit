@@ -37,7 +37,12 @@ repository has no access: report it and stop. See what is served, without printi
 
 ```sh
 curl -s "$MODEL_INFO_URL"
-python3 - <<'PY'
+```
+
+Then write this to `/tmp/models.py` with the Write tool and run it with one
+plain command, `python3 /tmp/models.py`:
+
+```python
 import json, os, urllib.request
 info = os.environ["MODEL_INFO_URL"].removesuffix("/manifest")
 print(json.load(urllib.request.urlopen(info + "/gpu", timeout=30)))
@@ -48,7 +53,6 @@ request = urllib.request.Request(
 for row in json.load(urllib.request.urlopen(request, timeout=30))["data"]:
     args = row["status"]["args"]
     print(row["id"], row["status"]["value"], args[args.index("--ctx-size") + 1])
-PY
 ```
 
 `MODEL_INFO_URL` (`/manifest`) and `/gpu` beside it need no key. They give the
@@ -83,7 +87,10 @@ per request.
 ## Calls
 
 Use `$MODEL_URL` as the base URL of any OpenAI client, or plain HTTP. Allow a
-timeout of ten minutes, for a load and a queue.
+timeout of ten minutes, for a load and a queue. Write each script to
+`/tmp/<name>.py` with the Write tool and run it with one plain command,
+`python3 /tmp/<name>.py`: no heredoc, no `cd &&` before it, which the
+permission rules refuse.
 
 ```python
 import json, os, urllib.request
