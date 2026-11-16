@@ -70,12 +70,17 @@
       - item.instructions | default('') is string
       - item.skills | default([]) is not string
       - item.skills | default([]) | difference(github_runner_repo_skills) | length == 0
+      - item.priority_labels | default([]) is not string
+      - item.priority_labels | default([]) | reject('match', '^[^,"%\\x5c\\n]+$') | list | length == 0
     fail_msg: >-
       {{ item }}: a repository wants a name of lowercase letters, digits and
       dashes other than "agents", which becomes its units' names, a
       repository as owner/name, a port_base, 1 to 9 runners, an executor
-      instance's name, if any, instructions, if any, as one string, and
-      skills, if any, as a list from {{ github_runner_repo_skills }}.
+      instance's name, if any, instructions, if any, as one string,
+      skills, if any, as a list from {{ github_runner_repo_skills }}, and
+      priority_labels, if any, as a list of label names without a comma,
+      a quote, a percent sign or a backslash, which the unit's environment
+      cannot carry.
     quiet: true
   loop: "{{ github_runner_repos }}"
   loop_control:
@@ -94,6 +99,7 @@
                                'rebase': slot > runners,
                                'unit': 'github-runner-' ~ repo.name ~ '-' ~ slot, 'instructions': repo.instructions | default(''),
                                'skills': repo.skills | default([]),
+                               'runners': runners, 'priority_labels': repo.priority_labels | default([]),
                                'executor': '' if slot > runners else repo.executor | default(''),
                                'port_first': first, 'port_last': first + github_runner_ports_per_runner | int - 1}) -%}
       {%- endfor -%}
@@ -354,6 +360,7 @@
     - job_rebase_runner.py
     - job_strays.py
     - job_retry.py
+    - job_queue.py
     - job_report.py
     - job_vouch.py
     - job_checks.py

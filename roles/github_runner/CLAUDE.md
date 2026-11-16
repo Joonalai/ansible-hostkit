@@ -324,11 +324,17 @@ account is set up by `rootless_account`.
       place of a person's, when the lead ended well, a failed job used
       half its time, or GitHub lost the runner, which its annotation on
       the job says, and fewer than four did so since someone on the
-      allow-list last commented. Otherwise it turns it into `stopped`,
-      after the four with a note of what the user can do with work that
-      large. A lead that ended well before half the job's time with
-      nothing of the job's committed, on HEAD or in a related repository,
-      is stopped too, with a note naming the levels that give more time,
+      allow-list last commented. Otherwise it turns it into `asked`, a
+      job someone cancelled and a failure early on among them, and after
+      the four with a note of what the user can do with work that large.
+      Never `stopped`: `claude-job-queue` continues a stopped draft by
+      itself and never an asked one, so `stopped` is the lead's alone,
+      for a job out of turns or context, and what the workflow ends on
+      waits for the owner. The draft it opens for work left without a PR
+      says `asked` too. A lead that ended well before half the job's time
+      with nothing of the job's committed, on HEAD or in a related
+      repository, is asked too, with a note naming the levels that give
+      more time,
       or at the longest how to split the work: four such jobs once ran in
       a row on one PR, each in under a minute, since each new one got the
       same time.
@@ -358,6 +364,27 @@ account is set up by `rootless_account`.
     `claude-job-rebase`, `claude-job-vouch`, which checks a part with its
     issue, and `claude-job-finish`, whose draft for an issue done in parts
     says `Part of #<issue>` and so closes nothing.
+  - **`claude-job-queue`** (`job_queue.py`) caps the bot's drafts in
+    work at the repository's work runners, `CLAUDE_WORK_RUNNERS`, which
+    the unit sets from the entry's `runners`, beside
+    `CLAUDE_PRIORITY_LABELS` from its `priority_labels`; unset or 0, it
+    does nothing. `gate`, right after the level, labels a newly labelled
+    issue `<bot>:queued` when the cap is reached, and the job's later
+    steps skip on its `queued` output; only an `issues` event with a
+    working label and no open PR of the bot's is ever held. `next`, the
+    job's last step and the sweep's, fills each free place: a draft at
+    `working` untouched for longer than any job, then the stopped drafts,
+    which only a lead out of turns or context leaves,
+    oldest first, with `claude-job-finish`'s `auto-continue` mark, so its
+    `ROUNDS` bound this too and a draft past them is left to the owner,
+    then the queued issues, by priority label and then by when the label
+    went on, with an `auto-queue` comment that starts the issue at its
+    labels' level. What was started in the last half hour and has no
+    `working` draft yet counts as in work, or a second `next` before the
+    lead opens its draft would start more than the cap. The cap stays
+    soft: two issues labelled in the same second may both pass. The
+    labels `<bot>:queued` and `<bot>:waiting` must stay out of the
+    workflow's trigger list.
   - **`claude-job-retry`** (`job_retry.py`) starts again what only needs
     time. `limit` reads the last part's execution file for the usage limit
     and its reset time, which `claude-job-finish`'s `WAITING` then leaves

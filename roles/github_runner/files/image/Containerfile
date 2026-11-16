@@ -149,6 +149,9 @@ COPY --chmod=0755 job_strays.py /usr/local/bin/claude-job-strays
 # Starting a job again by itself once what stopped it has passed: a failure
 # before Claude, or the usage limit, and the scheduled sweep that does it.
 COPY --chmod=0755 job_retry.py /usr/local/bin/claude-job-retry
+# Holding newly labelled issues while the work runners are full, and
+# starting the next thing when one is free.
+COPY --chmod=0755 job_queue.py /usr/local/bin/claude-job-queue
 # What Claude itself calls: waiting for a PR's checks, which also holds back
 # `gh pr ready` as settings.json's hook, and in a job with related
 # repositories, cloning one beside the checkout and reading a linked PR's
