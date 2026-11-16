@@ -8,6 +8,14 @@ carry.
 
 <!-- version list -->
 
+## v0.7.1 (2026-11-16)
+
+### Bug Fixes
+
+- Say asked for a draft past its rounds and done for a ready pr
+  ([`533a6d5`](https://github.com/Joonalai/ansible-hostkit/commit/533a6d552a003060f574c718a6e9ddf63c0b05e3))
+
+
 ## v0.7.0 (2026-11-16)
 
 ### Bug Fixes
