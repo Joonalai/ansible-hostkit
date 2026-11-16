@@ -18,7 +18,7 @@ $GITHUB_OUTPUT:
   job started again by itself asks the same.
 - note: a phrase for the lead's prompt when the comment chose the level,
   and when <bot>:ui applies: a modifier, not a level, which with
-  <bot>:review or <bot>:full adds the UI tester's walkthrough of the
+  <bot>:review or <bot>:full adds the tester's walkthrough of the
   preview, and its time. On its own it starts nothing, since the workflow's
   trigger does not list it. It also names the repositories in
   CLAUDE_RELATED_REPOS, the ones a job may work in beside this one.
@@ -90,7 +90,7 @@ def levels(event: dict[str, Any], repositories: list[str] | None = None) -> dict
         note += ", so call every role that level names, whatever the comment's size"
     if UI in labels and level in UI_LEVELS:
         minutes += UI_MINUTES
-        note += f", with the UI walkthrough: the labels include {UI}"
+        note += f", with the tester's walkthrough: the labels include {UI}"
     if repositories is not None and repositories:
         note += f", and this repository's related repositories are {', '.join(repositories)}"
     return {"level": level, "label-level": label_level, "asked": asked, "note": note, "minutes": str(minutes)}

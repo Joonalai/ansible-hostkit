@@ -31,6 +31,15 @@ as done when it is not. A job that started hours after it was asked for,
 as one waiting for a runner does, saw the comment in its prompt, and still
 did only what it was started for.
 
+On a PR whose labels say it is full, or review with the UI label, the
+hook also refuses it unless the description has a "Tried" section whose
+summary starts `Tried: ✅ passed, at <sha>`, and the PR's head changes
+nothing since that sha outside what a tester does not try, `docs/` and
+Markdown. Where the lead forgets the tester's pass, or changes code after
+it, as a rebase whose conflict it resolved does, the PR stays a draft. It
+compares on GitHub, the PR's head as pushed, since that is what is marked
+ready and a linked PR's checkout is not the hook's.
+
 `--waiting` is the same question as a step's, for a rebase the bot asked
 for itself, which the workflow skips when someone has asked since: their
 job comes next and rebases as it works. It writes `waiting=true` or
@@ -45,6 +54,7 @@ statuses: read, on the App, and Issues and Pull requests: read.
 Standard library only, on the image's python3.
 """
 
+import fnmatch
 import json
 import os
 import re
@@ -77,6 +87,16 @@ FIX = "Fix what you can. What stays red stays a draft: say which check and why i
 # Where someone can ask on a PR, and when each says it was written.
 # `--waiting` and the PR's number.
 WAITING_ARGUMENTS = 2
+
+# What the tester's pass needs no repeat for: a path changed since it, as
+# GitHub names it, that matches one of these.
+UNTRIED = ("docs/*", "*.md")
+# The "Tried" section's summary when the tester passed, and its sha.
+TRIED = re.compile(r"<summary>\s*(?:<b>\s*)?Tried:\s*(?:</b>\s*)?✅ passed, at ([0-9a-f]{7,40})\b")
+# GitHub's compare lists at most this many files, so a list this long may hide more.
+COMPARE_FILES = 300
+# How many of the changed paths a refusal names: enough to say which.
+SHOWN = 5
 
 ASKING = [("issues/{n}/comments", "created_at"), ("pulls/{n}/reviews", "submitted_at"), ("pulls/{n}/comments", "created_at")]
 
@@ -274,7 +294,9 @@ def refusal(arguments: str, env: Mapping[str, str], run: Run = sh) -> str | None
             "say in your comment that the next job takes what was asked."
         )
     reason = unready(number, repo, env, run)
-    return f"{reason} {FIX}" if reason is not None else None
+    if reason is not None:
+        return f"{reason} {FIX}"
+    return untried(number, repo, run)
 
 
 def unready(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -> str | None:
@@ -298,6 +320,69 @@ def unready(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -> st
         return f"{repo}#{number} has failing checks: {', '.join(map(label, red))}."
     if unfinished:
         return f"the checks of {repo}#{number} are still running; wait with `claude-job-checks {number} -R {repo}`."
+    return None
+
+
+def tried_level(labels: set[str]) -> str | None:
+    """The level whose PR needs the tester's pass, as its labels say, or None."""
+    if f"{BOT}:full" in labels:
+        return f"{BOT}:full"
+    if {f"{BOT}:review", f"{BOT}:ui"} <= labels:
+        return f"{BOT}:review with {BOT}:ui"
+    return None
+
+
+def changed_since(sha: str, head: str, repo: str, run: Run = sh) -> list[str]:
+    """The paths the head changes since the sha that a tester would try,
+    a rename's old path among them.
+    """
+    done = run(
+        "gh", "api", f"repos/{repo}/compare/{sha}...{head}",
+        "--jq", "[.files[]? | .filename, (.previous_filename // empty)]",
+    )
+    try:
+        paths = json.loads(done.stdout)
+    except ValueError:
+        raise Unreadable((done.stderr or done.stdout).strip()[:300]) from None
+    if done.returncode or not isinstance(paths, list):
+        raise Unreadable((done.stderr or done.stdout).strip()[:300])
+    if len(paths) >= COMPARE_FILES:
+        return [f"{len(paths)} files or more"]
+    return [path for path in paths if not any(fnmatch.fnmatch(path, each) for each in UNTRIED)]
+
+
+def untried(number: str, repo: str, run: Run = sh) -> str | None:
+    """Why the PR lacks the tester's pass its level needs, or None."""
+    done = run("gh", "pr", "view", number, "-R", repo, "--json", "labels,body,headRefOid")
+    try:
+        pr = json.loads(done.stdout)
+        labels = {label["name"] for label in pr["labels"]}
+        body, head = pr["body"] or "", pr["headRefOid"]
+    except (ValueError, KeyError, TypeError):
+        return f"whether {repo}#{number} needs the tester's pass could not be read ({(done.stderr or done.stdout).strip()[:300]})."
+    level = tried_level(labels)
+    if level is None:
+        return None
+    no_preview = "With no preview, leave it a draft at `Status: asked: <what the preview needs>`."
+    found = TRIED.search(body)
+    if not found:
+        return (
+            f'{repo}#{number} is at {level}, and its description has no "Tried" section whose summary starts '
+            f"`Tried: ✅ passed, at <sha>`: call `tester` for its full pass first. {no_preview}"
+        )
+    sha = found[1]
+    try:
+        changed = changed_since(sha, head, repo, run)
+    except Unreadable as error:
+        return f"what {repo}#{number} changed since the tester's pass at {sha} could not be read ({error})."
+    if changed:
+        shown = ", ".join(changed[:SHOWN]) + (", …" if len(changed) > SHOWN else "")
+        return (
+            f"{repo}#{number} changed code since the tester's pass at {sha}: {shown}. Call `tester-check` on "
+            'what the diff touches, and write its commit in the "Tried" summary. After a rebase with no '
+            'conflict in which you changed no file, write the new head there instead, with "rebased, '
+            f'unchanged" beside it. {no_preview}'
+        )
     return None
 
 

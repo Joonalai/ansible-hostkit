@@ -66,7 +66,7 @@ def test_ui_adds_the_walkthrough_and_its_time_to_a_team_level() -> None:
         "level": "claude:full",
         "label-level": "claude:full",
         "asked": "",
-        "note": ", with the UI walkthrough: the labels include claude:ui",
+        "note": ", with the tester's walkthrough: the labels include claude:ui",
         "minutes": "120",
     }
     assert job_level.levels(on(["claude:ui", "claude:review"]))["minutes"] == "80"
@@ -84,7 +84,7 @@ def test_ui_follows_the_level_the_comment_chose() -> None:
     assert "walkthrough" not in quick["note"]
     full = job_level.levels(on(["claude", "claude:ui"], body="@claude full: continue", pr=True))
     assert (full["level"], full["minutes"]) == ("claude:full", "120")
-    assert full["note"].endswith("with the UI walkthrough: the labels include claude:ui")
+    assert full["note"].endswith("with the tester's walkthrough: the labels include claude:ui")
 
 
 def test_the_word_must_follow_the_mention() -> None:

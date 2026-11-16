@@ -59,4 +59,7 @@ used is in [github_runner](../github_runner/CLAUDE.md) and
   cannot, the plugin says what differs, as the workbench's rules do.
 - **The copy does not delete.** A role file removed from `files/agents/`,
   or a skill from any of the sources, stays at both destinations until
-  removed by hand.
+  removed by hand, or by name: a retired role goes on the loop of the
+  last task in `tasks/main.yml`, since the lead sees every file in
+  `agents/` and could still call it. A workstation's plugin reads the
+  directory in place, and so loses it at once.

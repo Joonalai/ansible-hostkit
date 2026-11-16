@@ -124,7 +124,7 @@ runner it shares a preview range with is
   on-request procedures that would otherwise sit in the rules every turn
   carries. A server a role starts in the background ends with the role's
   session, so the rules have the lead start it before calling `tester`,
-  `ui-tester` or `ux-designer`, and hand them the `localhost` URL.
+  `tester-check` or `ux-designer`, and hand them the `localhost` URL.
 - **A repository with `executor:` is the instance's caller**, `bench-<name>`,
   registered through the executor role's `callers.yml` with the prefix
   `bench-`, `waits: false`: a person is refused at once rather than

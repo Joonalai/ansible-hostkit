@@ -11,8 +11,8 @@ include this one and install the same files:
 ```mermaid
 flowchart LR
     subgraph Sources
-        A[This role's agents<br/>engineer, reviewer, tester,<br/>ui-tester, ux-designer, product-owner]
-        S[This role's skills<br/>browser, clean-commits]
+        A[This role's agents<br/>engineer, reviewer, tester,<br/>tester-check, ux-designer, product-owner]
+        S[This role's skills<br/>browser, clean-commits, tryout]
         O[The including role's own skills<br/>claude_team_skill_sources]
     end
     subgraph Dest["claude_team_dest"]
@@ -38,7 +38,8 @@ flowchart LR
   one directory. `preview` is the runner's compose procedure in a job and
   the dev server on the workbench.
 - **The copy does not delete.** A role or a skill removed from the sources
-  stays at the destination until removed by hand.
+  stays at the destination until removed by hand. The one exception is a
+  role the team retired, `ui-tester`, which the role removes by name.
 
 ## How a lead uses the team
 
@@ -46,28 +47,42 @@ flowchart LR
 sequenceDiagram
     participant U as User
     participant L as Lead
-    participant PO as product-owner
     participant E as engineer
     participant R as reviewer
-    participant T as tester or ui-tester
-    U->>L: an issue or a request
-    L->>PO: turn it into acceptance criteria
-    PO-->>L: criteria
+    participant T as tester, then tester-check
+    U->>L: an issue with its acceptance lines
     loop until the reviewer approves
         L->>E: implement, or fix what the reviewer asked
         E-->>L: commits
-        L->>R: review the diff against the criteria
+        L->>R: review the diff against the issue's lines
         R-->>L: approve, or changes
     end
-    L->>T: check the running service
-    T-->>L: what works and what does not
-    L->>PO: check the result against the criteria
-    L-->>U: what was done
+    L->>T: try the finished commit on the preview
+    T-->>L: what works, what does not, what the PR leaves open
+    loop at most twice, while a finding is open
+        L->>E: fix the tester's findings
+        L->>T: tester-check: only those findings
+    end
+    L-->>U: what was done, and what was tried
 ```
 
 Which of the roles a piece of work gets depends on its level, which the
-including role's rules decide. `ux-designer` joins before the engineer on
-work that changes what users see.
+including role's rules decide. The issue's own acceptance lines are the
+criteria, word for word; `product-owner` joins first and last only for an
+issue with none. `ux-designer` designs before the engineer and reviews
+after the tester on work that changes what users see and has no mockup.
+`tester` follows the `tryout` skill, on Opus; `tester-check`, on Sonnet,
+looks again only at its findings.
+
+The `browser` skill drives a page with Playwright for Python through `uv`,
+on the box's own Chromium, or on a browser the repository's stack serves
+when its instructions give that browser's address. A served browser saves
+the job the memory of its own. Playwright refuses a server whose
+major.minor differs from the client's, and the jobs' Playwright is not
+pinned, so instructions that give the address name the served
+Playwright's version too, and the skill runs its client at that version.
+A connect that fails is said in the role's answer, and the role falls back
+to the box's Chromium.
 
 ## What the host must provide
 

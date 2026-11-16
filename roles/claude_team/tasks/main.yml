@@ -37,3 +37,12 @@
   loop: "{{ [role_path ~ '/files/skills'] + claude_team_skill_sources }}"
   when: item is directory
   become: true
+
+# The copy never deletes, so a role the team no longer has is removed by
+# name: the lead sees every file in agents/ and could still call it.
+- name: Remove the roles the team no longer has
+  ansible.builtin.file:
+    path: "{{ claude_team_dest }}/agents/{{ item }}.md"
+    state: absent
+  loop: [ui-tester]
+  become: true

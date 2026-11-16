@@ -33,12 +33,16 @@ class GitHub:
         behind: int | subprocess.CompletedProcess[str] = 0,
         asked: dict[str, list[dict[str, Any]] | subprocess.CompletedProcess[str]] | None = None,
         created: str | subprocess.CompletedProcess[str] = CREATED,
+        pr: dict[str, Any] | subprocess.CompletedProcess[str] | None = None,
+        since: Sequence[str] | subprocess.CompletedProcess[str] = (),
     ) -> None:
         self.answers, self.base, self.behind = list(answers), base, behind
         self.calls: list[tuple[str, ...]] = []
         self.asked, self.created = asked or {}, created
+        self.pr = pr if pr is not None else {"labels": [], "body": "", "headRefOid": "abc"}
+        self.since = since
 
-    def __call__(self, *argv: str) -> subprocess.CompletedProcess[str]:  # noqa: C901, PLR0911  (a fake that answers each gh call)
+    def __call__(self, *argv: str) -> subprocess.CompletedProcess[str]:  # noqa: C901, PLR0911, PLR0912  (a fake that answers each gh call)
         self.calls.append(argv)
         if argv[:3] == ("gh", "pr", "checks"):
             answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
@@ -47,6 +51,10 @@ class GitHub:
             return done(json.dumps(answer))
         if argv[:3] == ("gh", "run", "view"):
             return done(LOG)
+        if argv[:3] == ("gh", "pr", "view") and "labels,body,headRefOid" in argv:
+            if isinstance(self.pr, subprocess.CompletedProcess):
+                return cast("subprocess.CompletedProcess[str]", self.pr)
+            return done(json.dumps(self.pr))
         if argv[:3] == ("gh", "pr", "view") and "baseRefName,headRefOid" in argv:
             return done(json.dumps({"baseRefName": "main", "headRefOid": "abc"}))
         if argv[:3] == ("gh", "pr", "view"):
@@ -61,6 +69,10 @@ class GitHub:
             if isinstance(answer, subprocess.CompletedProcess):
                 return cast("subprocess.CompletedProcess[str]", answer)
             return done("\n".join(json.dumps(each) for each in answer))
+        if argv[:2] == ("gh", "api") and "/compare/" in argv[2] and ".behind_by" not in argv:
+            if isinstance(self.since, subprocess.CompletedProcess):
+                return cast("subprocess.CompletedProcess[str]", self.since)
+            return done(json.dumps(list(self.since)))
         if argv[:2] == ("gh", "api") and "/compare/" in argv[2]:
             if isinstance(self.behind, subprocess.CompletedProcess):
                 return cast("subprocess.CompletedProcess[str]", self.behind)
@@ -317,3 +329,103 @@ def test_a_bot_named_in_capitals_is_still_found_in_a_lowered_body(monkeypatch: p
     finally:
         monkeypatch.delenv("CLAUDE_BOT")
         importlib.reload(job_checks)
+
+
+SHA = "0123abc"
+PASSED = f"Closes #1\n\n<details><summary>Tried: ✅ passed, at {SHA}, profile try</summary>\n\nall lines\n</details>\n"
+
+
+def pr(*labels: str, body: str = PASSED) -> dict[str, Any]:
+    return {"labels": [{"name": name} for name in labels], "body": body, "headRefOid": "abc"}
+
+
+@pytest.mark.parametrize("labels", [(), ("claude",), ("claude:review",), ("claude:ui",), ("claude:plan", "claude:ui")])
+def test_a_level_with_no_tester_needs_no_tried_section(labels: tuple[str, ...]) -> None:
+    github = GitHub([check()], pr=pr(*labels, body="Closes #1"))
+    assert hook("gh pr ready 3", github) == 0
+    assert not [call for call in github.calls if "/compare/0123abc" in " ".join(call)]
+
+
+@pytest.mark.parametrize("labels", [("claude:full",), ("claude:review", "claude:ui"), ("claude:full", "claude:ui")])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Closes #1",
+        "<details><summary>Tester: ✅ passed</summary></details>",
+        "<details><summary>Tried: not tried: no preview</summary></details>",
+        "<details><summary>Tried: ❌ failed, at 0123abc</summary></details>",
+        "<details><summary>Progress</summary>\nTried: ✅ passed, at 0123abc\n</details>",
+    ],
+)
+def test_a_tested_level_with_no_passed_tried_section_is_refused(
+    labels: tuple[str, ...], body: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr(*labels, body=body))) == 2
+    err = capsys.readouterr().err
+    assert 'no "Tried" section' in err
+    assert "call `tester`" in err
+    assert "Status: asked" in err
+
+
+@pytest.mark.parametrize("since", [[], ["docs/guide.md"], ["README.md", "docs/shots/board.png", "roles/x/CLAUDE.md"]])
+def test_a_pass_with_only_docs_changed_since_lets_it_through(since: list[str]) -> None:
+    github = GitHub([check()], pr=pr("claude:full"), since=since)
+    assert hook("gh pr ready 3", github) == 0
+    assert ("gh", "api", f"repos/o/r/compare/{SHA}...abc") in [call[:3] for call in github.calls]
+
+
+def test_a_pass_says_rebased_unchanged_beside_its_sha() -> None:
+    body = f"<details><summary>Tried: ✅ passed, at {SHA}, rebased, unchanged, profile default</summary></details>"
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:review", "claude:ui", body=body))) == 0
+
+
+def test_code_changed_since_the_pass_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    since = ["docs/guide.md", "src/board.ts", "tests/test_board.py"]
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:full"), since=since)) == 2
+    err = capsys.readouterr().err
+    assert f"since the tester's pass at {SHA}: src/board.ts, tests/test_board.py." in err
+    assert "docs/guide.md" not in err
+    assert "`tester-check`" in err
+    assert "rebased, unchanged" in err
+
+
+def test_a_rename_out_of_the_code_counts_as_code() -> None:
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:full"), since=["docs/old.md", "src/old.ts"])) == 2
+
+
+def test_a_list_as_long_as_github_gives_is_never_taken_for_docs_alone(capsys: pytest.CaptureFixture[str]) -> None:
+    since = [f"docs/{n}.md" for n in range(job_checks.COMPARE_FILES)]
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:full"), since=since)) == 2
+    assert "300 files or more" in capsys.readouterr().err
+
+
+def test_many_changed_paths_are_named_a_few(capsys: pytest.CaptureFixture[str]) -> None:
+    since = [f"src/{n}.ts" for n in range(8)]
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:full"), since=since)) == 2
+    assert "src/4.ts, …." in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", [done(stderr="HTTP 404: No commit found", code=1), done("not json")])
+def test_a_compare_it_cannot_read_is_a_refusal(answer: subprocess.CompletedProcess[str], capsys: pytest.CaptureFixture[str]) -> None:
+    assert hook("gh pr ready 3", GitHub([check()], pr=pr("claude:full"), since=answer)) == 2
+    assert f"since the tester's pass at {SHA} could not be read" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", [done(stderr="HTTP 502", code=1), done(json.dumps({"labels": None}))])
+def test_labels_it_cannot_read_are_a_refusal(answer: subprocess.CompletedProcess[str], capsys: pytest.CaptureFixture[str]) -> None:
+    assert hook("gh pr ready 3", GitHub([check()], pr=answer)) == 2
+    assert "needs the tester's pass could not be read" in capsys.readouterr().err
+
+
+def test_red_checks_are_said_before_a_missing_pass(capsys: pytest.CaptureFixture[str]) -> None:
+    assert hook("gh pr ready 3", GitHub([check("lint", "fail")], pr=pr("claude:full", body=""))) == 2
+    err = capsys.readouterr().err
+    assert "failing checks" in err
+    assert "Tried" not in err
+
+
+def test_the_pass_is_read_from_the_linked_pr_it_names() -> None:
+    github = GitHub([check()], pr=pr("claude:full"))
+    assert hook("gh pr ready 4 -R o/other", github) == 0
+    assert ("gh", "pr", "view", "4", "-R", "o/other", "--json", "labels,body,headRefOid") in github.calls
+    assert ("gh", "api", f"repos/o/other/compare/{SHA}...abc") in [call[:3] for call in github.calls]

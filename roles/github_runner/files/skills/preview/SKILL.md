@@ -1,6 +1,6 @@
 ---
 name: preview
-description: Brings the checkout up as this runner's stack on the executor, the preview the user tries a change on before merging, and runs the repository's end-to-end suites against it. Use, as the lead and never as a role, whenever a web service's change should be tried, and before the tester, the UX designer or the UI tester needs a running service.
+description: Brings the checkout up as this runner's stack on the executor, the preview the user tries a change on before merging, and runs the repository's end-to-end suites against it. Use, as the lead and never as a role, whenever a web service's change should be tried, and before the tester, its check or the UX designer needs a running service.
 ---
 
 # The runner's preview
@@ -73,7 +73,12 @@ applies.
    stack up
    ```
 
-   or `stack up --profile <name>` for another profile. It builds and
+   or `stack up --profile <name>` for another profile. For the tester
+   and the UX designer, bring it up with every release flag on:
+   `stack up --profile try` when `stack.toml` has `[profiles.try]`, the
+   default profile otherwise, and say which in the PR's "Tried" section.
+   A feature behind a flag the default leaves off is a preview of
+   nothing the tester can try. It builds and
    starts the stack, replacing this runner's last one, and prints the URL
    for the user, the one for the roles, from here, and the phone page's.
    `stack logs [service]` shows why one that failed did. Status 75 is no
