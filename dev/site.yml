@@ -243,3 +243,75 @@
         quiet: true
       vars:
         dev_tries: "{{ dev_try_json.content | b64decode | from_json }}"
+
+- name: Gatus
+  hosts: hostkit-dev
+  tags: [gatus]
+  roles:
+    - role: joonalai.hostkit.gatus
+      vars:
+        gatus_uid: 2401
+        gatus_config_files:
+          checks:
+            endpoints:
+              - name: self
+                group: dev
+                url: http://127.0.0.1:8080/health
+                interval: 1m
+                conditions: ["[STATUS] == 200"]
+            external-endpoints:
+              - name: heartbeat
+                group: dev
+                token: ${DEV_HEARTBEAT_TOKEN}
+                heartbeat:
+                  interval: 15m
+        gatus_environment:
+          DEV_HEARTBEAT_TOKEN: "{{ dev_heartbeat_token }}"
+  post_tasks:
+    # A heartbeat as a consumer's timer sends it, with the token from the
+    # environment file: Gatus took the ${NAME} in its config.
+    - name: Send a heartbeat
+      when: not ansible_check_mode
+      ansible.builtin.uri:
+        url: http://127.0.0.1:{{ gatus_port }}/api/v1/endpoints/dev_heartbeat/external?success=true
+        method: POST
+        headers:
+          Authorization: Bearer {{ dev_heartbeat_token }}
+      changed_when: false
+
+    - name: Send a heartbeat with the wrong token
+      when: not ansible_check_mode
+      ansible.builtin.uri:
+        url: http://127.0.0.1:{{ gatus_port }}/api/v1/endpoints/dev_heartbeat/external?success=true
+        method: POST
+        headers:
+          Authorization: Bearer not-the-token
+        status_code: 401
+      changed_when: false
+
+    - name: Read the config file Gatus reads and the secrets beside it
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /home/gatus/config/checks.yaml
+        - /home/gatus/gatus.env
+      register: dev_gatus_files
+      become: true
+
+    - name: Read the config file's text
+      when: not ansible_check_mode
+      ansible.builtin.slurp:
+        src: /home/gatus/config/checks.yaml
+      register: dev_gatus_checks
+      become: true
+
+    - name: Find the token in the environment file alone
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that:
+          - dev_gatus_files.results[0].stat.mode == '0600'
+          - dev_gatus_files.results[1].stat.mode == '0400'
+          - dev_gatus_files.results[1].stat.pw_name == 'gatus'
+          - dev_heartbeat_token not in (dev_gatus_checks.content | b64decode)
+          - "'${DEV_HEARTBEAT_TOKEN}' in (dev_gatus_checks.content | b64decode)"
+        quiet: true

@@ -1,0 +1,214 @@
+---
+- name: Fail early on non-Debian targets
+  ansible.builtin.assert:
+    that: ansible_facts['os_family'] == 'Debian'
+    fail_msg: gatus supports Debian only.
+    quiet: true
+
+- name: Assert where Gatus listens
+  ansible.builtin.assert:
+    that:
+      - gatus_listen_addresses | length > 0
+      - gatus_listen_addresses | select('match', '^[0-9a-fA-F.:]+$') | list | length == gatus_listen_addresses | length
+      - gatus_port | string is match('^[0-9]+$')
+      - gatus_port | int > 0 and gatus_port | int < 65536
+    fail_msg: gatus_listen_addresses wants one or more IP addresses, and gatus_port a port.
+    quiet: true
+
+- name: Assert the config files are named mappings
+  ansible.builtin.assert:
+    that:
+      - gatus_config_files is mapping
+      - gatus_config_files.keys() | select('match', '^[a-z0-9][a-z0-9_-]*$') | list | length == gatus_config_files | length
+      - gatus_config_files.values() | select('mapping') | list | length == gatus_config_files | length
+      - "'base' not in gatus_config_files"
+      # Gatus refuses to start with nothing to check.
+      - >-
+        gatus_config_files.values() | selectattr('endpoints', 'defined')
+        | list | length + (gatus_config_files.values() | selectattr('external-endpoints', 'defined') | list | length)
+        + (gatus_config_files.values() | selectattr('suites', 'defined') | list | length) > 0
+    fail_msg: >-
+      gatus_config_files wants name -> mapping, each name lower case letters, digits, - and _,
+      and not "base", which is the role's own, and at least one of them with endpoints,
+      external-endpoints or suites, without which Gatus does not start.
+    quiet: true
+
+# Gatus expands every $NAME and ${NAME} in its config from its environment,
+# and an unset one becomes empty: an external endpoint's token, or an alert's,
+# would then be empty rather than missing. $$ is a literal dollar sign.
+- name: Note the environment the config names
+  ansible.builtin.set_fact:
+    gatus_env_names: >-
+      {{ (gatus_config_files | to_json | replace('$$', ''))
+         | regex_findall('\$\{?([A-Za-z_][A-Za-z0-9_]*)') | unique | sort }}
+
+- name: Assert every name the config uses has a value
+  ansible.builtin.assert:
+    that:
+      - gatus_environment is mapping
+      - gatus_env_names | difference(gatus_environment.keys() | list) | length == 0
+      - >-
+        gatus_environment | dict2items | selectattr('key', 'in', gatus_env_names)
+        | map(attribute='value') | map('string') | select('==', '') | list | length == 0
+      - gatus_environment.keys() | select('match', '^[A-Za-z_][A-Za-z0-9_]*$') | list | length == gatus_environment | length
+      - gatus_environment.values() | map('string') | select('search', '[\n\r]') | list | length == 0
+    fail_msg: >-
+      The config names {{ gatus_env_names | difference(gatus_environment.keys() | list) | join(', ') or 'every value it needs' }}:
+      give each a value in gatus_environment, on one line, or write a literal dollar sign as $$.
+    quiet: true
+
+- name: Look for {{ gatus_user }}
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ gatus_user }}"
+    fail_key: false
+
+# A first dry run, before the account exists, has nothing more to compare:
+# its manager and its files cannot be looked up yet.
+- name: Stop a dry run that has no {{ gatus_user }} to look at
+  when:
+    - ansible_check_mode
+    - ansible_facts.getent_passwd[gatus_user] is none
+  ansible.builtin.meta: end_role
+
+- name: Set up the {{ gatus_user }} user for rootless podman
+  ansible.builtin.include_role:
+    name: joonalai.hostkit.rootless_account
+  vars:
+    rootless_account_user: "{{ gatus_user }}"
+    rootless_account_uid: "{{ gatus_uid }}"
+    rootless_account_home: "{{ gatus_home }}"
+    rootless_account_subuid_start: "{{ gatus_subuid_start }}"
+    rootless_account_subuid_count: "{{ gatus_subuid_count }}"
+    rootless_account_profile_marker: gatus
+    rootless_account_sandbox_units: "{{ gatus_sandbox_units }}"
+
+- name: Keep the {{ gatus_user }} user's environment
+  ansible.builtin.set_fact:
+    gatus_user_env: "{{ rootless_account_env }}"
+    gatus_quadlet_dir: "{{ gatus_home }}/.config/containers/systemd"
+    gatus_config_dir: "{{ gatus_home }}/config"
+
+# The config is the account's to read and no one else's: the alerting
+# providers' addresses are in it. Its history, in data, likewise.
+# The unit directory is rootless_account's.
+- name: Create Gatus's config and data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ gatus_user }}"
+    group: "{{ gatus_user }}"
+    mode: "0700"
+  loop:
+    - "{{ gatus_config_dir }}"
+    - "{{ gatus_home }}/data"
+  become: true
+
+- name: Write the role's own config
+  ansible.builtin.copy:
+    content: "{{ gatus_base_config | to_nice_yaml(indent=2) }}"
+    dest: "{{ gatus_config_dir }}/base.yaml"
+    owner: "{{ gatus_user }}"
+    group: "{{ gatus_user }}"
+    mode: "0600"
+  notify: Restart gatus
+  become: true
+
+- name: Write the consumer's config files
+  ansible.builtin.copy:
+    content: "{{ item.value | to_nice_yaml(indent=2) }}"
+    dest: "{{ gatus_config_dir }}/{{ item.key }}.yaml"
+    owner: "{{ gatus_user }}"
+    group: "{{ gatus_user }}"
+    mode: "0600"
+  loop: "{{ gatus_config_files | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  notify: Restart gatus
+  become: true
+
+- name: Find the config files on the box
+  ansible.builtin.find:
+    paths: "{{ gatus_config_dir }}"
+    patterns: ["*.yaml", "*.yml"]
+    recurse: true
+  register: gatus_installed_config
+  become: true
+
+# Gatus reads every file in the directory, so one no longer listed would
+# keep its checks and alerts.
+- name: Remove the config files no longer listed
+  when: item.path | basename not in (['base.yaml'] + (gatus_config_files.keys() | map('regex_replace', '$', '.yaml') | list))
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ gatus_installed_config.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  notify: Restart gatus
+  become: true
+
+- name: Write the secrets the config names
+  ansible.builtin.copy:
+    # The comment keeps the file non-empty, which copy refuses, when there
+    # are no secrets.
+    content: |
+      # The values Gatus's config names as ${NAME}.
+      {% for name in gatus_environment.keys() | sort %}
+      {{ name }}={{ gatus_environment[name] }}
+      {% endfor %}
+    dest: "{{ gatus_home }}/gatus.env"
+    owner: "{{ gatus_user }}"
+    group: "{{ gatus_user }}"
+    mode: "0400"
+  notify: Restart gatus
+  no_log: true
+  become: true
+
+- name: Install Gatus's unit
+  ansible.builtin.template:
+    src: gatus.container.j2
+    dest: "{{ gatus_quadlet_dir }}/gatus.container"
+    owner: "{{ gatus_user }}"
+    group: "{{ gatus_user }}"
+    mode: "0644"
+  notify:
+    - Reload the systemd manager for gatus
+    - Restart gatus
+  become: true
+
+- name: Generate Gatus's unit before starting it
+  ansible.builtin.meta: flush_handlers
+
+- name: Start Gatus
+  ansible.builtin.systemd_service:
+    name: gatus.service
+    scope: user
+    state: "{{ 'started' if gatus_start | bool else 'stopped' }}"
+  environment: "{{ gatus_user_env }}"
+  become: true
+  become_user: "{{ gatus_user }}"
+
+# A config Gatus refuses stops it at start, which systemd retries: ask it
+# rather than trust the unit's state. Through the first address it listens
+# on, loopback in place of a wildcard.
+- name: Wait for Gatus to answer
+  when:
+    - gatus_start | bool
+    - not ansible_check_mode
+  vars:
+    gatus_check_address: >-
+      {{ '127.0.0.1' if gatus_listen_addresses[0] == '0.0.0.0'
+         else ('[::1]' if gatus_listen_addresses[0] == '::'
+         else (('[' ~ gatus_listen_addresses[0] ~ ']') if ':' in gatus_listen_addresses[0]
+         else gatus_listen_addresses[0])) }}
+  ansible.builtin.uri:
+    url: http://{{ gatus_check_address }}:{{ gatus_port }}/health
+    return_content: true
+  register: gatus_health
+  # Served as text/plain, so the module leaves the JSON unparsed.
+  until: gatus_health.status == 200 and (gatus_health.content | default('{}') | from_json).status | default('') == 'UP'
+  # Two minutes: podman's user units wait up to 90 seconds for the system's
+  # network-online.target, which a container that boots systemd never reaches.
+  retries: 60
+  delay: 2

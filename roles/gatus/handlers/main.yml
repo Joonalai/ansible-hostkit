@@ -1,0 +1,23 @@
+---
+# "gatus" in every name: handler names are global to the play.
+
+# The generator only runs on daemon-reload.
+- name: Reload the systemd manager for gatus
+  ansible.builtin.systemd_service:
+    scope: user
+    daemon_reload: true
+  environment: "{{ gatus_user_env }}"
+  become: true
+  become_user: "{{ gatus_user }}"
+
+# Gatus reloads changed config files by itself, but not its environment,
+# and a restart loses nothing: its history is in sqlite under data.
+- name: Restart gatus
+  when: gatus_start | bool
+  ansible.builtin.systemd_service:
+    name: gatus.service
+    scope: user
+    state: restarted
+  environment: "{{ gatus_user_env }}"
+  become: true
+  become_user: "{{ gatus_user }}"

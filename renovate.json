@@ -29,6 +29,17 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Gatus's image, by tag and digest",
+      "managerFilePatterns": [
+        "/^roles/gatus/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "gatus_image: (?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "uv, pinned for the runner image and the workbench image; one pull request moves both",
       "managerFilePatterns": [
         "/^roles/[^/]+/defaults/main\\.yml$/"

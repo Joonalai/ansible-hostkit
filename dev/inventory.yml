@@ -32,6 +32,9 @@ all:
     workbench_subuid_count: 16000
     dev_exec_subuid_start: 44000
     dev_exec_subuid_count: 20000
+    # Above smoke_limits.yml's account, at 64000.
+    gatus_subuid_start: 65000
+    gatus_subuid_count: 536
     # The executor's secret for the smoke stack, a made-up value the smoke
     # test looks for where it must not be.
     dev_smoke_secret: smoke-secret-for-the-dev-container
@@ -39,3 +42,5 @@ all:
     # their hashes, the caller container sends them.
     dev_remote_key: remote-key-for-the-dev-container
     dev_remote_other_key: other-remote-key-for-the-dev-container
+    # Gatus's heartbeat token, made up: the play sends it as a timer would.
+    dev_heartbeat_token: heartbeat-token-for-the-dev-container
