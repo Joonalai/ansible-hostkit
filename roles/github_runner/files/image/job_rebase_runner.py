@@ -40,7 +40,12 @@ could have touched:
 Anything else is handed on: nothing is pushed, the PR goes back to a draft,
 and a marked `@<bot> review: rebase` asks for a job on the work
 runners, where the engineer rebases and the reviewer compares the change
-with what it was.
+with what it was. That comment goes through the API, tried POSTS times,
+with gh's own words printed when it fails. Still failing, the PR says
+`asked` in its Progress, with a comment linking the run if one gets
+through, and the step fails: the run starts from a comment, so its red
+shows on no check of the PR, and a PR left at a conflict with nothing
+asked for waits until the default branch moves again.
 
 How far the change moved is counted per file, as the lines the PR adds and
 removes, before the rebase against its old base and after it against the
@@ -92,6 +97,11 @@ PASSES, PASS_WAIT = 50, 0.1
 # Rebuilt, not resolved: their lines do not count toward MAX_MOVED.
 LOCKS = ("*.lock", "package-lock.json", "pnpm-lock.yaml", "go.sum")
 ESCALATE = f"<!-- {BOT}:auto-escalate"
+# How often a comment is tried, and the wait between: GitHub refuses one
+# now and then for no reason it gives.
+POSTS, POST_WAIT = 3, 10
+# The Progress line's status, which an asked hand-on rewrites.
+STATUS = re.compile(r"(Status: )[^\n<]*")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 REPO = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -386,10 +396,58 @@ def try_rebase(env: Mapping[str, str], run: Run = sh, git: Git = git_cmd) -> int
     return 0
 
 
-# env is unused, and stays for the callers that pass it.
-def hand_on(env: Mapping[str, str], run: Run, git: Git, state: dict[str, Any], reason: str) -> None:  # noqa: ARG001
+def post(env: Mapping[str, str], run: Run, number: str, body: str, sleep: Callable[[float], object] = time.sleep) -> bool:
+    """Comment on the PR as the App's bot, through the API as claude-job-queue
+    does, tried POSTS times. Whether it was posted; when not, gh's own words
+    are printed, since a step's log shows only the command.
+    """
+    for attempt in range(1, POSTS + 1):
+        try:
+            run("gh", "api", f"repos/{env['GITHUB_REPOSITORY']}/issues/{number}/comments", "-f", f"body={body}")
+        except subprocess.CalledProcessError as error:
+            said = (error.stderr or error.stdout or "").strip()[:500] or f"exit {error.returncode}"
+            print(f"::warning::Commenting on #{number} failed, try {attempt} of {POSTS}: {said}")
+            if attempt < POSTS:
+                sleep(POST_WAIT)
+            continue
+        return True
+    return False
+
+
+def run_url(env: Mapping[str, str]) -> str:
+    """The job's run, for the owner to follow."""
+    server = env.get("GITHUB_SERVER_URL") or "https://github.com"
+    return f"{server}/{env['GITHUB_REPOSITORY']}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
+
+
+def stuck(env: Mapping[str, str], run: Run, state: dict[str, Any], reason: str, sleep: Callable[[float], object]) -> None:
+    """Say on the PR, as asked, that its rebase waits for the owner: the
+    hand-on could not be posted, and a run started from a comment shows its
+    red on no check of the PR. Best effort, as the comment that failed was.
+    """
+    number, base = state["number"], state["base"]
+    status = f"asked: the rebase onto {base} needs a hand"
+    try:
+        text = json.loads(run("gh", "pr", "view", number, "--json", "body") or "{}").get("body") or ""
+        if STATUS.search(text):
+            run("gh", "pr", "edit", number, "--body", STATUS.sub(lambda found: found[1] + status, text, count=1))
+    except (ValueError, subprocess.CalledProcessError) as error:
+        print(f"::warning::#{number}'s Progress could not be set to asked: {(getattr(error, 'stderr', '') or '').strip()[:300]}")
+    note = (
+        f"`{base}` moved on to {state['new_base'][:7]}, and this PR's rebase stopped at a conflict that the rebase "
+        f"runner did not push: {reason}. Asking for a job to rebase it here failed, so it waits for you. It went back "
+        f"to a draft. Comment `@{BOT} review: rebase` to have it rebased. [Job run]({run_url(env)})"
+    )
+    post(env, run, number, note, sleep)
+
+
+def hand_on(  # noqa: PLR0913, PLR0917  (each a different thing, sleep the tests' to replace)
+    env: Mapping[str, str], run: Run, git: Git, state: dict[str, Any], reason: str,
+    sleep: Callable[[float], object] = time.sleep,
+) -> bool:
     """Turn the PR back into a draft and ask for its rebase on the work
-    runners, saying why this one was not pushed.
+    runners, saying why this one was not pushed. Whether it was asked for;
+    when it could not be, the PR is left asked, never working.
     """
     number, base = state["number"], state["base"]
     try:
@@ -401,13 +459,17 @@ def hand_on(env: Mapping[str, str], run: Run, git: Git, state: dict[str, Any], r
         compare = f" `git range-diff {old_base[:12]}..{state['old_head'][:12]} origin/{base}..HEAD`."
     except RuntimeError:
         compare = f" `git range-diff origin/{base}...{state['old_head'][:12]}` after the rebase."
-    run(
-        "gh", "pr", "comment", number, "--body",
+    body = (
         f"@{BOT} review: rebase\n\n{ESCALATE} {state['new_base']} -->\n"
         f"`{base}` moved on to {state['new_base'][:7]}, and the rebase runner did not push its rebase: {reason}. "
-        "So the engineer rebases it here, and the reviewer compares the change with what it was:" + compare,
+        "So the engineer rebases it here, and the reviewer compares the change with what it was:" + compare
     )
-    print(f"#{number}: handed on, {reason}.")
+    if post(env, run, number, body, sleep):
+        print(f"#{number}: handed on, {reason}.")
+        return True
+    print(f"::error::#{number} could not be handed on, so it waits for the owner: {reason}.")
+    stuck(env, run, state, reason, sleep)
+    return False
 
 
 def valid(state: object) -> bool:
@@ -467,14 +529,12 @@ def settle(env: Mapping[str, str], run: Run = sh, checkout: str | None = None, r
             except RuntimeError as error:
                 reason = f"it could not be checked ({error})"
         if reason is not None:
-            hand_on(env, run, git, state, reason)
-            return 0
+            return 0 if hand_on(env, run, git, state, reason) else 1
         remote = remote or f"https://github.com/{env['GITHUB_REPOSITORY']}.git"
         try:
             push(env, git, remote, state["branch"], state["old_head"], "refs/heads/result")
         except RuntimeError as error:
-            hand_on(env, run, git, state, str(error))
-            return 0
+            return 0 if hand_on(env, run, git, state, str(error)) else 1
     finally:
         shutil.rmtree(own, ignore_errors=True)
     run(

@@ -48,21 +48,44 @@ def main_moves(work: Path, files: dict[str, str]) -> None:
     git(work, "fetch", "-q", "origin")
 
 
+BODY = "Closes #3\n\n<details><summary>Progress</summary>\n\nLevel: claude:review · Status: done\n</details>\n"
+
+
 class Gh(list[tuple[str, ...]]):
-    def __init__(self, work: Path, draft: bool = False) -> None:
+    """gh on the PR fix/3, whose first `failing` comments through the API fail."""
+
+    def __init__(self, work: Path, draft: bool = False, failing: int = 0) -> None:
         super().__init__()
-        self.work, self.draft = work, draft
+        self.work, self.draft, self.failing = work, draft, failing
 
     def __call__(self, *argv: str) -> str:
         self.append(argv)
         if argv[1:3] == ("pr", "view"):
             head = git(self.work, "rev-parse", "origin/fix/3")
             return json.dumps({"state": "OPEN", "isDraft": self.draft, "isCrossRepository": False,
-                               "headRefName": "fix/3", "headRefOid": head, "baseRefName": "main"})
+                               "headRefName": "fix/3", "headRefOid": head, "baseRefName": "main", "body": BODY})
+        if argv[1] == "api" and argv[2].endswith("/comments") and self.failing:
+            self.failing -= 1
+            raise subprocess.CalledProcessError(1, argv, "", "HTTP 502: Bad Gateway")
         return ""
 
     def comments(self) -> list[str]:
-        return [call[-1] for call in self if call[1:3] == ("pr", "comment")]
+        """What was posted, by gh pr comment or through the API."""
+        posted = []
+        for call in self:
+            if call[1:3] == ("pr", "comment"):
+                posted.append(call[-1])
+            elif call[1] == "api" and call[2].endswith("/comments") and call[-1].startswith("body="):
+                posted.append(call[-1].removeprefix("body="))
+        return posted
+
+    def tries(self) -> int:
+        return sum(1 for call in self if call[1] == "api" and call[2].endswith("/comments"))
+
+
+@pytest.fixture(autouse=True)
+def no_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner, "POST_WAIT", 0)
 
 
 @pytest.fixture
@@ -170,6 +193,36 @@ def test_a_resolution_that_rewrites_another_file_is_handed_on(repo: Path, env: d
     body = gh.comments()[-1]
     assert body.startswith("@claude review: rebase\n\n<!-- claude:auto-escalate ")
     assert "`app.txt`" in body and "git range-diff" in body
+
+
+def test_a_hand_on_that_fails_once_is_tried_again(repo: Path, env: dict[str, str]) -> None:
+    gh = conflict(repo, env)
+    gh.failing = 1
+
+    assert settle(repo, env, gh) == 0
+
+    assert gh.tries() == 2
+    assert gh.comments()[-1].startswith("@claude review: rebase")
+    assert not [call for call in gh if call[1:3] == ("pr", "edit")]
+
+
+def test_a_hand_on_that_keeps_failing_ends_asked_with_its_stderr(
+    repo: Path, env: dict[str, str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh = conflict(repo, env)
+    gh.failing = 3
+
+    assert settle(repo, env | {"GITHUB_RUN_ID": "99"}, gh) == 1
+
+    assert "HTTP 502: Bad Gateway" in capsys.readouterr().out
+    edits = [call for call in gh if call[1:3] == ("pr", "edit")]
+    assert len(edits) == 1
+    assert "Status: asked: the rebase onto main needs a hand\n" in edits[0][-1]
+    assert ("gh", "pr", "ready", "7", "--undo") in gh
+    note = gh.comments()[-1]
+    assert gh.tries() == 4
+    assert "went back to a draft" in note and "/owner/repo/actions/runs/99)" in note
+    assert "@claude review: rebase" in note and "<!--" not in note
 
 
 def test_a_resolution_moving_too_much_is_handed_on(repo: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
