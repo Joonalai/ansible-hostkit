@@ -8,6 +8,22 @@ carry.
 
 <!-- version list -->
 
+## v0.8.0 (2026-11-17)
+
+### Bug Fixes
+
+- Mark a draft left at done ready through the gate, or ask why not
+  ([`37609f1`](https://github.com/Joonalai/ansible-hostkit/commit/37609f1bfc49b53dd186845921ee30da2650c0c9))
+
+- Retry the rebase runner's hand-on and leave it asked when it fails
+  ([`fc64c8c`](https://github.com/Joonalai/ansible-hostkit/commit/fc64c8cc9bcd9173cce34561d5bfebb14414112c))
+
+### Features
+
+- Rerun a failed check once per head before it waits for the owner
+  ([`26466c1`](https://github.com/Joonalai/ansible-hostkit/commit/26466c1aad4c9af683fdc9f47c6bc56871608da6))
+
+
 ## v0.7.1 (2026-11-16)
 
 ### Bug Fixes
