@@ -513,7 +513,13 @@ account is set up by `rootless_account`.
     `@<bot> review: rebase` (`auto-escalate`), which runs on the work
     runners at `<bot>:review`, `claude-job-level`'s `review:`, where
     the lead's rules have the engineer rebase and the reviewer compare
-    the change by `git range-diff`.
+    the change by `git range-diff`. That comment goes through the API, as
+    `claude-job-queue`'s do, tried three times, with gh's stderr printed
+    when it fails: `gh pr comment` once failed with only its command in
+    the log. Still failing, the PR's Progress says `asked`, a comment
+    links the run, and the step fails, since the run started from a
+    comment shows its red on no check of the PR, and nothing else would
+    move it until the default branch does.
 - **Podman 5.4 speaks Docker API 1.41, and compose gates features on it.**
   docker-compose reads the version from the server, so no client setting
   gets past it: a compose file with a health check's `start_interval`
