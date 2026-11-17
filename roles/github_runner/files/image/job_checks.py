@@ -2,8 +2,10 @@
 """Wait for a PR's checks, and say what failed.
 
     claude-job-checks <number> [-R owner/name]    wait, and print the result
+    claude-job-checks <number> --rerun            the same, asking once for a rerun of what failed
     claude-job-checks --hook                      Claude Code's PreToolUse hook
     claude-job-checks --waiting <number>          a step's: has someone asked since
+    claude-job-checks --rerun-asked [<number>]    the rerun job's: rerun what the lead asked for
 
 A job's turn ends at its last push, long before CI has said anything, so
 nothing would otherwise look at it. The lead runs this after that push. It
@@ -15,6 +17,31 @@ among the PR's checks and it could only ever be running.
 
 It exits 0 when nothing failed, or there are no checks; 1 when one failed; 2
 when GitHub would not say; and 3 when they are still running.
+
+With `--rerun`, which the lead adds for a failure it believes is not its
+change's, it asks for the failed checks' workflow runs to be rerun, once
+per head sha: a comment with a `rerun-asked` mark, the sha, the checks and
+their runs. The lead then ends its job stopped, the queue continues it,
+and the next job waits for the checks again: while the PR's newest ask
+names the head with no `rerun-done` mark after it, waiting first waits
+for that mark, LIMIT in all, since the queue may start the next job
+before the rerun job has run. A head with a mark already gets no second
+ask, and the second failure is the owner's. Before this
+each flaky test waited for the owner, often overnight.
+
+The lead does not rerun anything itself: rerunning needs Actions: write,
+which on the App's token, held by the lead for the whole job, would rerun
+any run, a release among them, and dispatch any workflow wherever the App
+is installed. `--rerun-asked` is the shared workflow's `rerun` job's,
+on every open PR of the App's bot, since the job started on an issue
+knows no PR, or on the one numbered, after the `claude` job, which runs no Claude and none of the PR's
+code. It reruns with that job's own GITHUB_TOKEN, passed as RERUN_TOKEN,
+and only when the PR's newest `rerun-asked` comment is the App's bot's,
+at the PR's head, with no `rerun-done` mark at that head yet; and of the
+runs it names, only those at the head, on `pull_request`, that failed.
+It ends with one comment with the `rerun-done` mark, and always exits 0:
+a rerun it could not make leaves the next lead a failure it sees as
+before.
 
 As the hook it lets every command through except `gh pr ready`, which it
 blocks, exit 2, unless the named PR's branch has every commit of its base
@@ -48,8 +75,11 @@ read, so the rebase runs as it would have.
 
 It reads GITHUB_REPOSITORY, GITHUB_WORKFLOW, GITHUB_RUN_ID and
 CLAUDE_ALLOWED_IDS from the environment, which every step and Claude itself
-get. gh finds its token in GH_TOKEN, which needs Actions, Checks and Commit
-statuses: read, on the App, and Issues and Pull requests: read.
+get. gh finds its token in GH_TOKEN, which needs Actions, Checks and
+Commit statuses: read, on the App, Issues and Pull requests: read, and
+Issues: write for the rerun's comments; `--rerun-asked` reads
+CLAUDE_APP_BOT_ID, and RERUN_TOKEN, the rerun job's token, the only one
+with Actions: write.
 
 Standard library only, on the image's python3.
 """
@@ -98,6 +128,11 @@ COMPARE_FILES = 300
 # How many of the changed paths a refusal names: enough to say which.
 SHOWN = 5
 
+# The marks of a rerun asked for and one made, each followed by the head's sha.
+ASKED = f"<!-- {BOT}:rerun-asked "
+REDONE = f"<!-- {BOT}:rerun-done "
+RUN_LINK = re.compile(r"/actions/runs/(\d+)")
+
 ASKING = [("issues/{n}/comments", "created_at"), ("pulls/{n}/reviews", "submitted_at"), ("pulls/{n}/comments", "created_at")]
 
 
@@ -112,9 +147,13 @@ class Unreadable(Exception):  # noqa: N818
     """GitHub would not say, or said what cannot be read."""
 
 
-def sh(*argv: str) -> subprocess.CompletedProcess[str]:
-    """A command as it ended, failed or not: the caller reads what it printed."""
-    return subprocess.run(argv, check=False, capture_output=True, text=True)
+def sh(*argv: str, token: str | None = None) -> subprocess.CompletedProcess[str]:
+    """A command as it ended, failed or not: the caller reads what it
+    printed. token, when given, is gh's in place of GH_TOKEN, in the
+    environment and never an argument.
+    """
+    env = None if token is None else {**os.environ, "GH_TOKEN": token}
+    return subprocess.run(argv, check=False, capture_output=True, text=True, env=env)
 
 
 def read(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -> list[Check]:
@@ -172,6 +211,25 @@ def failing_on_base(number: str, repo: str, run: Run = sh) -> set[str]:
 
 
 # One argument more than the rules like: the clock and the sleep are the tests' to replace.
+def rerun_pending(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -> str | None:
+    """The head's sha when the PR's newest ask of the bot's names it and no
+    rerun-done mark at it follows, or None. Best effort: what cannot be
+    read is None, and the checks are read as they are.
+    """
+    bot = env.get("CLAUDE_APP_BOT_ID", "")
+    try:
+        sha = head_of(number, repo, run)
+        comments = bodies(number, repo, run)
+    except Unreadable:
+        return None
+    asks = [at for at, (user, _, body) in enumerate(comments) if ASKED in body and (not bot or user == bot)]
+    if not asks or f"{ASKED}{sha} -->" not in comments[asks[-1]][2]:
+        return None
+    if any(f"{REDONE}{sha} -->" in body for _, _, body in comments[asks[-1] + 1:]):
+        return None
+    return sha
+
+
 def wait(  # noqa: PLR0913, PLR0917
     number: str,
     repo: str,
@@ -180,12 +238,19 @@ def wait(  # noqa: PLR0913, PLR0917
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], object] = time.sleep,
 ) -> list[Check]:
-    """The checks once they have finished, or as they are at the limit."""
+    """The checks once they have finished, or as they are at the limit:
+    after a rerun asked for at the head is made, SETTLE more, LIMIT in all.
+    """
     start = clock()
+    while (pending := rerun_pending(number, repo, env, run)) is not None:
+        if clock() - start >= LIMIT:
+            print(f"The rerun asked for at {pending[:7]} was not made, so the checks are read as they are.\n")
+            break
+        sleep(POLL)
+    settled_from = clock()
     while True:
         checks = read(number, repo, env, run)
-        waited = clock() - start
-        if waited >= LIMIT or (waited >= SETTLE and not running(checks)):
+        if clock() - start >= LIMIT or (clock() - settled_from >= SETTLE and not running(checks)):
             return checks
         sleep(POLL)
 
@@ -417,21 +482,174 @@ def waiting(number: str, env: Mapping[str, str], run: Run = sh) -> int:
     return 0
 
 
-def main(argv: list[str], env: Mapping[str, str] = os.environ, stdin: TextIO = sys.stdin, run: Run = sh) -> int:
-    """Answer as the hook or the step, or wait for the named PR's checks and print the result."""
-    if argv == ["--hook"]:
-        return hook(env, stdin, run)
-    if len(argv) == WAITING_ARGUMENTS and argv[0] == "--waiting" and argv[1].isdigit():
-        return waiting(argv[1], env, run)
-    number, repo = named(" ".join(argv), env)
+def head_of(number: str, repo: str, run: Run = sh) -> str:
+    """The PR's head commit."""
+    done = run("gh", "pr", "view", number, "-R", repo, "--json", "headRefOid", "--jq", ".headRefOid")
+    sha = done.stdout.strip()
+    if done.returncode or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise Unreadable((done.stderr or done.stdout).strip()[:300])
+    return sha
+
+
+def bodies(number: str, repo: str, run: Run = sh) -> list[tuple[str, str, str]]:
+    """The PR's comments, oldest first, as (author's id, link, body)."""
+    done = run(
+        "gh", "api", f"repos/{repo}/issues/{number}/comments?per_page=100", "--paginate",
+        "--jq", ".[] | {user: .user.id, url: .html_url, body} | tojson",
+    )
+    if done.returncode:
+        raise Unreadable((done.stderr or done.stdout).strip()[:300])
+    found = []
+    for line in done.stdout.splitlines():
+        try:
+            each = json.loads(line)
+        except ValueError:
+            raise Unreadable(line[:300]) from None
+        found.append((str(each.get("user")), str(each.get("url") or ""), str(each.get("body") or "")))
+    return found
+
+
+def ask_rerun(number: str, repo: str, checks: list[Check], run: Run = sh) -> None:
+    """Ask the workflow's rerun job for the failed checks' runs, once per
+    head sha, and print what the lead does next.
+    """
+    sha = head_of(number, repo, run)
+    earlier = [url for _, url, body in bodies(number, repo, run) if f"{ASKED}{sha} -->" in body or f"{REDONE}{sha} -->" in body]
+    if earlier:
+        print(
+            f"A rerun was asked for at {sha[:7]} already: {earlier[0]}, and what fails after it is not rerun "
+            "again: it is the owner's. Set `Status: asked: <the check>`, linking that comment and the failure below.\n",
+        )
+        return
+    runs: dict[str, str] = {}
+    for check in failed(checks):
+        link = check.get("link") or ""
+        if found := JOB.search(link):
+            runs[found[1]] = link[: found.start()] + f"/runs/{found[1]}"
+    if not runs:
+        print("Nothing to rerun: no failed check is a workflow run.\n")
+        return
+    names = ", ".join(label(check) for check in failed(checks))
+    body = (
+        f"{ASKED}{sha} -->\nAsking for a rerun of the failed jobs once at {sha[:7]}, as not this change's: "
+        f"{names}. A second failure at this head is the owner's. Runs: {' '.join(runs.values())}"
+    )
+    posted = run("gh", "api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}")
+    if posted.returncode:
+        print(f"Asking for the rerun failed: {(posted.stderr or posted.stdout).strip()[:300]}\n")
+        return
+    print(
+        f"Asked for a rerun at {sha[:7]}: {' '.join(runs.values())}. The workflow's rerun job makes it after "
+        "this job. End this job with `Status: stopped: the failed checks are rerun once`: the queue continues "
+        "it, and the next job waits for the checks again.\n",
+    )
+
+
+def rerun_made(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -> list[str]:
+    """Rerun what the bot's newest ask at the head names, and mark it done;
+    the runs it reran.
+    """
+    bot, token = env.get("CLAUDE_APP_BOT_ID", ""), env.get("RERUN_TOKEN", "")
+    if not bot or not token:
+        raise Unreadable("no CLAUDE_APP_BOT_ID or RERUN_TOKEN in the environment")
+    sha = head_of(number, repo, run)
+    comments = bodies(number, repo, run)
+    asks = [(user, body) for user, _, body in comments if ASKED in body]
+    if not asks or asks[-1][0] != bot or f"{ASKED}{sha} -->" not in asks[-1][1]:
+        print(f"#{number}: no rerun asked for by the bot at {sha[:7]}.")
+        return []
+    if any(f"{REDONE}{sha} -->" in body for _, _, body in comments):
+        print(f"#{number}: the rerun at {sha[:7]} was made already.")
+        return []
+    reran = []
+    for run_id in dict.fromkeys(RUN_LINK.findall(asks[-1][1])):
+        done = run("gh", "api", f"repos/{repo}/actions/runs/{run_id}", "--jq", "{head_sha, event, conclusion, html_url}")
+        try:
+            info = json.loads(done.stdout)
+        except ValueError:
+            info = {}
+        if done.returncode or (info.get("head_sha"), info.get("event"), info.get("conclusion")) != (sha, "pull_request", "failure"):
+            print(f"::warning::Run {run_id} is not a failed pull_request run at {sha[:7]}, so it is not rerun.")
+            continue
+        made = run("gh", "run", "rerun", run_id, "--failed", "-R", repo, token=token)
+        if made.returncode:
+            print(f"::warning::Run {run_id} could not be rerun: {(made.stderr or made.stdout).strip()[:300]}")
+            continue
+        reran.append(str(info.get("html_url") or run_id))
+    said = " ".join(reran) if reran else "none could be"
+    body = f"{REDONE}{sha} -->\nReran the failed jobs at {sha[:7]}: {said}."
+    posted = run("gh", "api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}")
+    if posted.returncode:
+        print(f"::warning::The rerun's comment failed: {(posted.stderr or posted.stdout).strip()[:300]}")
+    print(f"#{number}: reran {said}.")
+    return reran
+
+
+def bot_pulls(repo: str, env: Mapping[str, str], run: Run = sh) -> list[str]:
+    """The numbers of the open PRs the App's bot opened, as claude-job-queue
+    finds them: by its id, which the bot's login need not match the name of.
+    """
+    done = run(
+        "gh", "api", f"repos/{repo}/pulls?state=open&per_page=100", "--paginate",
+        "--jq", ".[] | [.number, .user.id] | @tsv",
+    )
+    if done.returncode:
+        raise Unreadable((done.stderr or done.stdout).strip()[:300])
+    bot = env.get("CLAUDE_APP_BOT_ID", "")
+    return [number for number, user in (line.split("\t") for line in done.stdout.splitlines() if line) if user == bot]
+
+
+def rerun_asked(number: str | None, env: Mapping[str, str], run: Run = sh) -> int:
+    """The rerun job's step, on the numbered PR or every open one of the
+    bot's. Always 0: what it could not rerun, the next lead sees failing as
+    before, and one PR's trouble stops none of the others.
+    """
+    repo = env.get("GITHUB_REPOSITORY", "")
+    numbers = [number] if number is not None else []
+    if number is None:
+        try:
+            numbers = bot_pulls(repo, env, run)
+        except Unreadable as error:
+            print(f"::warning::The bot's open PRs could not be listed, so nothing is rerun: {error}")
+    for each in numbers:
+        try:
+            rerun_made(each, repo, env, run)
+        except Unreadable as error:
+            print(f"::warning::The rerun asked for on #{each} could not be read, so nothing is rerun there: {error}")
+    return 0
+
+
+def checked(argv: list[str], env: Mapping[str, str], run: Run = sh) -> int:
+    """Wait for the named PR's checks, print the result, and ask for a
+    rerun of what failed when the lead added --rerun.
+    """
+    rerunning = "--rerun" in argv
+    number, repo = named(" ".join(word for word in argv if word != "--rerun"), env)
     if number is None or not repo:
-        print("usage: claude-job-checks <number> [-R owner/name]", file=sys.stderr)
+        print("usage: claude-job-checks <number> [-R owner/name] [--rerun]", file=sys.stderr)
         return 2
     try:
-        return result(number, repo, wait(number, repo, env, run), run)
+        checks = wait(number, repo, env, run)
+        code = result(number, repo, checks, run)
+        if rerunning and failed(checks):
+            ask_rerun(number, repo, checks, run)
     except Unreadable as error:
         print(f"The checks could not be read: {error}", file=sys.stderr)
         return 2
+    return code
+
+
+def main(argv: list[str], env: Mapping[str, str] = os.environ, stdin: TextIO = sys.stdin, run: Run = sh) -> int:
+    """Answer as the hook or a step, or wait for the named PR's checks and print the result."""
+    if argv == ["--hook"]:
+        return hook(env, stdin, run)
+    if argv == ["--rerun-asked"]:
+        return rerun_asked(None, env, run)
+    if len(argv) == WAITING_ARGUMENTS and argv[0] == "--rerun-asked" and argv[1].isdigit():
+        return rerun_asked(argv[1], env, run)
+    if len(argv) == WAITING_ARGUMENTS and argv[0] == "--waiting" and argv[1].isdigit():
+        return waiting(argv[1], env, run)
+    return checked(argv, env, run)
 
 
 if __name__ == "__main__":
