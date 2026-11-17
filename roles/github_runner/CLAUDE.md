@@ -332,7 +332,13 @@ account is set up by `rootless_account`.
       for a job out of turns or context, and what the workflow ends on
       waits for the owner. The draft it opens for work left without a PR
       says `asked` too. A PR the lead marked ready but left at `working`
-      says `done`, with no note: two were seen so. A
+      says `done`, with no note: two were seen so. A draft whose lead
+      wrote `done` and ran out of time before `gh pr ready` is marked
+      ready through `claude-job-checks --ready`, which waits for the
+      checks, since the lead pushed minutes before, then asks the hook's
+      own gate, so it needs what the lead's would: the tester's pass at the head and
+      green checks; refused, it says `asked: <the gate's reason>` with
+      one comment, since the queue takes no draft at `done`. A
       lead that ended well before half the job's time
       with nothing of the job's committed, on HEAD or in a related
       repository, is asked too, with a note naming the levels that give

@@ -580,6 +580,49 @@ def test_the_rerun_job_exits_0_without_its_token(capsys: pytest.CaptureFixture[s
     assert job_checks.main(["--rerun-asked", "3"], ENV | {"CLAUDE_APP_BOT_ID": BOT_ID}, run=github) == 0
     assert github.reran() == []
     assert "RERUN_TOKEN" in capsys.readouterr().out
+
+
+def test_ready_marks_a_pr_the_gate_lets_through() -> None:
+    github = GitHub([check()])
+    marked = []
+
+    def run(*argv: str) -> subprocess.CompletedProcess[str]:
+        if argv[:3] == ("gh", "pr", "ready"):
+            marked.append(argv)
+            return done()
+        return github(*argv)
+
+    clock = Clock()
+    assert job_checks.ready("https://github.com/o/r/pull/3", ENV, run, clock, clock.sleep) == 0
+    assert marked == [("gh", "pr", "ready", "3", "-R", REPO)]
+
+
+def test_ready_waits_for_checks_still_running_before_the_gate(capsys: pytest.CaptureFixture[str]) -> None:
+    github = GitHub([check(bucket="pending")], [check(bucket="pending")], [check()])
+    marked = []
+
+    def run(*argv: str) -> subprocess.CompletedProcess[str]:
+        if argv[:3] == ("gh", "pr", "ready"):
+            marked.append(argv)
+            return done()
+        return github(*argv)
+
+    clock = Clock()
+    assert job_checks.ready("https://github.com/o/r/pull/3", ENV, run, clock, clock.sleep) == 0
+    assert marked == [("gh", "pr", "ready", "3", "-R", REPO)]
+    assert clock.now >= job_checks.SETTLE
+    assert capsys.readouterr().out == ""
+
+
+def test_ready_prints_the_gates_reason_without_the_leads_advice(capsys: pytest.CaptureFixture[str]) -> None:
+    github = GitHub([check("lint", "fail")])
+    clock = Clock()
+    assert job_checks.ready("https://github.com/o/r/pull/3", ENV, github, clock, clock.sleep) == 1
+    out = capsys.readouterr().out
+    assert out == "o/r#3 has failing checks: Tests / lint.\n"
+    assert not [call for call in github.calls if call[:3] == ("gh", "pr", "ready")]
+
+
 class Pulls(Rerun):
     """Rerun's gh over several PRs of the repository, each with its own comments."""
 

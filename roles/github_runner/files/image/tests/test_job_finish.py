@@ -27,18 +27,21 @@ class Gh(list[tuple[str, ...]]):
         notes: Iterable[str] = (),
         graph: Iterable[dict[str, Any]] | None = (),
         firsts: Iterable[str] = (),
+        refusal: str = "",
     ) -> None:
         super().__init__()
-        self.firsts = list(firsts)
+        self.firsts, self.refusal = list(firsts), refusal
         self.comments, self.notes, self.graph = list(comments), list(notes), None if graph is None else list(graph)
         self.checkout, self.pr, self.draft_ok, self.body, self.draft = checkout, pr, draft_ok, body, draft
 
-    def __call__(self, *argv: str) -> str:  # noqa: C901, PLR0911
+    def __call__(self, *argv: str) -> str:  # noqa: C901, PLR0911, PLR0912  (a fake that answers each gh call)
         if argv[0] == "git":
             return subprocess.run(
                 ["git", "-C", str(self.checkout), *argv[1:]], check=True, capture_output=True, text=True,
             ).stdout.strip()
         self.append(argv)
+        if argv[0] == "claude-job-checks" and self.refusal:
+            raise subprocess.CalledProcessError(1, argv, output=self.refusal + "\n")
         if argv[1:3] == ("pr", "list") and "--search" in argv:
             return "\n".join(self.firsts)
         if argv[1:3] == ("pr", "list"):
@@ -638,12 +641,39 @@ def test_a_progress_left_working_names_what_cut_the_job_off(checkout: Path) -> N
     assert "Status: asked: cancelled" in edit[edit.index("--body") + 1]
 
 
-def test_a_done_progress_is_left_as_it_is(checkout: Path) -> None:
-    gh = Gh(checkout, pr=PR_URL, body="Level: claude · Status: done\n")
+def test_a_draft_at_done_is_marked_ready_through_the_gate(checkout: Path) -> None:
+    gh = Gh(checkout, pr=PR_URL, body="Level: claude:full · Status: done\n")
+
+    job_finish.main(env("cancelled"), run=gh)
+
+    assert gh.called("claude-job-checks") == [("claude-job-checks", "--ready", PR_URL)]
+    assert not gh.called("gh", "pr", "edit")
+    assert not gh.called("gh", "pr", "comment")
+
+
+def test_a_draft_at_done_the_gate_refuses_ends_asked_with_one_comment(checkout: Path) -> None:
+    reason = "o/r#7 changed code since the tester's pass at 0123abc: src/a.ts. Call `tester-check` on <what>."
+    gh = Gh(checkout, pr=PR_URL, body="Level: claude:full · Status: done\nNext: none\n", refusal=reason)
 
     job_finish.main(env("success"), run=gh)
 
-    assert not gh.called("gh", "pr", "edit")
+    (edit,) = gh.called("gh", "pr", "edit", PR_URL)
+    new = edit[edit.index("--body") + 1]
+    assert new == (
+        "Level: claude:full · Status: asked: o/r#7 changed code since the tester's pass at 0123abc: src/a.ts. "
+        "Call `tester-check` on what.\nNext: none\n"
+    )
+    (comment,) = gh.called("gh", "pr", "comment", PR_URL)
+    assert reason in comment[-1] and "stays a draft" in comment[-1]
+
+
+@pytest.mark.parametrize("status", ["working", "asked: a choice", "stopped: out of turns"])
+def test_a_draft_at_another_status_is_not_marked_ready(checkout: Path, status: str) -> None:
+    gh = Gh(checkout, pr=PR_URL, body=f"Level: claude · Status: {status}\n")
+
+    job_finish.main(env("success"), run=gh)
+
+    assert not gh.called("claude-job-checks")
 
 
 def test_a_pr_marked_ready_is_done_whatever_progress_still_says(checkout: Path) -> None:

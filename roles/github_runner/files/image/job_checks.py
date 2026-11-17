@@ -5,6 +5,7 @@
     claude-job-checks <number> --rerun            the same, asking once for a rerun of what failed
     claude-job-checks --hook                      Claude Code's PreToolUse hook
     claude-job-checks --waiting <number>          a step's: has someone asked since
+    claude-job-checks --ready <pr>                claude-job-finish's: the hook's gate, then ready
     claude-job-checks --rerun-asked [<number>]    the rerun job's: rerun what the lead asked for
 
 A job's turn ends at its last push, long before CI has said anything, so
@@ -67,6 +68,12 @@ it, as a rebase whose conflict it resolved does, the PR stays a draft. It
 compares on GitHub, the PR's head as pushed, since that is what is marked
 ready and a linked PR's checkout is not the hook's.
 
+`--ready <pr>` is the hook's gate for claude-job-finish, on a draft whose
+lead wrote done and ran out of time before `gh pr ready`: it waits for the
+checks as the plain command does, then marks the PR ready when the hook
+would let it through, and otherwise prints the hook's
+reason, without the advice to the lead, and exits 1.
+
 `--waiting` is the same question as a step's, for a rebase the bot asked
 for itself, which the workflow skips when someone has asked since: their
 job comes next and rebases as it works. It writes `waiting=true` or
@@ -84,6 +91,7 @@ with Actions: write.
 Standard library only, on the image's python3.
 """
 
+import contextlib
 import fnmatch
 import json
 import os
@@ -341,8 +349,10 @@ def asked_since(number: str, repo: str, env: Mapping[str, str], run: Run = sh) -
     return [url for _, url in sorted(found)]
 
 
-def refusal(arguments: str, env: Mapping[str, str], run: Run = sh) -> str | None:
-    """Why the PR a `gh pr ready` names may not be marked ready, or None."""
+def refusal(arguments: str, env: Mapping[str, str], run: Run = sh, fix: str = FIX) -> str | None:
+    """Why the PR a `gh pr ready` names may not be marked ready, or None.
+    fix is what the lead is told to do about red or unfinished checks.
+    """
     if "--undo" in arguments.split():
         return None
     number, repo = named(arguments, env)
@@ -360,7 +370,7 @@ def refusal(arguments: str, env: Mapping[str, str], run: Run = sh) -> str | None
         )
     reason = unready(number, repo, env, run)
     if reason is not None:
-        return f"{reason} {FIX}"
+        return f"{reason} {fix}".strip()
     return untried(number, repo, run)
 
 
@@ -619,6 +629,35 @@ def rerun_asked(number: str | None, env: Mapping[str, str], run: Run = sh) -> in
     return 0
 
 
+def ready(
+    pr: str,
+    env: Mapping[str, str],
+    run: Run = sh,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], object] = time.sleep,
+) -> int:
+    """Wait for the PR's checks, LIMIT at most, then mark it ready through
+    the hook's gate: 0 when it is, 1 when the gate refuses, with its reason
+    printed, and 2 when gh failed. A lead that wrote done pushed last
+    minutes before, and checks still running would ask the owner for
+    nothing.
+    """
+    number, repo = named(pr, env)
+    if number is not None and repo:
+        # The gate reads them again, and refuses what it cannot read.
+        with contextlib.suppress(Unreadable):
+            wait(number, repo, env, run, clock, sleep)
+    reason = refusal(pr, env, run, fix="")
+    if reason is not None:
+        print(reason)
+        return 1
+    done = run("gh", "pr", "ready", str(number), "-R", repo)
+    if done.returncode:
+        print(f"`gh pr ready` failed: {(done.stderr or done.stdout).strip()[:300]}")
+        return 2
+    return 0
+
+
 def checked(argv: list[str], env: Mapping[str, str], run: Run = sh) -> int:
     """Wait for the named PR's checks, print the result, and ask for a
     rerun of what failed when the lead added --rerun.
@@ -643,6 +682,8 @@ def main(argv: list[str], env: Mapping[str, str] = os.environ, stdin: TextIO = s
     """Answer as the hook or a step, or wait for the named PR's checks and print the result."""
     if argv == ["--hook"]:
         return hook(env, stdin, run)
+    if len(argv) == WAITING_ARGUMENTS and argv[0] == "--ready":
+        return ready(argv[1], env, run)
     if argv == ["--rerun-asked"]:
         return rerun_asked(None, env, run)
     if len(argv) == WAITING_ARGUMENTS and argv[0] == "--rerun-asked" and argv[1].isdigit():
