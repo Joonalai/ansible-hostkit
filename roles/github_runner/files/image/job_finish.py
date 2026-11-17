@@ -68,7 +68,12 @@ stopped draft by itself, and never an asked one, so none of these is
 stopped: that is the lead's word alone, for a job out of turns or
 context. The draft it opens for work left without a PR says asked too.
 A PR the lead marked ready is done: a Progress it left at working says
-done, with no note, since nothing waits.
+done, with no note, since nothing waits. A draft whose Progress says done,
+from a lead that ran out of time before `gh pr ready`, is marked ready
+through `claude-job-checks --ready`, the gate the lead's own passes: a
+passing "Tried" at the head where the level needs one, and green checks.
+When the gate refuses, Progress says asked, with its reason, and one
+comment says so.
 
 `spent <number>` is the same end for a stopped draft that claude-job-queue
 continued ROUNDS times and would continue again: Progress says asked, by
@@ -233,6 +238,10 @@ Next: read the commits on this branch and {primary}#{number}, and carry on.
 
 
 WORKING = re.compile(r"(Status: )working\b[^\n<]*")
+# A Progress the lead set to done, on a draft it may not have marked ready.
+DONE = re.compile(r"(Status: )done\b[^\n<]*")
+# How much of the ready gate's reason the status line carries.
+REASON_CHARS = 200
 # A Progress that says work is left, which an end of the workflow's rewrites.
 LEFT = re.compile(r"(Status: )(?:working|stopped)\b[^\n<]*")
 # What marks the workflow's own "@<bot> continue", which the workflow
@@ -459,14 +468,42 @@ def with_status(text: str, status: str) -> str:
     return LEFT.sub(lambda found: found[1] + status, text, count=1)
 
 
-def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) -> bool:
+def mark_ready(run: Run, pr: str, text: str, url: str) -> bool:
+    """A draft whose lead wrote done and ran out of time before `gh pr
+    ready`: marked ready through the lead's own gate, or asked with the
+    gate's reason and one comment saying so. True: either way nothing more
+    is said.
+    """
+    try:
+        run("claude-job-checks", "--ready", pr)
+    except subprocess.CalledProcessError as error:
+        reason = (error.stdout or error.stderr or "").strip() or f"the gate exited {error.returncode}"
+    else:
+        print(f"{pr}: Progress said done, so it is marked ready.")
+        return True
+    line = " ".join(reason.replace("<", "").replace(">", "").split())
+    if len(line) > REASON_CHARS:
+        line = line[: REASON_CHARS - 1] + "…"
+    run("gh", "pr", "edit", pr, "--body", DONE.sub(lambda found: found[1] + "asked: " + line, text, count=1))
+    note = (
+        f"Progress said done, but the job ended before marking this PR ready, and the ready gate refuses it: "
+        f"{reason}\n\nIt stays a draft. [Job run]({url})"
+    )
+    run("gh", "pr", "comment", pr, "--body", note)
+    return True
+
+
+# Each return is one way a job ends, and they read best in a row.
+def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) -> bool:  # noqa: PLR0911
     """A Progress left at working, now that this job is done with it: the
     next job goes on, or it says the work waits. Whether it went on. A PR
     the lead marked ready is done, whatever its Progress still says: only
     the lead forgot to update it, so it says done, with no note, since a
-    note that it stopped would be false. Whether it said on the PR what
-    comes next: that the work goes on, or, when it went on ROUNDS times
-    and is still not done, what the user can do with work that large.
+    note that it stopped would be false. A draft the lead left at done is
+    marked ready, through the gate the lead's own `gh pr ready` passes, or
+    asked with its reason. Whether it said on the PR what comes next: that
+    the work goes on, or, when it went on ROUNDS times and is still not
+    done, what the user can do with work that large.
     """
     if env.get("WAITING", ""):
         # Stopped at the usage limit: claude-job-retry starts it again once
@@ -475,6 +512,8 @@ def settle(run: Run, pr: str, outcome: str, env: Env, now: float | None = None) 
     url = env["RUN_URL"]
     found = json.loads(run("gh", "pr", "view", pr, "--json", "body,isDraft") or "{}")
     text = found.get("body") or ""
+    if found.get("isDraft") and DONE.search(text):
+        return mark_ready(run, pr, text, url)
     if not WORKING.search(text):
         return False
     if not found.get("isDraft", True):
