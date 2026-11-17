@@ -247,6 +247,14 @@ when the issue has no acceptance lines of its own, and the agreed design to
     twice in a job.
   - A failure marked as failing on the base too is not this change's: leave
     it, unless the fix is a line, and say so in your comment.
+  - A failure you believe is not this change's, a test it does not touch
+    that passes on the base, is rerun before anything waits for the user.
+    You do not rerun it: run `claude-job-checks <n> --rerun`, which asks
+    the workflow for it once per head, then end the job at
+    `Status: stopped: the failed checks are rerun once`. The workflow
+    reruns them after your job, and the next job waits for them again.
+    What fails again, or what it says was asked for at this head already,
+    is the user's: `Status: asked: <the check>`, linking both runs.
   - What is still red when you stop, a workflow change you are proposing
     among the reasons, keeps the PR a draft. A PR already ready goes back
     with `gh pr ready --undo <n>`. Your comment names the check and what it

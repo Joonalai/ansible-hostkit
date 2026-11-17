@@ -420,7 +420,27 @@ account is set up by `rootless_account`.
     rules was once passed over by a lead, which marked an earlier PR
     ready after a rebase that changed a test. It compares on GitHub, not
     in the checkout, since a linked PR's checkout is not the hook's, and
-    a sha a fold took off GitHub is a refusal. `--waiting <n>` asks
+    a sha a fold took off GitHub is a refusal. `<n> --rerun`, for a
+    failure the lead believes is not its change's, only asks: one comment
+    per head sha with a `<bot>:rerun-asked <sha>` mark and the failed
+    checks' runs, after which the lead ends at `stopped`, the queue
+    continues it and the next job waits for the checks again; a flaky test
+    used to wait for the owner overnight. The rerun is the shared
+    workflow's `rerun` job's, after `claude`, which runs no Claude and
+    none of the PR's code: `--rerun-asked`, on every open PR of the
+    App's bot, since a job started from a label knows only the issue, or
+    `--rerun-asked <n>` on one, reruns with that job's own
+    `GITHUB_TOKEN`, as `RERUN_TOKEN`, the one token with Actions: write,
+    and only for the newest ask, the App's bot's, at the PR's head, with no
+    `rerun-done` mark there yet, and only a run at the head, on
+    `pull_request`, that failed. The App keeps Actions: read: with write,
+    the lead, which holds its token all job, could rerun a release or
+    dispatch any workflow wherever the App is installed. It always exits
+    0, and marks what it did with `rerun-done`. The asking job's last
+    step, the queue's `next`, may continue the draft before the `rerun`
+    job runs, so the checks' wait first waits, `LIMIT` in all, while the
+    newest ask names the head with no `rerun-done` after it.
+    `--waiting <n>` asks
     whether anyone asked since, as a step,
     and the workflow skips a rebase the bot asked for, the `quickrebase`
     job's and an `auto-escalate` one's, when the answer is yes; when it
