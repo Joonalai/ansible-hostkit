@@ -1063,6 +1063,23 @@ def test_a_remote_up_over_tls_reaches_the_agent(tmp_path: Path, tls_pair: tuple[
     assert agent.bundles == [b"BUNDLE"]
 
 
+def test_a_remote_waiting_callers_up_gets_its_repositorys_secrets(
+    tmp_path: Path, tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    register_remote(tmp_path)
+    (tmp_path / "secrets.json").write_text(json.dumps(SECRETS))
+    front, agent, _ = make_front(tmp_path, secrets_file=str(tmp_path / "secrets.json"))
+    header = {"key": REMOTE_KEY, "action": "up", "repo": "example/app", "bundle_size": 6}
+
+    status, answer = serve_over_tls(front, *tls_pair, "192.0.2.7", json.dumps(header).encode() + b"\nBUNDLE")
+
+    assert status == 0
+    assert answer[-1]["exit"] == 0
+    assert agent.calls[0]["caller"] == "remote-app"
+    assert agent.calls[0]["secrets"] == {"model_key": "app-key-value"}
+    assert "other-key-value" not in json.dumps(agent.calls)
+
+
 def test_a_remote_up_refused_before_its_bundle_is_read_gets_its_refusal(
     tmp_path: Path,
     tls_pair: tuple[ssl.SSLContext, ssl.SSLContext],
