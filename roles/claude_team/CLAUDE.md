@@ -51,7 +51,9 @@ used is in [github_runner](../github_runner/CLAUDE.md) and
   sessions read this role's directory as it is, so the workbench adds an
   opted-in skill there when any of its repositories opts in, and what
   else the skill needs, such as gpu-models' key, only to those
-  repositories' containers.
+  repositories' containers. That key is the job's or the session's own; a
+  stack's model is the executor instance's secret, which the skill's
+  section "A stack's model" tells the team how to check and use.
 - **A workstation may read these files in place.** A Claude Code plugin
   can link `files/agents` and `files/skills` from an installed copy of this
   collection, for the user's own sessions, with no play and no copy. So a

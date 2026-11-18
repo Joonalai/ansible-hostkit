@@ -133,6 +133,30 @@ print(reply["choices"][0]["message"]["content"])
 - **Context of a loaded model:** `GET /props?model=<name>` on the root. Its
   `n_ctx` is per slot.
 
+## A stack's model
+
+The environment above is the job's or the session's own. The stacks you bring
+up with `stack up` do not inherit it: the host's sandbox keeps them off the
+model server unless the executor instance gives the repository a key of the
+stacks' own, as a secret that a profile names `{secret:<name>}`. The
+repository's notes say which profile has it, if any does.
+
+- **Measure an AI feature through the app.** An acceptance evaluation asks the
+  running app, not the model. Bring up the profile that has the model and ask
+  the app as a user would.
+- **Ask the stack first.** Before a run, check that the stack's assistant
+  answers: its health endpoint or one request. If it says it is unavailable,
+  or the up named the secret among those left empty, report "the stack has no
+  model", with the profile and what the stack answered. Then measure what you
+  can from the job directly, and say which numbers came from where. Do not
+  judge from the profile's text whether a stack has the model.
+- **The slot is shared with the stack.** A stack's evaluation and your own
+  requests queue on the same GPU. Run them one after the other, never side by
+  side, and record `/gpu` with the result.
+- **The same rules hold.** Test data only, and the key stays hidden: the
+  executor prints `{secret:<name>}` wherever the value would show, so never
+  make a service print it some other way, encoded or in parts.
+
 ## What the measurements taught
 
 From the owner's measurements, November 2026:
