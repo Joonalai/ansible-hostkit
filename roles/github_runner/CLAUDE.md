@@ -312,7 +312,10 @@ account is set up by `rootless_account`.
       it was cut off: past the repository's hooks, since a commit message
       rule must not lose work, and on a PR without the settings the action
       restored from the default branch, which would undo the PR's own
-      changes to them.
+      changes to them. A branch whose PR was merged or closed while the
+      job went on, left at that PR's head, gets no push and no draft: it
+      compares with the PR's head, since a merge may delete the branch,
+      and a push brought deleted ones back.
     - It pushes to `<branch>-job-<run>` when the branch moved on GitHub
       meanwhile, but over it with a lease when it is still what the job's
       own last push left there, which the remote-tracking ref's reflog

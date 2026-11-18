@@ -26,6 +26,13 @@ and nothing is overwritten. A branch GitHub still has as this job last
 pushed it is the job's own, and what Claude rewrote since, a rebase or a
 fix folded into a commit, is pushed over it with a lease on that commit.
 
+A branch whose PR was merged or closed while the job went on, which the
+job left at that PR's head, gets no push and no draft: there is nothing
+new to hold, and the merged PR is the one its threads are tidied on. The
+head is the PR's, not GitHub's branch, which a repository may delete on
+the merge, and a push would bring it back. Work the job did
+add after that goes to a draft as any other, which names the earlier PR.
+
 A job cut off midway through a rebase leaves HEAD detached, on the
 commits replayed so far. The branch is the one the rebase names, never
 "HEAD", and since HEAD lacks the commits not yet replayed, GitHub's branch
@@ -206,12 +213,16 @@ def parted(run: Run, number: str) -> bool:
     return any(part.match(line.strip()) for line in lines.splitlines())
 
 
-def body(number: str, outcome: str, level: str, part: bool = False) -> str:  # noqa: FBT001, FBT002 (the callers pass it by position)
-    """The draft's body for work Claude left without a PR, which closes the issue or is only a part of it."""
+def body(number: str, outcome: str, level: str, part: bool = False, earlier: str = "") -> str:  # noqa: FBT001, FBT002 (the callers pass it by position)
+    """The draft's body for work Claude left without a PR, which closes the
+    issue or is only a part of it, and names the branch's earlier PR, merged
+    or closed, when it has one.
+    """
     first = f"Part of #{number}" if part else f"Closes #{number}"
+    after = f" The branch's earlier PR, {earlier}, is merged or closed: this holds what came after it." if earlier else ""
     return f"""{first}
 
-Opened by the workflow: Claude stopped ({outcome}) before it opened a PR.
+Opened by the workflow: Claude stopped ({outcome}) before it opened a PR.{after}
 Comment `@{BOT} continue` here to pick the work up.
 
 <details><summary>Progress</summary>
@@ -436,6 +447,17 @@ def unpushed(git: Run, branch: str) -> bool:
     """
     remote = git("ls-remote", "origin", f"refs/heads/{branch}").split()
     return not remote or remote[0] != git("rev-parse", "HEAD")
+
+
+def earlier_pr(run: Run, branch: str) -> tuple[str, str]:
+    """The branch's newest PR that is no longer open, merged or closed, and
+    its head commit; ('', '') when there is none.
+    """
+    found = run(
+        "gh", "pr", "list", "--head", branch, "--state", "all", "--json", "url,state,headRefOid",
+        "--jq", '[.[] | select(.state != "OPEN")][0] // empty | "\\(.url) \\(.headRefOid)"',
+    ).split()
+    return (found[0], found[1]) if len(found) == 2 else ("", "")  # noqa: PLR2004  (the URL and the commit)
 
 
 def to_draft(run: Run, pr: str) -> None:
@@ -749,6 +771,13 @@ def finish_checkout(env: Env, run: Run) -> str:  # noqa: C901
 
     if pr and unpushed(git, branch):
         to_draft(run, pr)
+    earlier, its_head = ("", "") if pr else earlier_pr(run, branch)
+    if earlier and its_head == git("rev-parse", "HEAD"):
+        # The branch's PR was merged or closed while the job went on, and
+        # the job left nothing past its head: nothing to push or open, and
+        # a push would bring back a branch the merge deleted.
+        print(f"{branch} is at the head of {earlier}, which is no longer open: nothing pushed, no draft opened.")
+        return earlier
     pushed = push(git, branch, env["GITHUB_RUN_ID"], midway)
     if pushed != branch:
         if pushed:
@@ -757,7 +786,7 @@ def finish_checkout(env: Env, run: Run) -> str:  # noqa: C901
             settle(run, pr, outcome, env)
         return pr
     if not pr:
-        text = body(number, outcome, env["LEVEL"], not on_a_pr(env) and parted(run, number))
+        text = body(number, outcome, env["LEVEL"], not on_a_pr(env) and parted(run, number), earlier)
         create = ["gh", "pr", "create", "--head", branch, "--label", env["LEVEL"], "--body", text]
         pr = create_pr(run, create, f"WIP: #{number}, interrupted")
     if not settle(run, pr, outcome, env) and outcome != "success" and not env.get("WAITING", ""):
