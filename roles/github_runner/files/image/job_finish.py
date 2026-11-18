@@ -25,6 +25,14 @@ goes to <branch>-job-<run> instead, and the PR says so: nothing is lost,
 and nothing is overwritten. A branch GitHub still has as this job last
 pushed it is the job's own, and what Claude rewrote since, a rebase or a
 fix folded into a commit, is pushed over it with a lease on that commit.
+So is one GitHub still has as the job found it, which the oldest entry of
+its remote-tracking ref's reflog says, when every commit it had then has
+one of the same subject on HEAD: the job rewrote them, a rebase or a fold,
+and dropped none. A `fixup!`, `squash!` or `amend!` commit is kept when its
+target's subject is on HEAD, and a WIP commit an earlier job's end wrote
+is kept by what the job went on to. Patches would be too strict, since a
+rebase that resolves a conflict changes them. A branch another job pushed last is
+the rule, not the exception, for a job asked to rebase.
 
 A branch whose PR was merged or closed while the job went on, which the
 job left at that PR's head, gets no push and no draft: there is nothing
@@ -376,22 +384,63 @@ def own_push(git: Run, branch: str) -> str:
     return ""
 
 
+def start_of(git: Run, branch: str) -> str:
+    """What GitHub's branch was when the job first fetched it: the oldest
+    entry of its remote-tracking ref's reflog, or '' when there is none.
+    """
+    try:
+        entries = git("reflog", "show", "--format=%H", f"refs/remotes/origin/{branch}").split()
+    except subprocess.CalledProcessError:
+        return ""
+    return entries[-1] if entries else ""
+
+
+FOLDED = re.compile(r"^(?:(?:fixup|squash|amend)! )+")
+# The subject of the commit this script makes of work left uncommitted.
+INTERRUPTED = "WIP: interrupted ("
+
+
+def rewrote(git: Run, start: str) -> bool:
+    """Whether each commit start had that HEAD lacks has one of the same
+    subject on HEAD since start: rewritten, by a rebase or a fold, not
+    dropped. A fold's commit counts by its target's subject, and the WIP
+    commit of an earlier job's end as kept, since its work is what the
+    job went on from.
+    """
+    gone = git("log", "--format=%s", f"HEAD..{start}").splitlines()
+    kept = set(git("log", "--format=%s", f"{start}..HEAD").splitlines())
+    return all(
+        subject.startswith(INTERRUPTED) or FOLDED.sub("", subject) in kept for subject in gone
+    )
+
+
+def lease(git: Run, branch: str, on: str) -> bool:
+    """Push HEAD over GitHub's branch while it is still at on; whether it went."""
+    try:
+        git("push", "--no-verify", f"--force-with-lease=refs/heads/{branch}:{on}", "origin", f"HEAD:refs/heads/{branch}")
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
 def push(git: Run, branch: str, run_id: str, midway: bool = False) -> str:  # noqa: FBT001, FBT002 (the callers pass it by position)
     """Push HEAD to branch, or when GitHub's has moved on to what HEAD
     lacks, to a branch of its own. The branch pushed to; '' when GitHub's
     branch already has everything. GitHub's still at what this job pushed
-    itself, which Claude has rewritten since, is pushed over. Midway
-    through a rebase, HEAD lacks the commits not yet replayed, so GitHub's
-    branch, when there is one, is never pushed over.
+    itself, which Claude has rewritten since, is pushed over, and so is
+    GitHub's still at what the job started from, when HEAD rewrote its
+    commits rather than dropping any. Midway through a rebase, HEAD lacks
+    the commits not yet replayed, so GitHub's branch, when there is one,
+    is never pushed over.
     """
-    mine = ""
+    mine = start = ""
     if midway and git("ls-remote", "origin", f"refs/heads/{branch}"):
         git("fetch", "-q", "origin", f"refs/heads/{branch}")
     else:
         try:
             git("push", "--no-verify", "origin", f"HEAD:refs/heads/{branch}")
         except subprocess.CalledProcessError:
-            mine = own_push(git, branch)
+            mine, start = own_push(git, branch), start_of(git, branch)
             git("fetch", "-q", "origin", f"refs/heads/{branch}")
         else:
             return branch
@@ -401,13 +450,11 @@ def push(git: Run, branch: str, run_id: str, midway: bool = False) -> str:  # no
         pass
     else:
         return ""
-    if mine and mine == git("rev-parse", "FETCH_HEAD"):
-        try:
-            git("push", "--no-verify", f"--force-with-lease=refs/heads/{branch}:{mine}", "origin", f"HEAD:refs/heads/{branch}")
-        except subprocess.CalledProcessError:
-            pass
-        else:
-            return branch
+    theirs = git("rev-parse", "FETCH_HEAD")
+    if mine and mine == theirs and lease(git, branch, mine):
+        return branch
+    if start and start != mine and start == theirs and rewrote(git, start) and lease(git, branch, start):
+        return branch
     rescue = f"{branch}-job-{run_id}"
     git("push", "--no-verify", "origin", f"HEAD:refs/heads/{rescue}")
     return rescue

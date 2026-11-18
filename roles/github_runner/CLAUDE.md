@@ -319,7 +319,12 @@ account is set up by `rootless_account`.
     - It pushes to `<branch>-job-<run>` when the branch moved on GitHub
       meanwhile, but over it with a lease when it is still what the job's
       own last push left there, which the remote-tracking ref's reflog
-      says, and never over it midway through a rebase, which leaves HEAD
+      says, or what the job found there, the reflog's oldest entry, when
+      HEAD has a commit of the same subject for each of that one's, a
+      `fixup!`'s by its target's and an earlier end's `WIP: interrupted`
+      as kept: a rebase or a fold of a branch another job pushed, which is nearly every rebase,
+      once always ended on the rescue branch. Never over it midway through
+      a rebase, which leaves HEAD
       detached on part of the branch and could push a branch named `HEAD`
       and open a second PR.
     - For a Progress left at `working` it comments a marked
