@@ -8,6 +8,28 @@ carry.
 
 <!-- version list -->
 
+## v0.8.1 (2026-11-18)
+
+### Bug Fixes
+
+- Open no draft for a branch whose pr was merged while the job ran
+  ([`f194129`](https://github.com/Joonalai/ansible-hostkit/commit/f1941296f1ecaffb63bef2f34779e88ebae2065f))
+
+- Push a rebase over the branch another job pushed when it is unmoved
+  ([`e85922d`](https://github.com/Joonalai/ansible-hostkit/commit/e85922dde76011c276c55aa1cc7b5aa1a34ec565))
+
+- Settle a rebase whose diff holds bytes that are not utf-8
+  ([`ec1a6a3`](https://github.com/Joonalai/ansible-hostkit/commit/ec1a6a38522632687ed8c4bd090c93e2b3e4ea67))
+
+- Tell the team where a stack's model comes from and how to check it
+  ([`6aa44fd`](https://github.com/Joonalai/ansible-hostkit/commit/6aa44fde8d7e1ad8fa05b9d0029029910762a8fd))
+
+### Testing
+
+- Give a remote waiting caller's up its repository's secrets
+  ([`986aa04`](https://github.com/Joonalai/ansible-hostkit/commit/986aa0400b6d6c5e91b85dd61beff1b109da03b0))
+
+
 ## v0.8.0 (2026-11-17)
 
 ### Bug Fixes
