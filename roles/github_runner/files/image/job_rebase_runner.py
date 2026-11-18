@@ -35,7 +35,9 @@ could have touched:
   no binary file moved, and the PR's own change moved by no more than
   MAX_MOVED lines, all of them in the files that conflicted: a
   resolution that rewrote more is no longer a rebase, and nobody would
-  review it here.
+  review it here. The marker check reads binary files as text too, since
+  git may take a conflicted file for one, and git's output is decoded so
+  that bytes not UTF-8, a PNG's among them, never fail the step.
 
 Anything else is handed on: nothing is pushed, the PR goes back to a draft,
 and a marked `@<bot> review: rebase` asks for a job on the work
@@ -113,12 +115,12 @@ type Git = Callable[..., subprocess.CompletedProcess[str]]
 
 def sh(*argv: str) -> str:
     """What a command prints, raising when it fails."""
-    return subprocess.run(argv, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(argv, check=True, capture_output=True, encoding="utf-8", errors="replace").stdout.strip()
 
 
 def git_cmd(*argv: str, env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Git in the checkout, however it ends: the caller reads its return code."""
-    return subprocess.run(["git", *argv], check=False, capture_output=True, text=True, env=env)
+    return subprocess.run(["git", *argv], check=False, capture_output=True, encoding="utf-8", errors="replace", env=env)
 
 
 def output(env: Mapping[str, str], **values: str) -> None:
@@ -278,7 +280,7 @@ def clean_git(directory: str) -> Git:
         return subprocess.run(
             ["git", "-C", directory, "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
              "-c", "core.quotePath=false", *argv],
-            check=False, capture_output=True, text=True, env=base_env | extra,
+            check=False, capture_output=True, encoding="utf-8", errors="replace", env=base_env | extra,
         )
     return run_git
 
