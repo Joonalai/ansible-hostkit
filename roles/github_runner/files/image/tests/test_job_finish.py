@@ -661,6 +661,101 @@ def test_a_branch_moved_after_the_jobs_own_push_is_not_pushed_over(checkout: Pat
     assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing-job-9"
 
 
+def rebased_what_another_job_pushed(checkout: Path, tmp_path: Path, subjects: tuple[str, ...] = ("one", "two")) -> str:
+    """feat/3-thing as an earlier job pushed it, a commit per subject from
+    another clone, which this checkout only fetched, then rebased onto a
+    main that moved on, folding what was to be folded. GitHub's branch as
+    the job found it.
+    """
+    earlier = tmp_path / "earlier"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin"), str(earlier)], check=True)
+    git_in(earlier, "switch", "-q", "-c", "feat/3-thing")
+    for n, subject in enumerate(subjects):
+        (earlier / f"f{n}.py").write_text(f"{subject!r}\n")
+        git_in(earlier, "add", "-A")
+        git_in(earlier, "commit", "-q", "-m", subject)
+    git_in(earlier, "push", "-q", "origin", "feat/3-thing")
+    git_in(checkout, "fetch", "-q", "origin")
+    git_in(checkout, "switch", "-q", "feat/3-thing")
+    git_in(earlier, "switch", "-q", "main")
+    git_in(earlier, "commit", "-q", "--allow-empty", "-m", "main moves")
+    git_in(earlier, "push", "-q", "origin", "main")
+    git_in(checkout, "fetch", "-q", "origin", "main")
+    folding = subprocess.run(
+        ["git", "-C", str(checkout), "-c", "user.name=u", "-c", "user.email=u@x", "rebase", "-q", "-i", "--autosquash", "origin/main"],
+        check=False, capture_output=True, text=True, env=os.environ | {"GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "true"},
+    )
+    assert folding.returncode == 0, folding.stderr
+    return git_in(checkout, "rev-parse", "origin/feat/3-thing").stdout.strip()
+
+
+def test_a_rebase_of_a_branch_another_job_pushed_goes_over_it(checkout: Path, tmp_path: Path) -> None:
+    rebased_what_another_job_pushed(checkout, tmp_path)
+    gh = Gh(checkout, pr=PR_URL)
+
+    assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing"
+
+    heads = branches(checkout)
+    assert f"{gh('git', 'rev-parse', 'HEAD')}\trefs/heads/feat/3-thing" in heads
+    assert "feat/3-thing-job-9" not in heads
+
+
+@pytest.mark.parametrize("subjects", [
+    ("one", "fixup! one", "two"),
+    ("one", "squash! fixup! one"),
+    ("one", "WIP: interrupted (cancelled), work in progress on #3"),
+])
+def test_a_rebase_that_folded_a_fixup_or_squashed_a_wip_goes_over_it(
+    checkout: Path, tmp_path: Path, subjects: tuple[str, ...],
+) -> None:
+    rebased_what_another_job_pushed(checkout, tmp_path, subjects)
+    if subjects[-1].startswith("WIP"):
+        git_in(checkout, "reset", "-q", "--soft", "HEAD~1")
+        git_in(checkout, "commit", "-q", "--amend", "--no-edit")
+    gh = Gh(checkout, pr=PR_URL)
+
+    assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing"
+
+    assert f"{gh('git', 'rev-parse', 'HEAD')}\trefs/heads/feat/3-thing" in branches(checkout)
+
+
+def test_a_rebase_that_dropped_a_fixups_target_is_rescued(checkout: Path, tmp_path: Path) -> None:
+    rebased_what_another_job_pushed(checkout, tmp_path, ("one", "two", "fixup! two"))
+    git_in(checkout, "reset", "-q", "--hard", "HEAD~1")
+    gh = Gh(checkout, pr=PR_URL)
+
+    assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing-job-9"
+
+
+def test_a_rebase_of_a_branch_that_moved_since_is_rescued(checkout: Path, tmp_path: Path) -> None:
+    rebased_what_another_job_pushed(checkout, tmp_path)
+    other_push(checkout, tmp_path, "feat/3-thing")
+    gh = Gh(checkout, pr=PR_URL)
+
+    assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing-job-9"
+
+
+def test_a_rebase_that_dropped_a_commit_is_rescued(checkout: Path, tmp_path: Path) -> None:
+    rebased_what_another_job_pushed(checkout, tmp_path)
+    git_in(checkout, "reset", "-q", "--hard", "HEAD~1")
+    gh = Gh(checkout, pr=PR_URL)
+
+    assert job_finish.push(lambda *argv: gh("git", *argv), "feat/3-thing", "9") == "feat/3-thing-job-9"
+
+
+def test_a_rebase_whose_lease_is_refused_at_the_push_is_rescued(checkout: Path, tmp_path: Path) -> None:
+    start = rebased_what_another_job_pushed(checkout, tmp_path)
+    gh = Gh(checkout, pr=PR_URL)
+
+    def git(*argv: str) -> str:
+        if any(arg.startswith("--force-with-lease") for arg in argv):
+            other_push(checkout, tmp_path, "feat/3-thing")
+        return gh("git", *argv)
+
+    assert job_finish.push(git, "feat/3-thing", "9") == "feat/3-thing-job-9"
+    assert start not in branches(checkout)
+
+
 def test_a_progress_left_working_reads_asked_when_the_time_ran_out(checkout: Path) -> None:
     gh = Gh(checkout, pr=PR_URL, body="Closes #3\n\nLevel: claude:full · Status: working, reviewer next\nNext: tester")
 
