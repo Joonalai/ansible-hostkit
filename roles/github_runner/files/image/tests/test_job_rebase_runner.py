@@ -252,6 +252,38 @@ def test_conflict_markers_left_in_are_handed_on(repo: Path, env: dict[str, str])
     assert "conflict markers" in gh.comments()[-1]
 
 
+def pr_adds_a_png(repo: Path) -> None:
+    """The PR also changes a picture whose bytes are not UTF-8."""
+    git(repo, "checkout", "-q", "fix/3")
+    (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n\xdc\xff\xfe" * 50)
+    git(repo, "add", "shot.png")
+    git(repo, "commit", "-q", "-m", "a screenshot")
+    git(repo, "push", "-q", "origin", "fix/3")
+    git(repo, "checkout", "-q", "main")
+
+
+def test_a_resolution_beside_a_binary_that_is_not_utf8_is_pushed(repo: Path, env: dict[str, str]) -> None:
+    pr_adds_a_png(repo)
+    gh = conflict(repo, env)
+    old = git(repo, "rev-parse", "origin/fix/3")
+    resolve(repo, LIST.replace("line 10\n", "line 10\nmain line\npr line\n"))
+
+    assert settle(repo, env, gh) == 0
+
+    assert git(repo, "ls-remote", "origin", "refs/heads/fix/3").split()[0] != old
+    assert "resolving the conflicts in `list.txt`" in gh.comments()[-1]
+
+
+def test_markers_left_beside_a_binary_that_is_not_utf8_are_handed_on(repo: Path, env: dict[str, str]) -> None:
+    pr_adds_a_png(repo)
+    gh = conflict(repo, env)
+    resolve(repo, LIST.replace("line 10\n", "line 10\n<<<<<<< HEAD\nmain line\n=======\npr line\n>>>>>>> pr\n"))
+
+    settle(repo, env, gh)
+
+    assert "conflict markers" in gh.comments()[-1]
+
+
 def test_a_draft_or_up_to_date_pr_is_left_alone(repo: Path, env: dict[str, str]) -> None:
     gh = Gh(repo, draft=True)
     assert runner.try_rebase(env, run=gh, git=in_repo(repo)) == 0
