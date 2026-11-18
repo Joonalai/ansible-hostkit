@@ -28,9 +28,10 @@ class Gh(list[tuple[str, ...]]):
         graph: Iterable[dict[str, Any]] | None = (),
         firsts: Iterable[str] = (),
         refusal: str = "",
+        earlier: str = "",
     ) -> None:
         super().__init__()
-        self.firsts, self.refusal = list(firsts), refusal
+        self.firsts, self.refusal, self.earlier = list(firsts), refusal, earlier
         self.comments, self.notes, self.graph = list(comments), list(notes), None if graph is None else list(graph)
         self.checkout, self.pr, self.draft_ok, self.body, self.draft = checkout, pr, draft_ok, body, draft
 
@@ -44,6 +45,8 @@ class Gh(list[tuple[str, ...]]):
             raise subprocess.CalledProcessError(1, argv, output=self.refusal + "\n")
         if argv[1:3] == ("pr", "list") and "--search" in argv:
             return "\n".join(self.firsts)
+        if argv[1:3] == ("pr", "list") and argv[argv.index("--state") + 1] == "all":
+            return self.earlier
         if argv[1:3] == ("pr", "list"):
             return self.pr
         if argv[1:3] == ("api", "graphql"):
@@ -445,6 +448,45 @@ def test_an_issue_job_saves_its_change_to_claude_md(checkout: Path, tmp_path: Pa
     assert job_finish.main({**env(), "GITHUB_EVENT_PATH": path}, run=Gh(checkout)) == 0
 
     assert show(checkout, "origin/wip/3-interrupted-9", "CLAUDE.md") == "the job's\n"
+
+
+MERGED = "https://github.com/o/r/pull/6"
+
+
+def merged(checkout: Path, delete: bool) -> str:
+    """feat/3-thing pushed with one commit, its PR merged, and the branch
+    deleted on GitHub with the merge when delete. The PR as gh lists it.
+    """
+    on_branch(checkout, "feat/3-thing")
+    git_in(checkout, "commit", "-q", "--allow-empty", "-m", "the work")
+    git_in(checkout, "push", "-q", "origin", "feat/3-thing")
+    head = git_in(checkout, "rev-parse", "HEAD").stdout.strip()
+    if delete:
+        git_in(checkout, "push", "-q", "origin", "--delete", "feat/3-thing")
+    return f"{MERGED} {head}"
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_a_branch_whose_pr_was_merged_meanwhile_gets_no_push_and_no_draft(checkout: Path, delete: bool) -> None:
+    gh = Gh(checkout, earlier=merged(checkout, delete))
+
+    assert job_finish.main(env("success"), run=gh) == 0
+
+    assert not gh.called("gh", "pr", "create")
+    assert not gh.called("gh", "pr", "comment")
+    assert ("refs/heads/feat/3-thing" in branches(checkout)) is not delete
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_new_work_on_a_branch_whose_pr_was_merged_gets_a_draft_naming_it(checkout: Path, delete: bool) -> None:
+    gh = Gh(checkout, earlier=merged(checkout, delete))
+    git_in(checkout, "commit", "-q", "--allow-empty", "-m", "more")
+
+    assert job_finish.main(env("success"), run=gh) == 0
+
+    (create,) = gh.called("gh", "pr", "create")
+    assert MERGED in create[create.index("--body") + 1]
+    assert create[create.index("--head") + 1] == "feat/3-thing"
 
 
 def test_saving_what_was_left_skips_the_repositorys_commit_message_rules() -> None:
