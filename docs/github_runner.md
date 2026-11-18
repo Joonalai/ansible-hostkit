@@ -137,7 +137,10 @@ The host's sandbox must hold:
   `github_runner_preview_ports_start` to `github_runner_preview_ports_end`.
 - **Must not reach:** anything else on the host, its LAN or its private
   network. The one exception is the GPU model server, where a repository
-  opts into `gpu-models`.
+  opts into `gpu-models`. That reaches the jobs only: a stack's model is
+  the executor instance's secret and its sandbox's port, not the job's
+  environment, as the skill's "A stack's model" and the executor's
+  "Secrets" say.
 
 Test a sandbox with everything a job can do: plain `coder`, a job container,
 a host-network service, and a port outside the range. All should be

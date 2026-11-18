@@ -326,7 +326,12 @@ the inventory.
 A value the repository must not hold, such as a key for a service the
 host's sandbox lets the stacks reach, comes from the instance. The
 profile names it with `{secret:<name>}`, and the instance's `secrets`
-decide which repository is given which:
+decide which repository is given which. The example gives the stacks a
+GPU model server, the case the secrets were written for: a stack whose
+app asks a model, measured through the app rather than the model itself.
+The key is one of the stacks' own on the model server, not the one the
+`gpu-models` skill hands a job, and the instance's sandbox has to let the
+stacks reach the server's API port, which the collection never opens:
 
 ```yaml
 # The consumer's inventory: the values from its vault.
@@ -343,7 +348,7 @@ executor_instances:
 ```toml
 [profiles.default]
 compose = ["compose.yaml"]
-env = { MODEL_API_KEY = "{secret:model_key}" }
+env = { MODEL_URL = "http://192.0.2.10:8080/v1", MODEL_API_KEY = "{secret:model_key}" }
 ```
 
 ```yaml
@@ -351,6 +356,7 @@ env = { MODEL_API_KEY = "{secret:model_key}" }
 services:
   api:
     environment:
+      MODEL_URL: ${MODEL_URL}
       MODEL_API_KEY: ${MODEL_API_KEY}
 ```
 
