@@ -189,23 +189,24 @@ github_runner_repos:
 
 The most used of the optional ones:
 
-| Variable                                | Default        | What it is                                                              |
-| --------------------------------------- | -------------- | ----------------------------------------------------------------------- |
-| `github_runner_runners`                 | `3`            | Runners per repository, unless its entry says otherwise                 |
-| `github_runner_bot`                     | `claude`       | The bot's name: what a comment mentions, and what the labels begin with |
-| `github_runner_labels`                  | the bot's name | What a workflow's `runs-on` names, besides `self-hosted`                |
-| `github_runner_memory_max`              | `3G`           | Memory of one job                                                       |
-| `github_runner_cpu_quota`               | `200%`         | CPU time of one job                                                     |
-| `github_runner_account_memory_max`      | `5G`           | Memory of everything `coder` runs, test services included               |
-| `github_runner_account_memory_swap_max` | `512M`         | Swap on top of that. Leave it bounded                                   |
-| `github_runner_account_cpu_weight`      | none           | `coder`'s share of the CPU against the other accounts, 1 to 10000       |
-| `github_runner_preview_ports_start`     | `9100`         | The first port the jobs' test services may publish                      |
-| `github_runner_preview_ports_end`       | `9199`         | The last                                                                |
-| `github_runner_strays_max_age_hours`    | `12`           | A container a job left outside any compose project goes after this long |
-| `github_runner_cache_max_gb`            | `5`            | A repository's dependency cache is emptied past this                    |
-| `github_runner_version`                 | `latest`       | The Actions runner's version                                            |
-| `github_runner_image_packages`          | a few          | Debian packages baked into the image for the jobs                       |
-| `github_runner_start`                   | `true`         | `false` in a test container, which starts nothing                       |
+| Variable                                | Default        | What it is                                                                        |
+| --------------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `github_runner_runners`                 | `3`            | Runners per repository, unless its entry says otherwise                           |
+| `github_runner_bot`                     | `claude`       | The bot's name: what a comment mentions, and what the labels begin with           |
+| `github_runner_labels`                  | the bot's name | What a workflow's `runs-on` names, besides `self-hosted`                          |
+| `github_runner_memory_max`              | `3G`           | Memory of one job                                                                 |
+| `github_runner_cpu_quota`               | `200%`         | CPU time of one job                                                               |
+| `github_runner_job_env`                 | `{}`           | Environment of every job, never a secret, such as `PYTEST_XDIST_AUTO_NUM_WORKERS` |
+| `github_runner_account_memory_max`      | `5G`           | Memory of everything `coder` runs, test services included                         |
+| `github_runner_account_memory_swap_max` | `512M`         | Swap on top of that. Leave it bounded                                             |
+| `github_runner_account_cpu_weight`      | none           | `coder`'s share of the CPU against the other accounts, 1 to 10000                 |
+| `github_runner_preview_ports_start`     | `9100`         | The first port the jobs' test services may publish                                |
+| `github_runner_preview_ports_end`       | `9199`         | The last                                                                          |
+| `github_runner_strays_max_age_hours`    | `12`           | A container a job left outside any compose project goes after this long           |
+| `github_runner_cache_max_gb`            | `5`            | A repository's dependency cache is emptied past this                              |
+| `github_runner_version`                 | `latest`       | The Actions runner's version                                                      |
+| `github_runner_image_packages`          | a few          | Debian packages baked into the image for the jobs                                 |
+| `github_runner_start`                   | `true`         | `false` in a test container, which starts nothing                                 |
 
 Every variable is described in
 [`roles/github_runner/defaults/main.yml`](../roles/github_runner/defaults/main.yml).

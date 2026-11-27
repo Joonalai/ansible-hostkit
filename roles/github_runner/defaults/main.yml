@@ -220,6 +220,12 @@ github_runner_rebuild_time: "*-*-* 04:15:00 Europe/Helsinki"
 # than take the host's other services with it.
 github_runner_memory_max: 3G
 github_runner_cpu_quota: 200%
+# Environment every job gets, on every slot. It is written into the
+# runner's unit, so never a secret. A job sees every CPU of the host and
+# not its CPU quota, so a tool that starts a worker per CPU wants its count
+# set here, such as PYTEST_XDIST_AUTO_NUM_WORKERS: eight pytest workers fill
+# a 3G job on their own.
+github_runner_job_env: {}
 # For the whole account: every job running at once, and every test service
 # still up. The test services run outside the jobs' units, so their limits
 # do not cover them. With three jobs at once this, not the per-job limit,
