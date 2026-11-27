@@ -8,6 +8,19 @@ carry.
 
 <!-- version list -->
 
+## v0.9.0 (2026-11-27)
+
+### Bug Fixes
+
+- Keep the dispatcher's private tmp out of the runners' podman
+  ([`67fa131`](https://github.com/Joonalai/ansible-hostkit/commit/67fa13171f5b6fca94f327aad4b2a27c8d1834ed))
+
+### Features
+
+- Give every github runner job an environment from the inventory
+  ([`a91542f`](https://github.com/Joonalai/ansible-hostkit/commit/a91542ff0286f45356bb60619ff7751cfbac80ad))
+
+
 ## v0.8.1 (2026-11-18)
 
 ### Bug Fixes
