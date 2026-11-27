@@ -24,6 +24,31 @@
     fail_msg: github_runner_bot is letters, digits and dashes.
     quiet: true
 
+# Each goes into the runners' unit as an Environment= line. podman's --env
+# wins over its --env-file, so a name the unit or its env files already set,
+# the JIT config and the stack's key among them, would replace theirs.
+- name: Assert the jobs' environment is names and one-line values
+  ansible.builtin.assert:
+    that:
+      - item.key is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - item.key is not match('^(CLAUDE|RUNNER|ACTIONS|GITHUB|STACK|MODEL)_')
+      - item.key not in ['DOCKER_HOST', 'UV_CACHE_DIR', 'UV_LINK_MODE', 'PIP_CACHE_DIR',
+                         'npm_config_cache', 'PLAYWRIGHT_BROWSERS_PATH',
+                         'BUN_INSTALL_CACHE_DIR', 'PREK_HOME']
+      - item.value is not mapping
+      - item.value is string or item.value is not iterable
+      - (item.value | string) is not search('["\\\\\n%$]')
+    fail_msg: >-
+      github_runner_job_env's {{ item.key }}: the name is letters, digits and
+      underscores and not one the role sets itself (CLAUDE_, RUNNER_,
+      ACTIONS_, GITHUB_, STACK_, MODEL_, DOCKER_HOST or the cache
+      directories), and the value one line without quotes, backslashes, %
+      or $.
+    quiet: true
+  loop: "{{ github_runner_job_env | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 # Refuse, rather than install units that can only restart-loop on a 401.
 # Only when there is something to register, so the role installs cleanly
 # before the App exists.

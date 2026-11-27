@@ -31,6 +31,11 @@ Environment=CLAUDE_RUNNER_KIND={{ 'rebase' if item.rebase else 'work' }}
 # the labels that put a queued issue first, for claude-job-queue.
 Environment=CLAUDE_WORK_RUNNERS={{ item.runners }}
 Environment="CLAUDE_PRIORITY_LABELS={{ item.priority_labels | join(',') }}"
+# The consumer's github_runner_job_env, which the play checks is one line
+# each and never a name set here.
+{% for key, value in github_runner_job_env | dictsort %}
+Environment="{{ key }}={{ value }}"
+{% endfor %}
 {% if not item.rebase %}
 # The account's own podman, for test services that outlive the job. The
 # firewall keeps every container it starts off the box's other ports, as

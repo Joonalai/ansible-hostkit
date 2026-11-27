@@ -142,6 +142,14 @@ account is set up by `rootless_account`.
   `Runner.Listener` stalls with it, and after ten minutes GitHub fails
   every running job as "lost communication", which looks like a network
   outage and is not one.
+- **A job sees every CPU of the host, not its quota.** `pytest -n auto`
+  then starts a worker per CPU, a few hundred megabytes each, and the
+  kernel kills them and the job's Claude with them when the job's memory
+  fills. Set the count in `github_runner_job_env`, such as
+  `PYTEST_XDIST_AUTO_NUM_WORKERS`; it goes into the unit as `Environment=`
+  lines, which the role checks are one line each and none of the names the
+  unit or its env files set, which podman's `--env` would override; every
+  step inherits them.
 - **Its own subordinate range, except on a test container.** On a real
   host it should not overlap any other account's, so two sets of
   containers share no IDs. A test container may have only one usable
