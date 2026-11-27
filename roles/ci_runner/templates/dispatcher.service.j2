@@ -13,9 +13,15 @@ RestartSec=30
 # The runners' one-time configurations, readable by the account alone.
 RuntimeDirectory={{ ci_runner_name }}
 RuntimeDirectoryMode=0711
-# Root, to hold the token and start units in the account's manager. No
-# ProtectHome=, which would keep podman, run as the account, out of its home.
-PrivateTmp=yes
+# Root, to hold the token and start units in the account's manager. Nothing
+# that gives the service a mount namespace of its own: PrivateTmp=,
+# ProtectSystem=, ProtectHome=, PrivateDevices=, ReadOnlyPaths= and the
+# like. The dispatcher runs podman as the account through runuser, which
+# keeps the namespace, and when its call is the account's first, podman's
+# pause process is made in it and holds it for every later podman of the
+# account. A restart then deletes the private /tmp under the pause
+# process, and every runner's pasta fails with "Failed to mount empty
+# tmpfs for pivot_root()". tests/test_dispatcher_unit.py checks for them.
 
 [Install]
 WantedBy=multi-user.target

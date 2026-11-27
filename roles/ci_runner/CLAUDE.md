@@ -80,6 +80,20 @@ pulls the image again.
 service, so the account's memory and CPU limits hold them and restarting the
 dispatcher leaves running jobs alone.
 
+**The dispatcher's unit has no mount namespace of its own.** It runs
+podman as the account through `runuser`, which keeps the namespace, and
+when its call is the account's first, as after a boot, the pause process is
+made there and holds it for every later podman of the account. With
+`PrivateTmp=`, a restart of the dispatcher then deleted `/tmp` under the
+pause process, and every runner died at start with pasta's "Failed to mount
+empty tmpfs for pivot_root()". The pause process's
+`/proc/<pid>/mountinfo` naming `systemd-private-` is the sign, and
+`present.yml` repairs a host so before anything runs podman as the
+account, with `podman system migrate`, which stops the account's
+containers. `tests/test_dispatcher_unit.py` refuses `PrivateTmp=`,
+`ProtectSystem=`, `ProtectHome=` and every other setting that would bring
+it back.
+
 **The runner's one-time config goes in a file,** not an argument, which
 every account would see in `/proc`. The file is the account's, 0400, under
 `/run/<name>`, and the dispatcher removes it two minutes later. Inside the

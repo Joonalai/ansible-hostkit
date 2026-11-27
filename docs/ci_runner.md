@@ -214,6 +214,24 @@ journalctl -u ci-runner-dispatcher
 
 The command is named after `ci_runner_name`.
 
+### Every runner dies at start
+
+Up to 0.8.1 the dispatcher's unit had a private `/tmp`, and the account's
+podman could end up held in it. After a restart of the dispatcher every
+runner then dies at start, the jobs stay queued, and the journal says:
+
+```text
+Error: pasta failed with exit code 1:
+Failed to mount empty tmpfs for pivot_root(): No such file or directory
+```
+
+The play repairs it: it stops the dispatcher, runs `podman system migrate`
+as the account and starts the dispatcher again. That stops every container
+of the account, so a running job dies with it; pause the dispatcher and let
+its jobs finish before the play. By hand: stop the dispatcher, kill the
+account's pause process (its pid is in
+`/run/user/<uid>/libpod/tmp/pause.pid`) and start the dispatcher.
+
 ## Where the time goes
 
 The dispatcher records where each job's time goes, from GitHub queueing it
