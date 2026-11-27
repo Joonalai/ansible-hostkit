@@ -112,6 +112,103 @@
     mode: "0700"
   become: true
 
+# --- The account's podman, out of the dispatcher's private /tmp ---------------
+
+# Before anything runs podman as the account. Up to 0.8.1 the unit had
+# PrivateTmp=, and when the dispatcher's podman call was the account's
+# first, the pause process was made in the dispatcher's namespace and holds
+# it for every later podman of the account. A restart of the dispatcher
+# deletes the private /tmp under it, and every runner fails at start with
+# "Failed to mount empty tmpfs for pivot_root()". The new unit alone does
+# not repair a host: the restart that applies it deletes the directories.
+- name: Install the dispatcher's unit
+  ansible.builtin.template:
+    src: dispatcher.service.j2
+    dest: /etc/systemd/system/{{ ci_runner_service }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: ci_runner_dispatcher_unit
+  notify: Restart the CI dispatcher
+  become: true
+
+- name: Read the account's podman pause process
+  when: not (is_container_environment | default(false) | bool)
+  ansible.builtin.slurp:
+    src: /run/user/{{ ansible_facts.getent_passwd[ci_runner_account][1] }}/libpod/tmp/pause.pid
+  register: ci_runner_pause_pid
+  failed_when: false
+  become: true
+
+- name: Read the pause process's mounts
+  when:
+    - not (is_container_environment | default(false) | bool)
+    - ci_runner_pause_pid.content is defined
+  ansible.builtin.slurp:
+    src: /proc/{{ ci_runner_pause_pid.content | b64decode | trim | int }}/mountinfo
+  register: ci_runner_pause_mounts
+  failed_when: false
+  become: true
+
+# A private directory there, deleted or still live, is the dispatcher's,
+# which this or the next restart deletes; otherwise nothing changes.
+- name: Name a pause process held in the dispatcher's private /tmp
+  ansible.builtin.set_fact:
+    ci_runner_pause_private: >-
+      {{ ci_runner_pause_mounts.content is defined
+         and (ci_runner_pause_mounts.content | b64decode) is search('systemd-private-') }}
+
+# Stopped first, or its next poll makes a new pause process in its old
+# namespace. The play's "Start the dispatcher" starts it on the new unit.
+- name: Stop the dispatcher to move the account's podman out of its namespace
+  when:
+    - ci_runner_pause_private | bool
+    - not ansible_check_mode
+  ansible.builtin.systemd_service:
+    name: "{{ ci_runner_service }}.service"
+    daemon_reload: true
+    state: stopped
+  become: true
+
+# Stops the pause process and every container of the account with it, so a
+# job running now dies. A host can pause the dispatcher and let its jobs
+# finish before the play.
+- name: Migrate the account's podman to a new pause process
+  when:
+    - ci_runner_pause_private | bool
+    - not ansible_check_mode
+  ansible.builtin.command:
+    argv: [podman, system, migrate]
+  register: ci_runner_pause_migrated
+  changed_when: true
+  failed_when: false
+  become: true
+  become_user: "{{ ci_runner_account }}"
+  environment: "{{ ci_runner_env }}"
+
+- name: Read the old pause process's mounts again
+  when:
+    - ci_runner_pause_private | bool
+    - not ansible_check_mode
+  ansible.builtin.slurp:
+    src: /proc/{{ ci_runner_pause_pid.content | b64decode | trim | int }}/mountinfo
+  register: ci_runner_pause_mounts_after
+  failed_when: false
+  become: true
+
+# Should the migration have failed on a /tmp already deleted, or left the
+# old process, it goes as it did by hand.
+- name: Kill the old pause process the migration left
+  when:
+    - ci_runner_pause_private | bool
+    - not ansible_check_mode
+    - ci_runner_pause_mounts_after.content is defined
+    - (ci_runner_pause_mounts_after.content | b64decode) is search('systemd-private-')
+  ansible.builtin.command:
+    argv: [kill, "{{ ci_runner_pause_pid.content | b64decode | trim | int }}"]
+  changed_when: true
+  become: true
+
 # --- The runner image ---------------------------------------------------------
 
 # Root's, so the account builds from files it cannot change.
@@ -310,17 +407,6 @@
   ansible.builtin.command:
     argv: ["{{ ci_runner_script }}", warm]
   changed_when: true
-  become: true
-
-- name: Install the dispatcher's unit
-  ansible.builtin.template:
-    src: dispatcher.service.j2
-    dest: /etc/systemd/system/{{ ci_runner_service }}.service
-    owner: root
-    group: root
-    mode: "0644"
-  register: ci_runner_dispatcher_unit
-  notify: Restart the CI dispatcher
   become: true
 
 # Only on a real host: a test container's token opens nothing at GitHub, and
